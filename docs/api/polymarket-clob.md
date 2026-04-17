@@ -168,6 +168,7 @@ signature = base64(hmac_sha256(secret, message))
 > Reference implementations:
 > - TypeScript: https://github.com/Polymarket/clob-client/blob/main/src/signing/hmac.ts
 > - Python: https://github.com/Polymarket/py-clob-client/blob/main/py_clob_client/signing/hmac.py
+> - Rust (resmi SDK): https://github.com/Polymarket/rs-clob-client/blob/main/src/auth.rs — `URL_SAFE` ile secret decode ve imza encode **aynı alfabe** (Python `urlsafe_b64decode` / `urlsafe_b64encode` ile uyumlu).
 
 > **Not:** L2 header'ları olsa bile, order **creation** yapan metodlar order payload'unu ayrıca cüzdan private key'i ile **imzalamayı** gerektirir.
 
@@ -1344,7 +1345,7 @@ url        = "2"
 ```rust
 use hmac::{Hmac, Mac};
 use sha2::Sha256;
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::{engine::general_purpose::URL_SAFE, Engine as _};
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -1353,17 +1354,17 @@ pub fn build_l2_signature(
     timestamp: &str,
     method: &str,         // "GET", "POST", "DELETE"
     request_path: &str,   // "/order", "/orders", ...
-    body: &str,           // JSON body veya boş string
+    body: &str,           // JSON body veya boş string (HMAC mesajında Python ile aynı olması için tek tırnak → çift tırnak normalize edilmeli — bkz. rs-clob-client `body_to_string`)
 ) -> anyhow::Result<String> {
-    let secret = STANDARD.decode(secret_b64)?;
+    // API secret: resmi Python `urlsafe_b64decode`, Rust SDK `URL_SAFE.decode` — STANDARD decode kullanma.
+    let secret = URL_SAFE.decode(secret_b64)?;
     let message = format!("{}{}{}{}", timestamp, method.to_uppercase(), request_path, body);
 
     let mut mac = HmacSha256::new_from_slice(&secret)?;
     mac.update(message.as_bytes());
     let result = mac.finalize().into_bytes();
 
-    // Polymarket URL-safe base64 (no padding) ister
-    Ok(base64::engine::general_purpose::URL_SAFE.encode(result))
+    Ok(URL_SAFE.encode(result))
 }
 ```
 
@@ -1588,10 +1589,10 @@ pub async fn run_market_stream(asset_ids: Vec<String>) -> anyhow::Result<()> {
 3. **Backoff** — 429 için `tokio::time::sleep` + exponential.
 4. **WebSocket reconnect** — `tokio_tungstenite` connection drop olursa eksponansiyel backoff ile reconnect, son subscription state'i restore et.
 5. **Order book replay** — WSS bağlandığında REST'ten `GET /book` ile snapshot al, sonra WSS delta'larını apply et.
-6. **Rate limit tracking** — `tower::limit::RateLimit` veya kendi token bucket'ın ile pre-emptive throttle.
+6. **Rate limit tracking (istemci)** — Polymarket tarafı limitlere takılmamak için çıkan istekleri sınırla: **[governor](https://crates.io/crates/governor)** gibi token bucket yaygın seçimdir. `tower::limit::RateLimit` bir `Service` katmanıdır; Axum **sunucu** yanında, kendi HTTP istemcinizi `Service` olarak modellediğinizde de kullanılabilir — “yalnızca sunucu” değildir; fakat yalın `reqwest` ile **governor** genelde daha doğrudan uygulanır.
 7. **Signature type:** Yeni kullanıcılar için `GNOSIS_SAFE` (2). EOA (0) sadece doğrudan Metamask trader'lar için.
 8. **`outcome_prices`, `clob_token_ids` parsing** — String-encoded array, `serde_json::from_str` ile parse et.
-9. **Decimal precision:** `makerAmount`/`takerAmount` 6-decimal fixed math (USDC). `100000000` = 100 USDC.
+9. **6 ondalık sabit matematik (USDC.e + share):** Zincir / EIP-712 order struct’ında tutarlar genelde **1e6** ölçeklidir. Tipik binary limit order (SDK’sız elle kuruyorsanız — **neg_risk / farklı exchange** için resmi şema ve `polymarket-client-sdk` kaynak koduna bakın): **BUY** için USDC ödeyen taraf ≈ `size * price * 1e6`, outcome alan taraf ≈ `size * 1e6`; **SELL** için verilen share ≈ `size * 1e6`, alınan USDC ≈ `size * price * 1e6`. Yanlış eşleme çoğu zaman zincirde reddedilir veya beklenmeyen ekonomi üretir; üretimde **SDK order builder** tercih edilir.
 10. **Heartbeat:** Long-running session için `POST /heartbeat` periyodik gönder (özellikle market making için kritik).
 
 ### Tipik Trade Workflow

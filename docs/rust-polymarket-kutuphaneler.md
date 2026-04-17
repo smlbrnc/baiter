@@ -150,6 +150,8 @@ Düşük gecikme: mümkünse **tek uzun ömürlü** WebSocket; gereksiz yeniden 
 | [base64](https://crates.io/crates/base64) | **0.22.1** |
 | [hex](https://crates.io/crates/hex) | **0.4.3** |
 
+**L2 HMAC uyumu:** API `secret` çözümü ve `POLY_SIGNATURE` üretimi için `base64` crate’inde **`URL_SAFE`** kullanın (decode + encode aynı alfabe) — resmi [rs-clob-client `auth.rs`](https://github.com/Polymarket/rs-clob-client/blob/main/src/auth.rs) (`URL_SAFE.decode` / `URL_SAFE.encode`) ve Python `urlsafe_b64decode` / `urlsafe_b64encode` ile bire bir hizalıdır; `STANDARD` secret decode ile karıştırılmamalıdır. İstek gövdesinin HMAC mesajına girdiği biçimde Python ile uyum için tek tırnak normalize vb. ayrıntılar repo özetinde: [polymarket-clob.md — L2 HMAC İmza Üretimi](api/polymarket-clob.md).
+
 ---
 
 ## Serileştirme, zaman, URL, hata
