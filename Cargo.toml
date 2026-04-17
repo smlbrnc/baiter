@@ -3,16 +3,56 @@ name = "baiter-pro"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.91"
-description = "Polymarket Gamma/CLOB entegrasyon iskeleti"
+description = "Polymarket trading bot platform (supervisor + bot)"
+
+[[bin]]
+name = "supervisor"
+path = "src/bin/supervisor.rs"
+
+[[bin]]
+name = "bot"
+path = "src/bin/bot.rs"
+
+[lib]
+path = "src/lib.rs"
 
 [dependencies]
-axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio", "macros"] }
-dotenvy = "0.15.7"
+# Async + HTTP
+tokio = { version = "1.52.1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "process", "signal", "io-util", "fs"] }
 reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls", "http2"] }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio", "macros", "query"] }
+tower = "0.5.3"
+tower-http = { version = "0.6.8", features = ["cors", "trace"] }
+
+# WebSocket
+tokio-tungstenite = { version = "0.29.0", features = ["rustls-tls-webpki-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+futures-util = "0.3"
+tokio-stream = { version = "0.1", features = ["sync"] }
+
+# Serde
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
+
+# Kripto + imza
+alloy = { version = "2.0.0", default-features = false, features = ["std", "eip712", "signer-local", "sol-types"] }
+k256 = "=0.13.4"
+hmac = "0.13.0"
+sha2 = "0.11.0"
+base64 = "0.22.1"
+hex = "0.4.3"
+
+# DB
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio-rustls", "sqlite", "macros", "migrate", "chrono"] }
+
+# Yardımcı
+uuid = { version = "1.23.1", features = ["v4", "serde"] }
+chrono = { version = "0.4.44", features = ["serde"] }
 thiserror = "2.0.18"
-tokio = { version = "1.52.1", features = ["rt-multi-thread", "macros", "net"] }
-tower = "0.5.3"
+anyhow = "1.0.102"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+dotenvy = "0.15.7"
+
+[dev-dependencies]
+tokio = { version = "1.52.1", features = ["rt-multi-thread", "macros", "test-util"] }

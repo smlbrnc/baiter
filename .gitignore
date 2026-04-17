@@ -3,3 +3,11 @@
 .env.*.local
 *.pem
 .DS_Store
+
+# Runtime data (SQLite + heartbeat)
+/data/
+
+# Frontend
+/frontend/node_modules/
+/frontend/dist/
+/frontend/.vite/

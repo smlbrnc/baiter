@@ -1,0 +1,24 @@
+//! Dutch Book strategy — TBD stub (Faz 14).
+//!
+//! Ayrıntılı FSM için [docs/strategies.md §1](../../../docs/strategies.md)
+//! `strategies.md` TBD alanları doldurulduktan sonra Faz 14'te implement edilir.
+
+use crate::strategy::metrics::StrategyMetrics;
+use crate::strategy::Decision;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DutchBookState {
+    Pending,
+    Done,
+}
+
+#[derive(Debug, Clone)]
+pub struct DutchBookContext<'a> {
+    pub metrics: &'a StrategyMetrics,
+}
+
+/// Faz 14'te doldurulacak. Şu anda herhangi bir aksiyon üretmez.
+pub fn decide(state: DutchBookState, _ctx: &DutchBookContext) -> (DutchBookState, Decision) {
+    tracing::warn!("dutch_book stratejisi henüz implement edilmedi (strategies.md §1 TBD)");
+    (state, Decision::NoOp)
+}
