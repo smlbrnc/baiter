@@ -147,9 +147,74 @@ frontend_tx.send(FrontendEvent::OrderPlaced(resp));
 
 Frontend 1 sn polling ile özet verileri okur (§2); ancak **kritik olaylar (emir gönderimi, fill, PnL değişimi) bu polling'i beklemez:**
 
-- Bot, emir gönderdikten hemen sonra `broadcast` channel'ına `FrontendEvent` yazar.
-- Supervisor bu event'i SSE (Server-Sent Events) veya WebSocket üzerinden frontend'e **anında iletir**.
+- Bot, emir gönderdikten hemen sonra kritik olayı **stdout'a structured JSON satırı** olarak yazar.
+- Supervisor log-tail task'ı bu satırı parse eder ve process-local `broadcast::channel`'a iletir.
+- API katmanı SSE (Server-Sent Events) üzerinden frontend'e **anında iletir**.
 - 1 sn polling **sadece** özet/durum ekranı için; **kritik olay akışı push** ile taşınır.
+
+#### 5.1 IPC Mekanizması — stdout JSON Satırı
+
+**Neden stdout?** §1 IPC bölümü Unix Domain Socket'i ve direkt stdin boru hattını yasaklar; `tokio::sync::broadcast` yalnız process-local çalışır (ayrı PID'ler arasında geçersiz). Mevcut log pipe (`ChildStdout`) zaten supervisor tarafından okunuyor — kritik event'ler aynı kanalda **`[[EVENT]]` prefix'li** satırlar olarak taşınır.
+
+**Bot tarafı (emit):**
+
+```
+[[EVENT]] {"kind":"OrderPlaced","bot_id":7,"order_id":"0xff35...","order_type":"GTC","side":"SELL","price":0.57,"size":10,"ts_ms":1766789469958}
+```
+
+- Prefix (`[[EVENT]] `) regular log satırlarından ayırmak için zorunlu.
+- JSON tek satır (newline-delimited); büyük payload yok.
+- Bot bu satırı `tokio::spawn` ile arka plan işi değil, **inline `println!` ile emir yanıtından hemen sonra** yazar.
+
+**Supervisor tarafı (parse + broadcast):**
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  bot PID                                                        │
+│    strategy decision → POST /order → yanıt alındı               │
+│         │                                                       │
+│         ├── tokio::spawn(db.upsert_order(...))       (Kural 4)  │
+│         └── println!("[[EVENT]] {\"kind\":\"OrderPlaced\",...")  │
+│                             │                                   │
+└─────────────────────────────┼───────────────────────────────────┘
+                              │ stdout pipe (ChildStdout)
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  supervisor PID — log_tail task                                 │
+│    satır in: `[[EVENT]] {...}` prefix ise                       │
+│      → parse FrontendEvent                                      │
+│      → app_state.event_tx.send(ev)                              │
+│        (tokio::sync::broadcast, process-local)                  │
+│    değilse → SQLite logs tablosuna yaz                          │
+└─────────────────────────────┬───────────────────────────────────┘
+                              │ broadcast subscribe
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  API SSE handler (GET /api/events)                              │
+│    event_rx.recv() → sse Event::data(json) → frontend           │
+└─────────────────────────────┬───────────────────────────────────┘
+                              │ EventSource
+                              ▼
+                          frontend useSSE hook
+```
+
+**Toplam gecikme hedefi:** < 5 ms (bot println → frontend EventSource onmessage).
+
+#### 5.2 `FrontendEvent` Varyantları
+
+Supervisor'un `broadcast` kanalında taşıdığı ve SSE ile frontend'e ilettiği event türleri:
+
+| Varyant | Tetiklenme | Alanlar |
+|---|---|---|
+| `OrderPlaced` | POST /order yanıtı alındıktan hemen sonra | `bot_id, order_id, order_type, side, price, size, ts_ms` |
+| `Fill` | User WS `trade` event'i (MATCHED + sonraki status güncellemeleri) | `bot_id, trade_id, size, price, outcome, status, ts_ms` |
+| `PnLUpdate` | Yalnız MATCHED trade sonrası (cost_basis/shares değişince) | `bot_id, session_id, pnl_if_up, pnl_if_down, ts_ms` |
+| `BotStateChanged` | Supervisor spawn/crash/stop | `bot_id, state (RUNNING/STOPPED/FAILED)` |
+| `BestBidAsk` | Market WS `best_bid_ask` (opsiyonel, chart için) | `bot_id, side (YES/NO), best_bid, best_ask, spread, ts_ms` |
+
+**Push edilmeyenler:**
+- `mtm_pnl` değişimleri → §17 kuralına göre 1 sn polling ile okunur (her `best_bid_ask` event'inde push frontend'i boğar).
+- Orderbook `book` snapshot'ları → frontend göstermediği için push edilmez; yalnız DB'ye yazılır.
 
 ### Kural 6 — WS Okuyucu Önceliği
 
@@ -187,6 +252,21 @@ Kullanıcı yeni bot oluştururken **hangi event/metin (ör. “BTC 15dk”)** v
 - **Bot başına:** Kayıtta **Polymarket kimlik bilgisi** (API key seti, adres, private key vb.) **tanımlıysa** yalnızca **o bot** için bu değerler kullanılır; emir ve trade bu kimlikle yapılır.
 - **Tanımlı değilse** sunucu `.env` varsayılanı kullanılır.
 - **Tek `.env` ile çoklu bot:** Aynı ortam dosyasından beslenen birden fazla bot oluşturulabilir; kimlik çakışması olmaması için **bot başına ayrı key** tanımlamak üretimde tercih edilir. Ayarlarda key verilmiş botlar **yalnızca config’teki** değerlerle trade eder.
+
+#### Credential saklama politikası
+
+Per-bot kimlik bilgileri **SQLite `bot_credentials` tablosunda plaintext** olarak tutulur (şema için bkz. §9a):
+
+- Frontend bot oluşturma formundan girilen `poly_address`, `poly_api_key`, `poly_passphrase`, `poly_secret`, `polygon_private_key` bu tabloya yazılır.
+- Bot başlatılırken öncelik sırası: (1) `bot_credentials` tablosundaki bot-spesifik kayıt; (2) `.env` fallback (POLY_ADDRESS, POLY_API_KEY, POLY_PASSPHRASE, POLY_SECRET, POLYGON_PRIVATE_KEY).
+- Bir bot silindiğinde `ON DELETE CASCADE` ile credential kaydı da silinir.
+
+**Güvenlik notu:** `polygon_private_key` **plaintext** saklanır — tehdit modeli lokal geliştirme / tek kullanıcılı sunucu senaryosudur. Üretimde ek önlemler gerekir:
+
+- `chmod 600 data/baiter.db` — DB dosyası sadece sahibi okuyabilsin.
+- Ayrı sistem kullanıcısı (`baiter`) ile supervisor süreci çalıştırılmalı; DB dizini o kullanıcıya ait olmalı.
+- Full-disk encryption (LUKS, FileVault) öneriliyor.
+- Tehdit modeli değişirse (paylaşımlı host, çoklu operatör) **AES-GCM alan-seviyesi şifreleme** eklenir; anahtar OS keyring veya KMS'den okunur. Bu genişletme şu an kapsam dışı.
 
 ### CLOB alanları ve UP/DOWN (resmi şema ile uyum)
 
@@ -789,6 +869,49 @@ Kalıcı emir izi **User WS `order`** ve **`POST /order`** / **`DELETE /order`**
 
 ---
 
+## 9a. SQLite — `bot_credentials` (per-bot kimlik saklama)
+
+Frontend'den girilen Polymarket credential'ları bot başına bu tabloda tutulur. §1 "Kimlik ve cüzdan" altındaki öncelik sırası: bu tablodaki kayıt → `.env` fallback.
+
+```sql
+CREATE TABLE bot_credentials (
+    bot_id               INTEGER PRIMARY KEY REFERENCES bots(id) ON DELETE CASCADE,
+    poly_address         TEXT,           -- Polymarket proxy / owner address
+    poly_api_key         TEXT,           -- L2 API key UUID
+    poly_passphrase      TEXT,           -- L2 passphrase
+    poly_secret          TEXT,           -- L2 secret (HMAC için)
+    polygon_private_key  TEXT,           -- L1 EIP-712 signing key (plaintext)
+    poly_signature_type  INTEGER DEFAULT 0,   -- 0 = EOA, 1 = proxy, 2 = gnosis safe
+    poly_funder          TEXT,           -- proxy/safe için funder adresi
+    updated_at           INTEGER NOT NULL     -- unix ms
+);
+```
+
+**Alan anlamları:**
+
+| Alan | Kaynak | Kullanım |
+|---|---|---|
+| `bot_id` | `bots.id` FK | Bir bot silinirse credential de silinir (`ON DELETE CASCADE`) |
+| `poly_address` | [Auth overview](https://docs.polymarket.com/trading/clob-api/authentication) | L1 header `POLY_ADDRESS` |
+| `poly_api_key` | `POST /auth/api-key` veya `POST /auth/derive-api-key` | L2 header `POLY_API_KEY` |
+| `poly_passphrase` | Aynı kaynak | L2 header `POLY_PASSPHRASE` |
+| `poly_secret` | Aynı kaynak | HMAC-SHA256 base64 URL_SAFE anahtarı |
+| `polygon_private_key` | Kullanıcı cüzdanı | EIP-712 order imzalama (plaintext; bkz. §1 güvenlik notu) |
+| `poly_signature_type` | [Order signing](https://docs.polymarket.com/trading/orders/signing) | 0 = direct EOA; 1 = Polymarket proxy; 2 = Gnosis Safe |
+| `poly_funder` | Proxy/Safe senaryosu | `signatureType ≠ 0` için zorunlu |
+
+**Okuma:**
+
+```sql
+SELECT * FROM bot_credentials WHERE bot_id = ?;
+```
+
+Bot başlatılırken bu sorgu çalıştırılır; sonuç boşsa `.env` okunur.
+
+**Güvenlik:** bkz. §1 "Credential saklama politikası" — plaintext saklama gerekçesi ve OS düzeyi koruma önerileri.
+
+---
+
 ## 9. SQLite — `market_resolved` (tek kaynak: resmi WebSocket)
 
 **Resmi dokümantasyon:** [Market Channel (WebSocket)](https://docs.polymarket.com/market-data/websocket/market-channel) — (`developers/CLOB/...` eski yolu yönlendirme ile açılabilir; kanonik sayfa `market-data` altındadır.)
@@ -1339,6 +1462,78 @@ impl MarketPnL {
 ### SQLite Kalıcılığı
 
 `MarketPnL` alanları market oturumu tablosunda ayrı sütunlar olarak tutulabilir **veya** her MATCHED trade satırından türetilebilir (her iki yaklaşım da desteklenir; öneri: in-memory + periyodik snapshot). Market çözümü (`market_resolved`) geldiğinde nihai `pnl_if_up` ya da `pnl_if_down` (kazanan outcome'a göre) SQLite'a `realized_pnl` olarak yazılır.
+
+---
+
+## 18. Runtime Konfigürasyonu
+
+Sistem davranışını değiştiren tüm ayar değerleri **çevre değişkenleri** üzerinden verilir; `.env` dosyası lokal geliştirme için fallback sağlar. Kod içinde hardcoded path, port veya URL yoktur.
+
+### 18.1 Çevre Değişkenleri
+
+| Anahtar | Varsayılan | Açıklama |
+|---|---|---|
+| `PORT` | `3000` | Supervisor Axum HTTP sunucusunun dinlediği port |
+| `RUST_LOG` | `info` | `tracing-subscriber` env-filter (ör. `info,baiter=debug`) |
+| `DB_PATH` | `./data/baiter.db` | SQLite dosya yolu; dizin yoksa start-up'ta oluşturulur (WAL mode: `PRAGMA journal_mode=WAL`) |
+| `BOT_BINARY` | Debug: `./target/debug/bot`; Release: `./target/release/bot` | Supervisor'un spawn edeceği bot binary yolu |
+| `HEARTBEAT_DIR` | `./data/heartbeat` | `<bot_id>.heartbeat` dosyalarının dizini; dizin yoksa oluşturulur |
+| `GAMMA_BASE_URL` | `https://gamma-api.polymarket.com` | Market keşif REST base URL |
+| `CLOB_BASE_URL` | `https://clob.polymarket.com` | CLOB REST base URL; staging için `https://clob-staging.polymarket.com` |
+| `POLYGON_CHAIN_ID` | `137` | EIP-712 domain chain ID (Polygon mainnet) |
+| `POLY_ADDRESS` | — | Fallback L1 address (bot-spesifik yoksa) |
+| `POLY_API_KEY` | — | Fallback L2 API key UUID |
+| `POLY_PASSPHRASE` | — | Fallback L2 passphrase |
+| `POLY_SECRET` | — | Fallback L2 secret (HMAC key) |
+| `POLYGON_PRIVATE_KEY` | — | Fallback L1 signing private key |
+
+**Kimlik çözümleme önceliği:** Bot başlatılırken önce SQLite `bot_credentials` tablosundan bot-spesifik kayıt okunur (§9a); yoksa yukarıdaki `POLY_*` / `POLYGON_PRIVATE_KEY` fallback değerleri kullanılır. Her iki kaynak da boşsa bot başlatılamaz (`AppError::MissingCredentials`).
+
+**Runtime path override:** Docker, systemd veya farklı deployment senaryolarında `DB_PATH`, `BOT_BINARY`, `HEARTBEAT_DIR` override edilebilir; kod bu path'leri varsayılan yerine environment'tan okur.
+
+### 18.2 Graceful Shutdown (SIGTERM)
+
+Supervisor botu durdururken önce **SIGTERM** gönderir; ardından 10 sn timeout sonrası SIGKILL ile sonlandırır. Bot SIGTERM handler'ı aşağıdaki sırayı uygular:
+
+1. **WS bağlantılarını kapat** — Market WS ve User WS subscribe task'larına shutdown sinyali; `ws.close()` çağrısı.
+2. **Açık emirleri temizle** — `DELETE /orders` ile tüm açık GTC order'ları iptal et (§1 "temiz durdurma" kuralı). GTD ve FOK/FAK emirleri zaten kısa ömürlüdür; iptal gerekmez.
+3. **REST heartbeat döngüsünü durdur** — CLOB heartbeat task'ını (§4.1) sonlandır; son heartbeat'i gönderip çık.
+4. **Stdout flush + exit 0** — Tüm pending `[[EVENT]]` satırlarını flush et; exit code 0 ile çık (supervisor crash loop sayacına eklemez; kullanıcı kaynaklı stop olarak işaretlenir).
+
+Exit code 0 olmayan çıkışlar (panic, `AppError`) supervisor tarafından crash olarak değerlendirilir ve exponential backoff ile yeniden başlatılır.
+
+**Rust taslağı:**
+
+```rust
+#[tokio::main]
+async fn main() -> Result<(), AppError> {
+    let mut sigterm = tokio::signal::unix::signal(SignalKind::terminate())?;
+
+    tokio::select! {
+        result = run_bot() => result,
+        _ = sigterm.recv() => {
+            tracing::info!("SIGTERM received, graceful shutdown");
+            shutdown().await?;
+            Ok(())
+        }
+    }
+}
+
+async fn shutdown() -> Result<(), AppError> {
+    // 1. WS aboneliklerini kapat
+    WS_SHUTDOWN.store(true, Ordering::SeqCst);
+
+    // 2. Açık GTC emirlerini temizle
+    clob::delete_all_orders(&http_client, &auth).await?;
+
+    // 3. Heartbeat döngüsü shutdown (drop Arc<AtomicBool>)
+    HEARTBEAT_SHUTDOWN.store(true, Ordering::SeqCst);
+
+    // 4. Stdout flush
+    std::io::Write::flush(&mut std::io::stdout())?;
+    Ok(())
+}
+```
 
 ---
 

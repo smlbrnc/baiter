@@ -15,15 +15,19 @@
 | **Rust düzeni** | **Tek crate, 2 binary** (`src/bin/supervisor.rs`, `src/bin/bot.rs`) + paylaşılan `src/lib.rs` | Workspace overhead'i yok; aynı lib her iki binary için tek derlemede hazır. Kod ayrımı dizin yerine **binary dosyaları** ile sağlanır. |
 | **Modül granülerliği** | **Geniş modüller** (1 konu = 1 dosya; `mod.rs` zinciri yok) | Az dosya = hızlı navigasyon; küçük helper'lar ayrı dosyaya taşınmaz |
 | **SQLite** | `sqlx` (async, compile-time query, migrations) | Fire-and-forget yazım (§Kural 4) + async uyumu |
-| **Frontend** | React + Vite + TypeScript, **düz yapı** | Tek `api.ts`, tek `hooks.ts` |
+| **Frontend** | React + Vite + TypeScript + **shadcn/ui** + Tailwind | Form/tablo/modal = shadcn'in güçlü alanı; copy-paste ownership (runtime bloat yok); dark mode ücretsiz |
+| **Chart stack** | **lightweight-charts** (TradingView) canlı akış + shadcn `Chart` özet | Canvas tabanlı; 1000+ nokta real-time; kriptonun standart kütüphanesi (Apache 2.0) |
+| **PriceChart yerleşimi** | Tek chart / 4 Line: `YES bid` (yeşil kalın), `YES ask` (yeşil ince), `NO bid` (kırmızı kalın), `NO ask` (kırmızı ince). X-ekseni = Gamma `startDate`→`endDate`; tick = WS `timestamp` | YES↔NO komplementerliği (toplam ≈ 1) tek bakışta; bid/ask kalınlık konvansiyonu |
+| **SpreadChart yerleşimi** | Ayrı chart / 2 Histogram: YES spread (yeşil), NO spread (kırmızı) | Fiyat ölçeğinden (`0-1`) ayrı eksen; likidite göstergesi PriceChart'ı kalabalıklaştırmaz |
+| **Polymarket WS → chart map** | Her `best_bid_ask` event'i **tek `asset_id`** içindir; YES ve NO iki ayrı event akışı; backend `side: YES\|NO` olarak normalize eder | Ham API alanları: `best_bid`, `best_ask`, `spread`, `timestamp` (ms) — "up_bid" gibi alanlar yok |
 | **HTTP sunucu** | Axum 0.8.9 | Mevcut [Cargo.toml](../Cargo.toml) zaten içeriyor |
 | **WebSocket** | `tokio-tungstenite` | Market + User + Binance aggTrade |
 | **EIP-712 imza** | `alloy` 2.0.0 | CLOB order signing + L1 auth |
 | **HMAC-SHA256** | `hmac` + `sha2` + `base64` (URL_SAFE) | L2 auth header |
 | **CLOB SDK** | **Elle entegrasyon** | Tam kontrol (§⚡ Kural 3) |
-| **Kritik event push (bot→supervisor)** | **stdout JSON satırı** (`[[EVENT]] {json}`) | §1 IPC kısıtlamasıyla uyumlu; broadcast channel iki process arası çalışmaz. Gecikme <5 ms (§⚡ Kural 5) |
-| **Credential saklama** | SQLite `bot_credentials` tablosunda **plaintext** (lokal disk) | Frontend form'undan giriş; `POLYGON_PRIVATE_KEY` env fallback |
-| **Runtime path'ler** | **Env var'lı** (`DB_PATH`, `BOT_BINARY`) + default fallback | `.env` override, Docker/deploy esnekliği |
+| **Kritik event push (bot→supervisor)** | stdout JSON satırı (`[[EVENT]] {json}`) | Mekanizma + akış diyagramı + `FrontendEvent` varyantları: bkz. [mimari §⚡ Kural 5](bot-platform-mimari.md) |
+| **Credential saklama** | SQLite `bot_credentials` tablosunda **plaintext**; `.env` fallback | Politika + güvenlik notu + DDL: bkz. [mimari §1 Kimlik ve cüzdan](bot-platform-mimari.md) + [§9a bot_credentials](bot-platform-mimari.md) |
+| **Runtime path'ler** | Çevre değişkenleri (`DB_PATH`, `BOT_BINARY`, `HEARTBEAT_DIR`) + default fallback | Tam anahtar listesi + SIGTERM shutdown: bkz. [mimari §18 Runtime Konfigürasyonu](bot-platform-mimari.md) |
 
 **Bırakılan / reddedilen alternatifler:**
 - ~~Cargo workspace (3 crate)~~ → Tek binary → ayrı PID modeli için yeterli; workspace'in getirdiği `Cargo.toml` x 4 overhead'i yok.
@@ -133,27 +137,48 @@ baiter-pro/
 │   ├── clob_auth.rs                 # HMAC URL_SAFE vektörleri (resmi rs-clob-client ile eş)
 │   └── dryrun_flow.rs               # RunMode::DryRun uçtan uca simülasyon
 │
-├── frontend/                        # React + Vite + TS (düz yapı)
+├── frontend/                        # React + Vite + TS + shadcn/ui + Tailwind
 │   ├── package.json
 │   ├── vite.config.ts               # Dev proxy: /api → supervisor
 │   ├── tsconfig.json
+│   ├── tailwind.config.ts           # shadcn tema
+│   ├── postcss.config.js
+│   ├── components.json              # shadcn CLI config (style, alias yolları)
 │   ├── index.html
 │   ├── .env.example                 # VITE_API_BASE_URL
 │   └── src/
 │       ├── main.tsx
-│       ├── App.tsx                  # Router
+│       ├── App.tsx                  # Router + Theme provider
+│       ├── index.css                # Tailwind directives + shadcn CSS değişkenleri
 │       ├── api.ts                   # fetch wrapper + EventSource (SSE)
 │       ├── types.ts                 # Backend DTO'ları (Bot, Order, Trade, PnL, Log)
 │       ├── hooks.ts                 # useBots (1s polling) + useSSE + usePnL
-│       ├── pages/
-│       │   ├── Dashboard.tsx        # Bot listesi
-│       │   ├── NewBot.tsx           # Bot oluştur formu
-│       │   └── BotDetail.tsx        # Detay + loglar + PnL
-│       └── components/
-│           ├── BotForm.tsx          # slug, strategy, run_mode, order_usdc, signal_weight
-│           ├── LogStream.tsx        # SSE live tail
-│           ├── PnLWidget.tsx        # pnl_if_up/down + mtm_pnl
-│           └── MetricsPanel.tsx     # imbalance, AVG SUM, POSITION Δ, signal, zone
+│       ├── lib/
+│       │   └── utils.ts             # cn() helper (clsx + tailwind-merge; shadcn standart)
+│       ├── components/
+│       │   ├── ui/                  # shadcn CLI ile eklenen komponentler
+│       │   │   ├── button.tsx
+│       │   │   ├── input.tsx
+│       │   │   ├── form.tsx
+│       │   │   ├── select.tsx
+│       │   │   ├── dialog.tsx
+│       │   │   ├── table.tsx
+│       │   │   ├── badge.tsx
+│       │   │   ├── progress.tsx
+│       │   │   ├── scroll-area.tsx
+│       │   │   ├── sonner.tsx       # toast
+│       │   │   ├── card.tsx
+│       │   │   └── tabs.tsx
+│       │   ├── BotForm.tsx          # shadcn Form; slug, strategy, run_mode, order_usdc, signal_weight
+│       │   ├── BotList.tsx          # shadcn Table + Badge (bot durumu)
+│       │   ├── LogStream.tsx        # shadcn ScrollArea + SSE live tail
+│       │   ├── PriceChart.tsx       # lightweight-charts — tek chart / 4 line: YES bid+ask, NO bid+ask
+│       │   ├── SpreadChart.tsx      # lightweight-charts — ayrı chart: YES spread + NO spread (histogram)
+│       │   ├── PnLChart.tsx         # lightweight-charts (pnl_if_up/down/mtm çoklu seri)
+│       │   ├── SignalChart.tsx      # lightweight-charts (binance_signal 0-10)
+│       │   ├── MetricsPanel.tsx     # imbalance, AVG SUM, POSITION Δ özet kartları (Card)
+│       │   ├── PnLWidget.tsx        # pnl_if_up/down + mtm_pnl anlık sayısal
+│       │   └── ZoneTimeline.tsx     # MarketZone ilerleme göstergesi (Progress)
 │
 └── data/                            # Runtime artefaktları (gitignore)
     ├── baiter.db                    # SQLite (WAL)
@@ -161,6 +186,7 @@ baiter-pro/
 ```
 
 **Toplam kaynak dosya sayısı (Rust):** 19 (+ 3 integration test dosyası) — önceki 60+ dosyalık yapıdan çok daha kolay navigasyon.
+**Frontend:** 11 app dosyası + ~12 shadcn UI komponenti (CLI ile eklenir, elle yazılmaz).
 
 ---
 
@@ -195,22 +221,31 @@ baiter-pro/
 | `src/supervisor.rs` | Process spawn + backoff + heartbeat check + log-tail + `[[EVENT]]` → `broadcast` | supervisor |
 | `src/ipc.rs` | `FrontendEvent` enum, `[[EVENT]] {json}` serialize/parse, heartbeat dosya I/O | Hepsi |
 
-### Frontend (React)
+### Frontend (React + shadcn/ui + Tailwind + lightweight-charts)
 
 | Dosya | Sorumluluk |
 |---|---|
-| `src/main.tsx` | React kök |
-| `src/App.tsx` | Router |
+| `src/main.tsx` | React kök + StrictMode |
+| `src/App.tsx` | Router + ThemeProvider (dark mode) + `<Toaster />` (Sonner) |
+| `src/index.css` | Tailwind directives + shadcn CSS custom properties |
+| `src/lib/utils.ts` | `cn()` — shadcn standart helper (clsx + tailwind-merge) |
 | `src/api.ts` | `fetch` wrapper + `EventSource` (SSE) — tüm API çağrıları |
-| `src/types.ts` | Backend DTO ile aynı tipler |
-| `src/hooks.ts` | `useBots`, `useSSE`, `usePnL`, `useLogs` — tek dosyada |
-| `src/pages/Dashboard.tsx` | Bot listesi + özet |
-| `src/pages/NewBot.tsx` | Bot oluşturma |
-| `src/pages/BotDetail.tsx` | Bot detay (loglar + PnL + metrikler) |
-| `src/components/BotForm.tsx` | Strateji bazlı dinamik form |
-| `src/components/LogStream.tsx` | SSE canlı log akışı |
-| `src/components/PnLWidget.tsx` | pnl_if_up / pnl_if_down / mtm_pnl |
-| `src/components/MetricsPanel.tsx` | imbalance, AVG SUM, POSITION Δ, signal, zone badge |
+| `src/types.ts` | Backend DTO ile aynı tipler; `Market { start_date_ms, end_date_ms, condition_id, asset_id_yes, asset_id_no, tick_size, min_order_size }` ve `BestBidAskEvent { kind: "best_bid_ask", bot_id, side: "YES"\|"NO", best_bid, best_ask, spread, ts_ms }` dahil |
+| `src/hooks.ts` | `useBots` (1 sn polling), `useSSE`, `usePnL`, `useLogs`, `usePriceStream` |
+| `src/pages/Dashboard.tsx` | `BotList` + global PnL özeti |
+| `src/pages/NewBot.tsx` | `BotForm` full-page |
+| `src/pages/BotDetail.tsx` | Tabs: Overview (PriceChart + MetricsPanel) / Logs / PnL / Orders |
+| `src/components/ui/*` | shadcn CLI komponentleri (`button`, `input`, `form`, `select`, `dialog`, `table`, `badge`, `progress`, `scroll-area`, `sonner`, `card`, `tabs`) |
+| `src/components/BotForm.tsx` | Strateji bazlı dinamik form; Zod + react-hook-form |
+| `src/components/BotList.tsx` | Bot tablosu + status `Badge` + aksiyon menüsü |
+| `src/components/LogStream.tsx` | `ScrollArea` içinde SSE canlı log |
+| `src/components/PriceChart.tsx` | **lightweight-charts** — **tek chart / 4 Line**: `YES best_bid` (yeşil kalın), `YES best_ask` (yeşil ince), `NO best_bid` (kırmızı kalın), `NO best_ask` (kırmızı ince). X-ekseni Gamma `startDate`→`endDate`; tick = WS `timestamp`. `side` propu yok; her iki asset_id akışını tek komponent dinler |
+| `src/components/SpreadChart.tsx` | **lightweight-charts** — **ayrı chart / 2 Histogram**: `YES spread` (yeşil bar), `NO spread` (kırmızı bar). Aynı zaman ekseni (startDate→endDate). PriceChart'ın altında render edilir |
+| `src/components/PnLChart.tsx` | **lightweight-charts**: `pnl_if_up` / `pnl_if_down` / `mtm_pnl` çoklu line |
+| `src/components/SignalChart.tsx` | **lightweight-charts**: `binance_signal` 0-10 (area) |
+| `src/components/MetricsPanel.tsx` | `imbalance`, `AVG SUM`, `POSITION Δ` — shadcn `Card` grid |
+| `src/components/PnLWidget.tsx` | Anlık `pnl_if_up`/`down`/`mtm` sayısal gösterim |
+| `src/components/ZoneTimeline.tsx` | MarketZone ilerleme + 5 bölge `Badge`'i |
 
 ---
 
@@ -222,7 +257,7 @@ baiter-pro/
 | **Kural 2** — State önceden hazır | `src/strategy/metrics.rs` her WS event'inde `Arc<RwLock<StrategyMetrics>>` günceller |
 | **Kural 3** — Connection pooling | `src/polymarket/clob.rs` tek paylaşımlı `reqwest::Client` (pool_max_idle_per_host, tcp_nodelay) |
 | **Kural 4** — Fire-and-forget | `src/bin/bot.rs` emir sonrası `tokio::spawn` ile DB/log + `println!("[[EVENT]] ...")` |
-| **Kural 5** — Anlık push | **stdout JSON akışı**: bot `[[EVENT]] {json}` → supervisor `log_tail` parse → `broadcast::channel` → `src/api.rs` SSE handler → frontend `EventSource`. Gecikme: <5 ms |
+| **Kural 5** — Anlık push | Bot `println!("[[EVENT]] {json}")` → supervisor `src/supervisor.rs::log_tail` parse → `broadcast::channel` → `src/api.rs` SSE handler → frontend `EventSource`. Tam mekanizma + akış diyagramı + `FrontendEvent` varyantları: [mimari §⚡ Kural 5](bot-platform-mimari.md) |
 | **Kural 6** — WS okuyucu önceliği | `src/polymarket/ws.rs` mpsc ile engine'e; heartbeat ayrı `tokio::interval` task |
 
 ---
@@ -289,95 +324,323 @@ Tek `Cargo.toml`; workspace yok. `cargo run --bin supervisor` ve `cargo run --bi
 
 ---
 
-## 7. Kritik Event Push Akışı (§⚡ Kural 5)
+## 7. Frontend Stack (shadcn/ui + lightweight-charts)
 
-`tokio::sync::broadcast` iki **ayrı PID** arasında çalışmadığı için ve §1 IPC kısıtı UDS'yi yasakladığı için kritik olaylar **stdout üzerinden structured log satırı** olarak akar:
+### 7.1 `frontend/package.json` Taslağı
 
+```json
+{
+  "name": "baiter-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.0",
+    "react-hook-form": "^7.54.0",
+    "@hookform/resolvers": "^3.9.1",
+    "zod": "^3.24.0",
+    "@tanstack/react-query": "^5.62.0",
+    "lightweight-charts": "^5.0.0",
+    "lucide-react": "^0.468.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "tailwind-merge": "^2.5.5",
+    "tailwindcss-animate": "^1.0.7",
+    "sonner": "^1.7.1",
+    "next-themes": "^0.4.4"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.7.2",
+    "vite": "^6.0.0",
+    "tailwindcss": "^3.4.15",
+    "postcss": "^8.4.49",
+    "autoprefixer": "^10.4.20"
+  }
+}
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  bot PID                                                        │
-│    strategy decision → POST /order → yanıt alındı               │
-│         │                                                       │
-│         ├── tokio::spawn(db.upsert_order(...))       (Kural 4)  │
-│         └── println!("[[EVENT]] {\"type\":\"OrderPlaced\",...")  │
-│                             │                                   │
-└─────────────────────────────┼───────────────────────────────────┘
-                              │ stdout pipe (ChildStdout)
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  supervisor PID — log_tail task                                 │
-│    satır in: `[[EVENT]] {...}` prefix ise                       │
-│      → parse FrontendEvent                                      │
-│      → app_state.event_tx.send(ev)                              │
-│        (tokio::sync::broadcast, process-local)                  │
-│    değilse → SQLite logs tablosuna yaz                          │
-└─────────────────────────────┬───────────────────────────────────┘
-                              │ broadcast subscribe
-                              ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  src/api.rs SSE handler (GET /api/events)                       │
-│    event_rx.recv() → sse Event::data(json) → frontend           │
-└─────────────────────────────┬───────────────────────────────────┘
-                              │ EventSource
-                              ▼
-                          frontend useSSE hook
+
+> **shadcn/ui komponentleri** runtime dep değildir — `npx shadcn@latest add <component>` komutu `src/components/ui/*.tsx` dosyasını kopyalar ve gerekli Radix paketlerini (`@radix-ui/react-dialog`, `@radix-ui/react-slot` vb.) devDeps'e ekler. Hiçbir shadcn paketi kendi bağımlılık listenize gelmez.
+
+### 7.2 Kurulum Sırası
+
+```bash
+# 1. Vite + React + TS iskeleti
+npm create vite@latest frontend -- --template react-ts
+
+# 2. Tailwind kurulumu
+npm install -D tailwindcss postcss autoprefixer
+npx tailwindcss init -p
+
+# 3. shadcn init (components.json oluşturur)
+npx shadcn@latest init
+
+# 4. İhtiyaç duyulan komponentleri ekle (tek tek)
+npx shadcn@latest add button input form select dialog table badge \
+                       progress scroll-area sonner card tabs
+
+# 5. Diğer bağımlılıklar
+npm install lightweight-charts react-router-dom react-hook-form @hookform/resolvers zod \
+            @tanstack/react-query sonner next-themes lucide-react
 ```
 
-**Sınıflandırma** (`src/ipc.rs`'de `FrontendEvent` enum):
-- `OrderPlaced { bot_id, order_id, order_type, side, price, size }`
-- `Fill { bot_id, trade_id, size, price, outcome, status }` (MATCHED + sonraki status güncellemeleri)
-- `PnLUpdate { bot_id, session_id, pnl_if_up, pnl_if_down }` (yalnız MATCHED sonrası)
-- `BotStateChanged { bot_id, state }` (RUNNING/STOPPED/FAILED)
+### 7.3 shadcn Teması ve Dark Mode
 
-`mtm_pnl` değişimleri (`best_bid_ask` her event) push edilmez — §17 kuralına göre 1 sn polling ile okunur.
+- `next-themes` + shadcn'in varsayılan CSS değişkenleri = class tabanlı dark mode (`<html class="dark">`).
+- `lightweight-charts` renklerini CSS custom property'lere bağlayarak tema otomatik adapte olur (`var(--border)`, `var(--foreground)`).
+- shadcn default renk paleti (`slate` / `zinc` / `neutral`) — `components.json`'da seçilir.
+
+### 7.4 Chart Mimarisi — Hangi Kütüphane Nerede?
+
+| Grafik | Veri kaynağı | Güncelleme sıklığı | Kütüphane | Neden |
+|---|---|---|---|---|
+| **PriceChart** (4 line: YES bid/ask + NO bid/ask) | Market WS `best_bid_ask` → SSE (iki `asset_id` = YES & NO, ayrı akış); x-eksen domain'i Gamma `startDate`/`endDate`; tick = WS `timestamp` (ms → UTCTimestamp) | ~100 ms – 1 s | `lightweight-charts` (`LineSeries` × 4) | Tek chart'ta YES↔NO komplementerliği (toplam ≈ 1) net görünür |
+| **SpreadChart** (YES spread + NO spread Histogram) | Aynı `best_bid_ask` event'inden `spread` alanı | ~100 ms – 1 s | `lightweight-charts` (`HistogramSeries` × 2) | Fiyattan ayrı ölçek — çubuk yüksekliği likidite göstergesi |
+| **PnLChart** (`pnl_if_up` / `pnl_if_down`) | User WS `trade MATCHED` → SSE | Her fill | `lightweight-charts` multi-series line | Sık güncelleme + birden fazla seri |
+| **PnLChart → mtm_pnl** | `best_bid_ask` → 1 sn polling | 1 sn | `lightweight-charts` (aynı chart 3. seri) | Yüksek frekans canvas avantajı |
+| **SignalChart** (binance_signal 0-10) | Binance task → SSE (her trade) | Yüksek | `lightweight-charts` area chart | Yoğun veri |
+| **MetricsPanel** kartları | Hooks (polling + SSE) | 1 sn + push | shadcn `Card` (grafik değil) | Özet sayı |
+| **ZoneTimeline** | Client-side hesap (`zone_pct`) | 1 sn | shadcn `Progress` + `Badge` | Bölge ilerleme |
+| **Günlük/Haftalık PnL özeti** (ileride) | Backend özet endpoint | Statik | shadcn `Chart` (Recharts) | Düşük frekans, güzel tema |
+
+### 7.5 Polymarket `best_bid_ask` → Frontend DTO
+
+Resmi `best_bid_ask` WS event şeması — alanlar (`event_type`, `market`, `asset_id`, `best_bid`, `best_ask`, `spread`, `timestamp`) ve YES/NO'nun iki ayrı `asset_id` akışı olduğu kuralı için bkz. [api/polymarket-clob.md §Market Channel](api/polymarket-clob.md). Bot `asset_id`'yi Gamma `clobTokenIds` konvansiyonuna göre YES/NO'ya map'ler ve supervisor'a aşağıdaki normalize DTO'yu gönderir (SSE payload'ı):
+
+```jsonc
+// ipc.rs FrontendEvent::BestBidAsk  → GET /api/events
+{
+  "kind":     "best_bid_ask",
+  "bot_id":   7,
+  "side":     "YES",          // "YES" | "NO"
+  "best_bid": 0.73,
+  "best_ask": 0.77,
+  "spread":   0.04,
+  "ts_ms":    1766789469958   // WS `timestamp` string → u64
+}
+```
+
+Frontend bu DTO'yu `Math.floor(ts_ms/1000)` ile `UTCTimestamp`'e çevirip chart serilerine yazar.
+
+### 7.6 PriceChart — Tek Chart, 4 Line
+
+**Seriler** (tek `createChart` içinde, tek fiyat ekseni `0 – 1`):
+
+| # | Seri | Tür | Renk / kalınlık | Kaynak |
+|---|---|---|---|---|
+| 1 | `YES best_bid` | `LineSeries` | Yeşil (`#16a34a`), **kalın** (`lineWidth: 3`) | SSE `side="YES"` → `best_bid` |
+| 2 | `YES best_ask` | `LineSeries` | Yeşil (`#86efac`), **ince** (`lineWidth: 1`) | SSE `side="YES"` → `best_ask` |
+| 3 | `NO best_bid` | `LineSeries` | Kırmızı (`#dc2626`), **kalın** (`lineWidth: 3`) | SSE `side="NO"` → `best_bid` |
+| 4 | `NO best_ask` | `LineSeries` | Kırmızı (`#fca5a5`), **ince** (`lineWidth: 1`) | SSE `side="NO"` → `best_ask` |
+
+**X-ekseni** — market'in `startDate` → `endDate` aralığı (Gamma'dan `ISO 8601` → saniye çevrilip `setVisibleRange` ile **bir kez** uygulanır). `fixLeftEdge: true`, `fixRightEdge: true` ile domain sabitlenir; market canlıyken "şimdi" ile `endDate` arasında boş alan kalır — bu "ne kadar süre kaldı" hissini verir.
+
+**`PriceChart.tsx`**
+
+```typescript
+import {
+  createChart, LineSeries,
+  type IChartApi, type ISeriesApi, type UTCTimestamp,
+} from 'lightweight-charts';
+import { useEffect, useRef } from 'react';
+import { useSSE } from '@/hooks';
+import type { BestBidAskEvent } from '@/types';
+
+interface Props {
+  botId: number;
+  startDateIso: string; // Gamma market.startDate
+  endDateIso: string;   // Gamma market.endDate
+}
+
+export function PriceChart({ botId, startDateIso, endDateIso }: Props) {
+  const ref = useRef<HTMLDivElement>(null);
+  const chart = useRef<IChartApi | null>(null);
+  const yesBid = useRef<ISeriesApi<'Line'> | null>(null);
+  const yesAsk = useRef<ISeriesApi<'Line'> | null>(null);
+  const noBid  = useRef<ISeriesApi<'Line'> | null>(null);
+  const noAsk  = useRef<ISeriesApi<'Line'> | null>(null);
+
+  useEffect(() => {
+    if (!ref.current) return;
+
+    chart.current = createChart(ref.current, {
+      layout: { background: { color: 'transparent' }, textColor: 'var(--muted-foreground)' },
+      grid: {
+        vertLines: { color: 'var(--border)' },
+        horzLines: { color: 'var(--border)' },
+      },
+      rightPriceScale: {
+        borderVisible: false,
+        scaleMargins: { top: 0.08, bottom: 0.08 },
+      },
+      timeScale: {
+        timeVisible: true,
+        secondsVisible: true,
+        fixLeftEdge: true,
+        fixRightEdge: true,
+        rightBarStaysOnScroll: true,
+      },
+    });
+
+    yesBid.current = chart.current.addSeries(LineSeries, {
+      color: '#16a34a', title: 'YES bid', lineWidth: 3,
+    });
+    yesAsk.current = chart.current.addSeries(LineSeries, {
+      color: '#86efac', title: 'YES ask', lineWidth: 1,
+    });
+    noBid.current = chart.current.addSeries(LineSeries, {
+      color: '#dc2626', title: 'NO bid',  lineWidth: 3,
+    });
+    noAsk.current = chart.current.addSeries(LineSeries, {
+      color: '#fca5a5', title: 'NO ask',  lineWidth: 1,
+    });
+
+    const from = Math.floor(new Date(startDateIso).getTime() / 1000) as UTCTimestamp;
+    const to   = Math.floor(new Date(endDateIso).getTime()   / 1000) as UTCTimestamp;
+    chart.current.timeScale().setVisibleRange({ from, to });
+
+    return () => chart.current?.remove();
+  }, [startDateIso, endDateIso]);
+
+  useSSE<BestBidAskEvent>(botId, 'best_bid_ask', (ev) => {
+    const time = Math.floor(ev.ts_ms / 1000) as UTCTimestamp;
+    if (ev.side === 'YES') {
+      yesBid.current?.update({ time, value: ev.best_bid });
+      yesAsk.current?.update({ time, value: ev.best_ask });
+    } else {
+      noBid.current?.update({  time, value: ev.best_bid });
+      noAsk.current?.update({  time, value: ev.best_ask });
+    }
+  });
+
+  return <div ref={ref} className="h-[340px] w-full" />;
+}
+```
+
+**Tasarım kararları**
+
+- Tek chart'ta 4 line → YES↔NO komplementerliği (`price(YES) + price(NO) ≈ 1`) görsel olarak denetlenebilir.
+- Bid **kalın** / ask **ince** konvansiyonu: Bid → satışın karşılığı olan fiyat (pozisyon kapatma referansı); ask → alışın karşılığı (pozisyon açma referansı). Kalın çizgi "bizim çıkış fiyatımız" olarak vurgulanır.
+- Renk yarı-tonu (`#86efac` / `#fca5a5`) tema uyumlu pastel — dark mode'da da okunur.
+- YES ve NO farklı `asset_id` event akışı olsa bile tek `PriceChart` komponenti dinler; backend DTO `side` alanı ile yönlendirilir.
+
+### 7.7 SpreadChart — Ayrı Chart, 2 Histogram
+
+**Seriler** (tek `createChart` içinde, tek fiyat ekseni `0 – ~0.10`):
+
+| # | Seri | Tür | Renk | Kaynak |
+|---|---|---|---|---|
+| 1 | `YES spread` | `HistogramSeries` | Yeşil (`#16a34a`) | SSE `side="YES"` → `spread` |
+| 2 | `NO spread` | `HistogramSeries` | Kırmızı (`#dc2626`) | SSE `side="NO"` → `spread` |
+
+X-ekseni **PriceChart ile aynı** domain (startDate → endDate). İki chart dikey olarak hizalanır; `BotDetail` sayfasında PriceChart (yüksek) → SpreadChart (alçak) şeklinde üst üste render edilir.
+
+**`SpreadChart.tsx`**
+
+```typescript
+import {
+  createChart, HistogramSeries,
+  type IChartApi, type ISeriesApi, type UTCTimestamp,
+} from 'lightweight-charts';
+import { useEffect, useRef } from 'react';
+import { useSSE } from '@/hooks';
+import type { BestBidAskEvent } from '@/types';
+
+interface Props {
+  botId: number;
+  startDateIso: string;
+  endDateIso: string;
+}
+
+export function SpreadChart({ botId, startDateIso, endDateIso }: Props) {
+  const ref = useRef<HTMLDivElement>(null);
+  const chart = useRef<IChartApi | null>(null);
+  const yesSpread = useRef<ISeriesApi<'Histogram'> | null>(null);
+  const noSpread  = useRef<ISeriesApi<'Histogram'> | null>(null);
+
+  useEffect(() => {
+    if (!ref.current) return;
+
+    chart.current = createChart(ref.current, {
+      layout: { background: { color: 'transparent' }, textColor: 'var(--muted-foreground)' },
+      grid: {
+        vertLines: { color: 'var(--border)' },
+        horzLines: { color: 'var(--border)' },
+      },
+      rightPriceScale: {
+        borderVisible: false,
+        scaleMargins: { top: 0.1, bottom: 0.05 },
+      },
+      timeScale: {
+        timeVisible: true,
+        secondsVisible: true,
+        fixLeftEdge: true,
+        fixRightEdge: true,
+        rightBarStaysOnScroll: true,
+      },
+    });
+
+    yesSpread.current = chart.current.addSeries(HistogramSeries, {
+      color: '#16a34a',
+      title: 'YES spread',
+      priceFormat: { type: 'price', precision: 4, minMove: 0.0001 },
+    });
+    noSpread.current = chart.current.addSeries(HistogramSeries, {
+      color: '#dc2626',
+      title: 'NO spread',
+      priceFormat: { type: 'price', precision: 4, minMove: 0.0001 },
+    });
+
+    const from = Math.floor(new Date(startDateIso).getTime() / 1000) as UTCTimestamp;
+    const to   = Math.floor(new Date(endDateIso).getTime()   / 1000) as UTCTimestamp;
+    chart.current.timeScale().setVisibleRange({ from, to });
+
+    return () => chart.current?.remove();
+  }, [startDateIso, endDateIso]);
+
+  useSSE<BestBidAskEvent>(botId, 'best_bid_ask', (ev) => {
+    const time = Math.floor(ev.ts_ms / 1000) as UTCTimestamp;
+    if (ev.side === 'YES') {
+      yesSpread.current?.update({ time, value: ev.spread });
+    } else {
+      noSpread.current?.update({  time, value: ev.spread });
+    }
+  });
+
+  return <div ref={ref} className="h-[140px] w-full" />;
+}
+```
+
+### 7.8 BotDetail'de Yerleşim
+
+```tsx
+// pages/BotDetail.tsx (ilgili kısım)
+<div className="space-y-2">
+  <PriceChart  botId={bot.id} startDateIso={market.startDate} endDateIso={market.endDate} />
+  <SpreadChart botId={bot.id} startDateIso={market.startDate} endDateIso={market.endDate} />
+</div>
+```
+
+İki chart'ın **zaman eksenlerini senkronize** etmek istersen (bir chart'ta kaydırınca diğeri de kaysın) `lightweight-charts` v5 `timeScale().subscribeVisibleTimeRangeChange(...)` ile kolayca bağlanır; opsiyonel olarak v1'de eklenebilir.
+
+### 7.9 Notlar
+
+- `lightweight-charts` canvas tabanlı olduğu için React re-render'ı tetiklemez; `series.update()` imperative çağrısı milisaniye altı yenileme sağlar (§⚡ Kural 5 SSE push ile uyumlu).
+- Aynı `timestamp` değerine sahip iki event geldiğinde `update()` noktayı overwrite eder (hata vermez) — Polymarket saniye altı çoklu event yayınlayabildiği için önemlidir.
+- `startDate`/`endDate` alanları Gamma `GET /markets/{slug}` cevabından (`docs/api/polymarket-gamma.md:210-211, 378-379`) çekilir; `BotDetail` sayfası bu değerleri bot meta-verisi ile birlikte alır.
 
 ---
 
-## 8. Runtime Konfigürasyonu
-
-`.env` anahtarları ([.env.example](../.env.example) ile uyumlu; bu iskelet yeni anahtarları ekler):
-
-| Anahtar | Varsayılan | Kullanım |
-|---|---|---|
-| `PORT` | `3000` | Supervisor Axum HTTP port |
-| `RUST_LOG` | `info` | `tracing-subscriber` filter |
-| `DB_PATH` | `./data/baiter.db` | SQLite dosya yolu (WAL mode) |
-| `BOT_BINARY` | `./target/release/bot` (release) / `./target/debug/bot` (debug) | Supervisor'un spawn edeceği bot binary'si |
-| `HEARTBEAT_DIR` | `./data/heartbeat` | `bots/<id>.heartbeat` dosyalarının dizini |
-| `GAMMA_BASE_URL` | `https://gamma-api.polymarket.com` | [.env.example](../.env.example)'den |
-| `CLOB_BASE_URL` | `https://clob.polymarket.com` | [.env.example](../.env.example)'den |
-| `POLYGON_CHAIN_ID` | `137` | EIP-712 domain |
-| `POLY_ADDRESS` / `POLY_API_KEY` / `POLY_PASSPHRASE` / `POLY_SECRET` | — | **Fallback** credentials; per-bot override SQLite `bot_credentials`'tan |
-| `POLYGON_PRIVATE_KEY` | — | **Fallback** L1 signing key |
-
-**Kural (§1 "Kimlik çözümleme" ile uyumlu):** Önce SQLite `bot_credentials` tablosundan bot-spesifik kimlik okunur; yoksa `.env` fallback kullanılır.
-
-**Credential saklama (plaintext SQLite):**
-```sql
-CREATE TABLE bot_credentials (
-    bot_id           INTEGER PRIMARY KEY REFERENCES bots(id) ON DELETE CASCADE,
-    poly_address     TEXT,
-    poly_api_key     TEXT,
-    poly_passphrase  TEXT,
-    poly_secret      TEXT,
-    polygon_private_key  TEXT,     -- L1 signing key (plaintext)
-    poly_signature_type  INTEGER DEFAULT 0,
-    poly_funder      TEXT,
-    updated_at       INTEGER NOT NULL
-);
-```
-
-> **Güvenlik notu:** `polygon_private_key` plaintext — disk/FS düzeyinde koruma önerilir (`chmod 600 data/baiter.db`, kullanıcı izolasyonu). Tehdit modeli değişirse ileride AES-GCM ile şifreleme eklenebilir.
-
-**Graceful shutdown (SIGTERM):** `src/bin/bot.rs` `tokio::signal::unix::SignalKind::terminate()` dinler:
-1. Market WS ve User WS aboneliklerini kapat
-2. `DELETE /orders` ile açık GTC'leri temizle (§1 "temiz durdurma")
-3. REST heartbeat döngüsünü durdur
-4. `stdout` flush + exit code 0 (supervisor crash loop sayacına eklemez)
-
----
-
-## 9. Neden Sade?
+## 8. Neden Sade?
 
 | Karmaşık yapı | Sade yapı | Fark |
 |---|---|---|
@@ -396,7 +659,7 @@ Bunlar **kod layout'undan bağımsız**; dizin yapısı derleme zamanında çöz
 
 ---
 
-## 10. İmplementasyon Sırası (sade)
+## 9. İmplementasyon Sırası (sade)
 
 1. **Workspace temizliği:** Yeni Cargo.toml, `src/lib.rs`, `src/bin/{supervisor,bot}.rs` iskeletleri, migrations dizini
 2. **Temel tipler:** `config.rs`, `types.rs`, `slug.rs`, `error.rs`, `time.rs`
@@ -409,13 +672,16 @@ Bunlar **kod layout'undan bağımsız**; dizin yapısı derleme zamanında çöz
 9. **Engine:** `engine.rs` (market session + decision loop + simulator)
 10. **Bot binary:** `src/bin/bot.rs` runtime
 11. **Supervisor + API:** `supervisor.rs` + `api.rs` + `ipc.rs` + `src/bin/supervisor.rs`
-12. **Frontend:** React iskelet + `api.ts` + `hooks.ts` + sayfalar
-13. **Dutch book + Prism:** TBD bölümleri netleştikten sonra
-14. **Entegrasyon testi:** `clob-staging.polymarket.com`
+12. **Frontend iskelet:** Vite + React + TS + Tailwind + `shadcn init` + temel UI komponentleri (`button`, `form`, `input`, `table`, `card`, `tabs`, `sonner`)
+13. **Frontend data katmanı:** `api.ts` + `hooks.ts` (React Query + EventSource) + `types.ts`
+14. **Frontend sayfalar:** `Dashboard` (BotList) → `NewBot` (BotForm + Zod) → `BotDetail` (Tabs)
+15. **Chart komponentleri:** `PriceChart`, `PnLChart`, `SignalChart` — lightweight-charts + SSE `update()`
+16. **Dutch book + Prism:** TBD bölümleri netleştikten sonra
+17. **Entegrasyon testi:** `clob-staging.polymarket.com`
 
 ---
 
-## 11. Doküman Haritası
+## 10. Doküman Haritası
 
 | Konu | Kaynak |
 |---|---|
