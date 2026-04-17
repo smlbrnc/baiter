@@ -1,15 +1,9 @@
 //! Bot binary — supervisor tarafından `--bot-id <id>` ile spawn edilir.
 //!
-//! Sorumluluklar:
-//! - DB'den `BotConfig` + `Credentials` yükle (§9a).
-//! - Gamma ile aktif/gelecek market penceresini belirle (§0, §11).
-//! - `MarketSession` kur, Market WS + User WS + Binance sinyal task'larını başlat.
-//! - CLOB REST heartbeat döngüsü (§4.1).
-//! - Heartbeat dosyasını periyodik güncelle (§1 "crash loop" kuralı).
-//! - Stdout'a `[[EVENT]] …` JSON satırları emit et (§5.1).
-//! - SIGTERM: açık GTC emirleri iptal, WS kapat, exit 0 (§18.2).
-//!
-//! Referans: [docs/bot-platform-mimari.md §1 §4.1 §5 §18](../../../docs/bot-platform-mimari.md).
+//! Yapı:
+//! - Bir kez: DB/creds/clob/executor/sinyal/heartbeat task'ları kurulur.
+//! - Her market penceresi: `run_window` çağrılır; pencere bitince bir sonraki
+//!   pencereye geçilir. SIGTERM/SIGINT sırasında `graceful_shutdown` çalışır.
 
 use std::env;
 use std::path::PathBuf;
@@ -17,7 +11,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use baiter_pro::binance::{self, new_shared_state, SharedSignalState};
-use baiter_pro::config::RuntimeEnv;
+use baiter_pro::config::{BotConfig, Credentials, RuntimeEnv};
 use baiter_pro::db;
 use baiter_pro::engine::{
     absorb_trade_matched, execute, outcome_from_asset_id, update_best, Executor, MarketSession,
@@ -26,7 +20,7 @@ use baiter_pro::engine::{
 use baiter_pro::error::AppError;
 use baiter_pro::ipc::{self, FrontendEvent};
 use baiter_pro::polymarket::clob::{shared_http_client, ClobClient};
-use baiter_pro::polymarket::gamma::GammaClient;
+use baiter_pro::polymarket::gamma::{GammaClient, GammaMarket};
 use baiter_pro::polymarket::ws::{run_market_ws, run_user_ws, PolymarketEvent};
 use baiter_pro::slug::{parse_slug, Interval, SlugInfo};
 use baiter_pro::strategy::Decision;
@@ -34,7 +28,7 @@ use baiter_pro::time::{now_ms, now_secs};
 use baiter_pro::types::RunMode;
 use sqlx::SqlitePool;
 use tokio::fs;
-use tokio::signal::unix::{signal, SignalKind};
+use tokio::signal::unix::{signal, Signal, SignalKind};
 use tokio::sync::mpsc;
 use tokio::time::interval as tokio_interval;
 
@@ -92,6 +86,18 @@ fn parse_bot_id() -> Result<i64, AppError> {
         .map_err(|_| AppError::Config("BAITER_BOT_ID must be integer".into()))
 }
 
+/// Bot ömrü boyunca sabit kalan bağlam — pencereler arası paylaşılır.
+struct Ctx {
+    bot_id: i64,
+    cfg: BotConfig,
+    env_: RuntimeEnv,
+    pool: SqlitePool,
+    gamma: GammaClient,
+    creds: Option<Credentials>,
+    executor: Executor,
+    signal_state: SharedSignalState,
+}
+
 async fn run() -> Result<(), AppError> {
     let bot_id = parse_bot_id()?;
     env::set_var("BAITER_BOT_ID", bot_id.to_string());
@@ -99,17 +105,16 @@ async fn run() -> Result<(), AppError> {
     let env_ = RuntimeEnv::from_env()?;
     let pool = db::open(&env_.db_path).await?;
 
-    let row = db::get_bot(&pool, bot_id)
+    let cfg = db::get_bot(&pool, bot_id)
         .await?
-        .ok_or_else(|| AppError::Config(format!("bot id {bot_id} bulunamadı")))?;
-    let cfg = row.to_config()?;
+        .ok_or_else(|| AppError::Config(format!("bot id {bot_id} bulunamadı")))?
+        .to_config()?;
 
-    // Live modda credential zorunlu; DryRun'da gerek yok (simülatör kullanılır).
+    // Live modda credential zorunlu; DryRun'da gerek yok.
     let creds = match cfg.run_mode {
         RunMode::Live => Some(
             db::get_credentials(&pool, bot_id)
                 .await?
-                .or_else(|| env_.fallback_creds.clone())
                 .ok_or_else(|| AppError::Config("Live mod için credential yok".into()))?,
         ),
         RunMode::Dryrun => None,
@@ -117,18 +122,16 @@ async fn run() -> Result<(), AppError> {
 
     db::set_bot_state(&pool, bot_id, "RUNNING").await?;
 
-    let slug_info = parse_slug(&cfg.slug_pattern).or_else(|_| find_prefix_slug(&cfg.slug_pattern))?;
-
+    let slug = parse_slug(&cfg.slug_pattern).or_else(|_| prefix_slug(&cfg.slug_pattern))?;
     ipc::emit(&FrontendEvent::BotStarted {
         bot_id,
         name: cfg.name.clone(),
-        slug: slug_info.to_slug(),
+        slug: slug.to_slug(),
         ts_ms: now_ms(),
     });
 
     let http = shared_http_client();
     let gamma = GammaClient::new(http.clone(), env_.gamma_base_url.clone());
-    // Clob client yalnız Live modda gerekir (cancel_all, heartbeat, order post).
     let clob = creds.as_ref().map(|c| {
         Arc::new(ClobClient::new(
             http.clone(),
@@ -136,169 +139,213 @@ async fn run() -> Result<(), AppError> {
             Some(c.clone()),
         ))
     });
-
-    let market = resolve_market(&gamma, slug_info).await?;
-    let (yes_id, no_id) = market.parse_token_ids()?;
-    let condition_id = market.condition_id.clone().unwrap_or_default();
-    let tick_size = market.tick_size.unwrap_or(0.01);
-    let min_size = market.minimum_order_size.unwrap_or(5.0);
-
-    let session_id = db::upsert_market_session(
-        &pool,
-        bot_id,
-        &slug_info.to_slug(),
-        slug_info.ts as i64,
-        slug_info.end_ts() as i64,
-    )
-    .await?;
-    let _ = session_id;
-
-    let session = MarketSession {
-        yes_token_id: yes_id.clone(),
-        no_token_id: no_id.clone(),
-        condition_id: condition_id.clone(),
-        tick_size,
-        api_min_order_size: min_size,
-        start_ts: slug_info.ts,
-        end_ts: slug_info.end_ts(),
-        ..MarketSession::new(bot_id, slug_info.to_slug(), &cfg)
-    };
-
-    ipc::emit(&FrontendEvent::SessionOpened {
-        bot_id,
-        slug: slug_info.to_slug(),
-        start_ts: slug_info.ts,
-        end_ts: slug_info.end_ts(),
-        yes_token_id: yes_id.clone(),
-        no_token_id: no_id.clone(),
-    });
-
-    let signal_state = new_shared_state();
-
-    let (ev_tx, mut ev_rx) = mpsc::channel::<PolymarketEvent>(512);
-
-    tokio::spawn(run_market_ws(
-        env_.clob_ws_base.clone(),
-        vec![yes_id.clone(), no_id.clone()],
-        ev_tx.clone(),
-    ));
-
-    if let (Some(c), Some(cl)) = (creds.as_ref(), clob.as_ref()) {
-        tokio::spawn(run_user_ws(
-            env_.clob_ws_base.clone(),
-            c.clone(),
-            vec![condition_id.clone()],
-            ev_tx.clone(),
-        ));
-        tokio::spawn(clob_heartbeat_task(cl.clone()));
-    }
-
-    tokio::spawn(run_binance_task(
-        slug_info.asset.binance_symbol().to_string(),
-        slug_info.interval,
-        signal_state.clone(),
-    ));
-
-    let heartbeat_path = heartbeat_file_path(&env_.heartbeat_dir, bot_id);
-    tokio::spawn(heartbeat_file_task(heartbeat_path));
-
     let executor = match clob.as_ref() {
         Some(cl) => Executor::Live(cl.clone()),
         None => Executor::DryRun(Simulator),
     };
+
+    let signal_state = new_shared_state();
+    tokio::spawn(binance_task(slug.asset.binance_symbol().to_string(), slug.interval, signal_state.clone()));
+    tokio::spawn(heartbeat_task(heartbeat_path(&env_.heartbeat_dir, bot_id)));
+    if let Some(cl) = clob.as_ref() {
+        tokio::spawn(clob_heartbeat_task(cl.clone()));
+    }
 
     let mut sigterm =
         signal(SignalKind::terminate()).map_err(|e| AppError::Config(format!("sigterm: {e}")))?;
     let mut sigint =
         signal(SignalKind::interrupt()).map_err(|e| AppError::Config(format!("sigint: {e}")))?;
 
+    let ctx = Ctx {
+        bot_id,
+        cfg,
+        env_,
+        pool,
+        gamma,
+        creds,
+        executor,
+        signal_state,
+    };
+
+    let mut slug = slug;
+    loop {
+        match run_window(&ctx, slug, &mut sigterm, &mut sigint).await? {
+            Some(reason) => {
+                graceful_shutdown(&ctx, reason).await;
+                return Ok(());
+            }
+            None => slug = next_window(slug),
+        }
+    }
+}
+
+/// Pencereyi bir interval ileri kaydır; şimdi geride kalmışsak güncel sınıra snap.
+fn next_window(mut slug: SlugInfo) -> SlugInfo {
+    let secs = slug.interval.seconds();
+    slug.ts += secs;
+    let snap = (now_secs() / secs) * secs;
+    if slug.ts < snap {
+        slug.ts = snap;
+    }
+    slug
+}
+
+/// Tek bir market penceresini yönetir.
+///
+/// - `Ok(None)` → pencere normal bitti, bir sonrakine geç.
+/// - `Ok(Some(reason))` → SIGTERM/SIGINT, graceful shutdown iste.
+/// - `Err(_)` → fatal (üst katman bot'u yeniden başlatır).
+async fn run_window(
+    ctx: &Ctx,
+    slug: SlugInfo,
+    sigterm: &mut Signal,
+    sigint: &mut Signal,
+) -> Result<Option<&'static str>, AppError> {
+    let market = ctx.gamma.get_market_by_slug(&slug.to_slug()).await?;
+    let (yes_id, no_id) = market.parse_token_ids()?;
+    let condition_id = market.condition_id.clone().unwrap_or_default();
+
+    db::upsert_market_session(
+        &ctx.pool,
+        ctx.bot_id,
+        &slug.to_slug(),
+        slug.ts as i64,
+        slug.end_ts() as i64,
+    )
+    .await?;
+
+    let mut sess = build_session(ctx, slug, &market, &yes_id, &no_id, &condition_id);
+
+    ipc::emit(&FrontendEvent::SessionOpened {
+        bot_id: ctx.bot_id,
+        slug: slug.to_slug(),
+        start_ts: slug.ts,
+        end_ts: slug.end_ts(),
+        yes_token_id: yes_id.clone(),
+        no_token_id: no_id.clone(),
+    });
+
+    let (ev_tx, mut ev_rx) = mpsc::channel::<PolymarketEvent>(512);
+    let market_ws = tokio::spawn(run_market_ws(
+        ctx.env_.clob_ws_base.clone(),
+        vec![yes_id, no_id],
+        ev_tx.clone(),
+    ));
+    let user_ws = ctx.creds.as_ref().map(|c| {
+        tokio::spawn(run_user_ws(
+            ctx.env_.clob_ws_base.clone(),
+            c.clone(),
+            vec![condition_id],
+            ev_tx,
+        ))
+    });
+
     let mut tick_timer = tokio_interval(Duration::from_millis(500));
     let mut zone_timer = tokio_interval(Duration::from_secs(5));
-
-    let mut sess = session;
     let mut last_zone: Option<String> = None;
 
-    loop {
+    let result: Option<&'static str> = loop {
         tokio::select! {
-            _ = sigterm.recv() => {
-                tracing::info!("SIGTERM received, graceful shutdown");
-                graceful_shutdown(bot_id, &pool, &executor, "sigterm").await;
-                break;
-            }
-            _ = sigint.recv() => {
-                tracing::info!("SIGINT received, graceful shutdown");
-                graceful_shutdown(bot_id, &pool, &executor, "sigint").await;
-                break;
-            }
+            _ = sigterm.recv() => break Some("sigterm"),
+            _ = sigint.recv()  => break Some("sigint"),
             Some(ev) = ev_rx.recv() => {
-                handle_event(&mut sess, &pool, &signal_state, bot_id, ev).await;
+                handle_event(&mut sess, &ctx.pool, ctx.bot_id, ev).await;
             }
-            _ = tick_timer.tick() => {
-                let decision = sess.tick(&cfg, now_ms());
-                if !matches!(decision, Decision::NoOp) {
-                    let outcomes = execute(&mut sess, &executor, decision).await;
-                    if let Ok(list) = outcomes {
-                        for ex in list {
-                            if ex.filled {
-                                ipc::emit(&FrontendEvent::OrderPlaced {
-                                    bot_id,
-                                    order_id: ex.order_id.clone(),
-                                    outcome: ex.planned.outcome,
-                                    side: ex.planned.side,
-                                    price: ex.planned.price,
-                                    size: ex.planned.size,
-                                    order_type: format!("{:?}", ex.planned.order_type),
-                                    ts_ms: now_ms(),
-                                });
-                            }
-                        }
-                    }
-                }
-            }
+            _ = tick_timer.tick() => tick(ctx, &mut sess).await,
             _ = zone_timer.tick() => {
-                let zone = sess.current_zone(now_secs());
-                let zone_str = format!("{zone:?}");
-                if last_zone.as_deref() != Some(zone_str.as_str()) {
-                    last_zone = Some(zone_str.clone());
-                    let pct = baiter_pro::time::zone_pct(sess.start_ts, sess.end_ts, now_secs());
-                    ipc::emit(&FrontendEvent::ZoneChanged {
-                        bot_id,
-                        zone: zone_str,
-                        zone_pct: pct,
-                        ts_ms: now_ms(),
-                    });
-                }
-                let snap = signal_state.read().await;
-                ipc::emit(&FrontendEvent::SignalUpdate {
-                    bot_id,
-                    symbol: slug_info.asset.binance_symbol().to_string(),
-                    signal_score: snap.signal_score,
-                    bsi: snap.bsi,
-                    ofi: snap.ofi,
-                    cvd: snap.cvd,
-                    ts_ms: now_ms(),
-                });
-                drop(snap);
+                emit_zone_signal(ctx, &sess, slug, &mut last_zone).await;
                 if now_secs() >= sess.end_ts {
-                    ipc::emit(&FrontendEvent::BotStopped {
-                        bot_id,
-                        ts_ms: now_ms(),
-                        reason: "window-ended".into(),
-                    });
-                    graceful_shutdown(bot_id, &pool, &executor, "window-ended").await;
-                    break;
+                    break None;
                 }
             }
         }
-    }
+    };
 
-    Ok(())
+    market_ws.abort();
+    if let Some(h) = user_ws {
+        h.abort();
+    }
+    if let Executor::Live(cl) = &ctx.executor {
+        if let Err(e) = cl.cancel_all().await {
+            tracing::warn!(error=%e, "cancel_all failed at window boundary");
+        }
+    }
+    Ok(result)
+}
+
+fn build_session(
+    ctx: &Ctx,
+    slug: SlugInfo,
+    market: &GammaMarket,
+    yes_id: &str,
+    no_id: &str,
+    condition_id: &str,
+) -> MarketSession {
+    MarketSession {
+        yes_token_id: yes_id.to_string(),
+        no_token_id: no_id.to_string(),
+        condition_id: condition_id.to_string(),
+        tick_size: market.tick_size.unwrap_or(0.01),
+        api_min_order_size: market.minimum_order_size.unwrap_or(5.0),
+        start_ts: slug.ts,
+        end_ts: slug.end_ts(),
+        ..MarketSession::new(ctx.bot_id, slug.to_slug(), &ctx.cfg)
+    }
+}
+
+async fn tick(ctx: &Ctx, sess: &mut MarketSession) {
+    let decision = sess.tick(&ctx.cfg, now_ms());
+    if matches!(decision, Decision::NoOp) {
+        return;
+    }
+    let Ok(list) = execute(sess, &ctx.executor, decision).await else {
+        return;
+    };
+    for ex in list.into_iter().filter(|e| e.filled) {
+        ipc::emit(&FrontendEvent::OrderPlaced {
+            bot_id: ctx.bot_id,
+            order_id: ex.order_id,
+            outcome: ex.planned.outcome,
+            side: ex.planned.side,
+            price: ex.planned.price,
+            size: ex.planned.size,
+            order_type: format!("{:?}", ex.planned.order_type),
+            ts_ms: now_ms(),
+        });
+    }
+}
+
+async fn emit_zone_signal(
+    ctx: &Ctx,
+    sess: &MarketSession,
+    slug: SlugInfo,
+    last_zone: &mut Option<String>,
+) {
+    let zone_str = format!("{:?}", sess.current_zone(now_secs()));
+    if last_zone.as_deref() != Some(zone_str.as_str()) {
+        *last_zone = Some(zone_str.clone());
+        ipc::emit(&FrontendEvent::ZoneChanged {
+            bot_id: ctx.bot_id,
+            zone: zone_str,
+            zone_pct: baiter_pro::time::zone_pct(sess.start_ts, sess.end_ts, now_secs()),
+            ts_ms: now_ms(),
+        });
+    }
+    let snap = ctx.signal_state.read().await;
+    ipc::emit(&FrontendEvent::SignalUpdate {
+        bot_id: ctx.bot_id,
+        symbol: slug.asset.binance_symbol().to_string(),
+        signal_score: snap.signal_score,
+        bsi: snap.bsi,
+        ofi: snap.ofi,
+        cvd: snap.cvd,
+        ts_ms: now_ms(),
+    });
 }
 
 async fn handle_event(
     sess: &mut MarketSession,
     pool: &SqlitePool,
-    _signal_state: &SharedSignalState,
     bot_id: i64,
     ev: PolymarketEvent,
 ) {
@@ -383,30 +430,19 @@ async fn handle_event(
                 ts_ms: now_ms(),
             });
         }
-        PolymarketEvent::Order { .. }
-        | PolymarketEvent::PriceChange { .. }
-        | PolymarketEvent::LastTradePrice { .. }
-        | PolymarketEvent::TickSizeChange { .. }
-        | PolymarketEvent::Disconnected { .. }
-        | PolymarketEvent::Reconnected => {}
+        _ => {}
     }
 }
 
-async fn graceful_shutdown(
-    bot_id: i64,
-    pool: &SqlitePool,
-    executor: &Executor,
-    reason: &str,
-) {
-    if let Executor::Live(clob) = executor {
-        match clob.cancel_all().await {
-            Ok(_) => tracing::info!("open orders canceled"),
-            Err(e) => tracing::warn!(error=%e, "cancel_all failed"),
+async fn graceful_shutdown(ctx: &Ctx, reason: &str) {
+    if let Executor::Live(clob) = &ctx.executor {
+        if let Err(e) = clob.cancel_all().await {
+            tracing::warn!(error=%e, "cancel_all failed");
         }
     }
-    let _ = db::set_bot_state(pool, bot_id, "STOPPED").await;
+    let _ = db::set_bot_state(&ctx.pool, ctx.bot_id, "STOPPED").await;
     ipc::emit(&FrontendEvent::BotStopped {
-        bot_id,
+        bot_id: ctx.bot_id,
         ts_ms: now_ms(),
         reason: reason.into(),
     });
@@ -414,24 +450,9 @@ async fn graceful_shutdown(
     let _ = std::io::stdout().flush();
 }
 
-async fn resolve_market(
-    gamma: &GammaClient,
-    slug: SlugInfo,
-) -> Result<baiter_pro::polymarket::gamma::GammaMarket, AppError> {
-    let exact = slug.to_slug();
-    if let Ok(m) = gamma.get_market_by_slug(&exact).await {
-        return Ok(m);
-    }
-    let prefix = baiter_pro::slug::SlugInfo::prefix(slug.asset, slug.interval);
-    let list = gamma.list_active_by_prefix(&prefix).await?;
-    list.into_iter()
-        .next()
-        .ok_or_else(|| AppError::Gamma(format!("aktif market bulunamadı: {prefix}")))
-}
-
 /// Kullanıcı ts'siz slug öneki (`btc-updown-5m-`) girdiyse şu andaki
 /// aktif pencereyi hesapla; `parse_slug`'a tam slug olarak ver.
-fn find_prefix_slug(pattern: &str) -> Result<SlugInfo, AppError> {
+fn prefix_slug(pattern: &str) -> Result<SlugInfo, AppError> {
     let parts: Vec<&str> = pattern.trim_end_matches('-').split('-').collect();
     let interval = parts
         .get(2)
@@ -445,23 +466,20 @@ fn find_prefix_slug(pattern: &str) -> Result<SlugInfo, AppError> {
     parse_slug(&format!("{}-{}-{}-{ts}", parts[0], parts[1], parts[2]))
 }
 
-fn heartbeat_file_path(dir: &str, bot_id: i64) -> PathBuf {
+fn heartbeat_path(dir: &str, bot_id: i64) -> PathBuf {
     let mut p = PathBuf::from(dir);
     p.push(format!("{bot_id}.heartbeat"));
     p
 }
 
-async fn heartbeat_file_task(path: PathBuf) {
+async fn heartbeat_task(path: PathBuf) {
     if let Some(parent) = path.parent() {
         let _ = fs::create_dir_all(parent).await;
     }
     let mut tick = tokio_interval(Duration::from_secs(5));
     loop {
         tick.tick().await;
-        let ts = now_ms().to_string();
-        if let Err(e) = fs::write(&path, ts.as_bytes()).await {
-            tracing::warn!(error=%e, "heartbeat write failed");
-        }
+        let _ = fs::write(&path, now_ms().to_string().as_bytes()).await;
     }
 }
 
@@ -475,6 +493,6 @@ async fn clob_heartbeat_task(clob: Arc<ClobClient>) {
     }
 }
 
-async fn run_binance_task(symbol: String, interval: Interval, state: SharedSignalState) {
+async fn binance_task(symbol: String, interval: Interval, state: SharedSignalState) {
     binance::run_binance_signal(&symbol, interval, state).await;
 }
