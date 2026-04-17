@@ -46,9 +46,9 @@ impl ClobClient {
     }
 
     fn creds(&self) -> Result<&Credentials, AppError> {
-        self.creds.as_deref().ok_or_else(|| {
-            AppError::Auth("credentials eksik (dry run? env?)".to_string())
-        })
+        self.creds
+            .as_deref()
+            .ok_or_else(|| AppError::Auth("credentials eksik (dry run? env?)".to_string()))
     }
 
     // ---------------------------- Public (no auth) ----------------------------

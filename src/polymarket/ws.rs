@@ -418,7 +418,9 @@ mod tests {
         });
         let ev = map_event(&raw).unwrap();
         match ev {
-            PolymarketEvent::BestBidAsk { best_bid, spread, .. } => {
+            PolymarketEvent::BestBidAsk {
+                best_bid, spread, ..
+            } => {
                 assert!((best_bid - 0.73).abs() < 1e-9);
                 assert!((spread - 0.04).abs() < 1e-9);
             }

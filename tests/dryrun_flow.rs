@@ -199,14 +199,15 @@ async fn single_leg_branch_when_only_yes_fills_in_book() {
     // up_bid ve down_bid öyle ki avg_sum > 0.98 → SingleLeg'e düşsün.
     // Ama simulator iki taraftaki emri de dolduruyor. Bunun yerine sadece metrics'i
     // elle ingest edelim ve OpenDualOpen → SingleLeg geçişini test edelim.
-    sess.metrics
-        .ingest_fill(Outcome::Up, 0.55, 10.0, 0.0);
+    sess.metrics.ingest_fill(Outcome::Up, 0.55, 10.0, 0.0);
     sess.harvest_state = HarvestState::OpenDualOpen;
 
     let dec = sess.tick(&cfg, now_ms());
     assert_eq!(
         sess.harvest_state,
-        HarvestState::SingleLeg { filled_side: Outcome::Up },
+        HarvestState::SingleLeg {
+            filled_side: Outcome::Up
+        },
         "yalnız YES dolmuşsa SingleLeg UP olmalı"
     );
     // Karar: no_best_ask=0.50, first_leg=0.55, sum=1.05 > 0.98 → ProfitLock yok; averaging şartı?

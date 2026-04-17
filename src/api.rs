@@ -38,14 +38,12 @@ pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/health", get(health))
         .route("/api/bots", get(list_bots).post(create_bot))
-        .route(
-            "/api/bots/{id}",
-            get(get_bot).delete(delete_bot),
-        )
+        .route("/api/bots/{id}", get(get_bot).delete(delete_bot))
         .route("/api/bots/{id}/start", post(start_bot))
         .route("/api/bots/{id}/stop", post(stop_bot))
         .route("/api/bots/{id}/logs", get(bot_logs))
         .route("/api/bots/{id}/pnl", get(bot_pnl))
+        .route("/api/bots/{id}/session", get(bot_session))
         .route("/api/events", get(events_sse))
         .layer(
             CorsLayer::new()
@@ -206,6 +204,32 @@ async fn bot_pnl(
                 "pnl_if_down": r.get::<f64, _>("pnl_if_down"),
                 "mtm_pnl": r.get::<f64, _>("mtm_pnl"),
                 "ts_ms": r.get::<i64, _>("ts_ms"),
+            })))
+        }
+        None => Ok(Json(Value::Null)),
+    }
+}
+
+async fn bot_session(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+) -> Result<Json<Value>, ApiError> {
+    let row = sqlx::query(
+        "SELECT slug, start_ts, end_ts, state FROM market_sessions \
+         WHERE bot_id = ? ORDER BY updated_at_ms DESC LIMIT 1",
+    )
+    .bind(id)
+    .fetch_optional(&state.pool)
+    .await
+    .map_err(|e| ApiError::Internal(e.to_string()))?;
+    match row {
+        Some(r) => {
+            use sqlx::Row as _;
+            Ok(Json(serde_json::json!({
+                "slug": r.get::<String, _>("slug"),
+                "start_ts": r.get::<i64, _>("start_ts"),
+                "end_ts": r.get::<i64, _>("end_ts"),
+                "state": r.get::<String, _>("state"),
             })))
         }
         None => Ok(Json(Value::Null)),

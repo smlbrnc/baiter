@@ -223,11 +223,7 @@ impl Executor {
 pub struct Simulator;
 
 impl Simulator {
-    pub fn fill(
-        &self,
-        session: &mut MarketSession,
-        planned: &PlannedOrder,
-    ) -> ExecutedOrder {
+    pub fn fill(&self, session: &mut MarketSession, planned: &PlannedOrder) -> ExecutedOrder {
         let fill_price = planned.price;
         let fill_size = planned.size;
         let fee = fill_price * fill_size * DRYRUN_FEE_RATE;
@@ -299,12 +295,7 @@ pub fn absorb_trade_matched(
 }
 
 /// Bir WS event'in ardından `best_bid_ask`'ı güncelle.
-pub fn update_best(
-    session: &mut MarketSession,
-    asset_id: &str,
-    best_bid: f64,
-    best_ask: f64,
-) {
+pub fn update_best(session: &mut MarketSession, asset_id: &str, best_bid: f64, best_ask: f64) {
     if asset_id == session.yes_token_id {
         session.yes_best_bid = best_bid;
         session.yes_best_ask = best_ask;

@@ -59,7 +59,12 @@ pub async fn start_bot(state: Arc<AppState>, bot_id: i64) -> Result<(), String> 
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     {
         let mut children = state.children.lock().await;
-        children.insert(bot_id, BotHandle { shutdown: shutdown_tx });
+        children.insert(
+            bot_id,
+            BotHandle {
+                shutdown: shutdown_tx,
+            },
+        );
     }
 
     let state2 = state.clone();

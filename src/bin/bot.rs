@@ -145,7 +145,11 @@ async fn run() -> Result<(), AppError> {
     };
 
     let signal_state = new_shared_state();
-    tokio::spawn(binance_task(slug.asset.binance_symbol().to_string(), slug.interval, signal_state.clone()));
+    tokio::spawn(binance_task(
+        slug.asset.binance_symbol().to_string(),
+        slug.interval,
+        signal_state.clone(),
+    ));
     tokio::spawn(heartbeat_task(heartbeat_path(&env_.heartbeat_dir, bot_id)));
     if let Some(cl) = clob.as_ref() {
         tokio::spawn(clob_heartbeat_task(cl.clone()));
@@ -201,26 +205,39 @@ async fn run_window(
     sigterm: &mut Signal,
     sigint: &mut Signal,
 ) -> Result<Option<&'static str>, AppError> {
+    // Gamma'nın `startDate` değeri market **yaratılma** zamanı (5dk oyuna
+    // ~24 saat önce), `endDate` ise resolution zamanı. Chart X ekseni için
+    // doğru kaynak slug'dan türetilen (ts, ts+interval) penceresidir.
     let market = ctx.gamma.get_market_by_slug(&slug.to_slug()).await?;
     let (yes_id, no_id) = market.parse_token_ids()?;
     let condition_id = market.condition_id.clone().unwrap_or_default();
+    let (start_ts, end_ts) = (slug.ts, slug.end_ts());
 
     db::upsert_market_session(
         &ctx.pool,
         ctx.bot_id,
         &slug.to_slug(),
-        slug.ts as i64,
-        slug.end_ts() as i64,
+        start_ts as i64,
+        end_ts as i64,
     )
     .await?;
 
-    let mut sess = build_session(ctx, slug, &market, &yes_id, &no_id, &condition_id);
+    let mut sess = build_session(
+        ctx,
+        slug,
+        &market,
+        &yes_id,
+        &no_id,
+        &condition_id,
+        start_ts,
+        end_ts,
+    );
 
     ipc::emit(&FrontendEvent::SessionOpened {
         bot_id: ctx.bot_id,
         slug: slug.to_slug(),
-        start_ts: slug.ts,
-        end_ts: slug.end_ts(),
+        start_ts,
+        end_ts,
         yes_token_id: yes_id.clone(),
         no_token_id: no_id.clone(),
     });
@@ -273,6 +290,7 @@ async fn run_window(
     Ok(result)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_session(
     ctx: &Ctx,
     slug: SlugInfo,
@@ -280,6 +298,8 @@ fn build_session(
     yes_id: &str,
     no_id: &str,
     condition_id: &str,
+    start_ts: u64,
+    end_ts: u64,
 ) -> MarketSession {
     MarketSession {
         yes_token_id: yes_id.to_string(),
@@ -287,8 +307,8 @@ fn build_session(
         condition_id: condition_id.to_string(),
         tick_size: market.tick_size.unwrap_or(0.01),
         api_min_order_size: market.minimum_order_size.unwrap_or(5.0),
-        start_ts: slug.ts,
-        end_ts: slug.end_ts(),
+        start_ts,
+        end_ts,
         ..MarketSession::new(ctx.bot_id, slug.to_slug(), &ctx.cfg)
     }
 }

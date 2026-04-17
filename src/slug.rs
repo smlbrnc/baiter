@@ -147,10 +147,7 @@ pub fn parse_slug(slug: &str) -> Result<SlugInfo, AppError> {
     })?;
     let interval = Interval::parse(parts[2]).ok_or_else(|| AppError::InvalidSlug {
         slug: slug.to_string(),
-        reason: format!(
-            "desteklenmeyen interval '{}' (5m/15m/1h/4h)",
-            parts[2]
-        ),
+        reason: format!("desteklenmeyen interval '{}' (5m/15m/1h/4h)", parts[2]),
     })?;
     let ts: u64 = parts[3].parse().map_err(|_| AppError::InvalidSlug {
         slug: slug.to_string(),
@@ -162,7 +159,7 @@ pub fn parse_slug(slug: &str) -> Result<SlugInfo, AppError> {
             reason: "timestamp 0 olamaz".to_string(),
         });
     }
-    if ts % interval.seconds() != 0 {
+    if !ts.is_multiple_of(interval.seconds()) {
         return Err(AppError::InvalidSlug {
             slug: slug.to_string(),
             reason: format!(

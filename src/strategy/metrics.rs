@@ -41,8 +41,7 @@ impl StrategyMetrics {
             Outcome::Up => {
                 let new_total = self.shares_yes + size;
                 if new_total > 0.0 {
-                    self.avg_yes =
-                        (self.avg_yes * self.shares_yes + price * size) / new_total;
+                    self.avg_yes = (self.avg_yes * self.shares_yes + price * size) / new_total;
                 }
                 self.shares_yes = new_total;
                 self.sum_yes += size;
@@ -52,8 +51,7 @@ impl StrategyMetrics {
             Outcome::Down => {
                 let new_total = self.shares_no + size;
                 if new_total > 0.0 {
-                    self.avg_no =
-                        (self.avg_no * self.shares_no + price * size) / new_total;
+                    self.avg_no = (self.avg_no * self.shares_no + price * size) / new_total;
                 }
                 self.shares_no = new_total;
                 self.sum_no += size;

@@ -3,9 +3,9 @@
 //! Referans: rs-clob-client `src/auth.rs` — `URL_SAFE` secret decode + imza
 //! encode. İmza algoritması deterministiktir; aynı input → aynı output.
 
+use baiter_pro::polymarket::auth::{body_to_string, build_l2_signature};
 use base64::engine::general_purpose::URL_SAFE;
 use base64::Engine;
-use baiter_pro::polymarket::auth::{body_to_string, build_l2_signature};
 
 #[test]
 fn empty_body_empty_path_is_deterministic() {
@@ -72,8 +72,7 @@ fn body_to_string_strips_single_quotes() {
 #[test]
 fn known_input_reference_signature() {
     let secret_b64 = URL_SAFE.encode(b"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"); // 32 'a'
-    let sig = build_l2_signature(&secret_b64, "1700000000", "POST", "/order", "")
-        .unwrap();
+    let sig = build_l2_signature(&secret_b64, "1700000000", "POST", "/order", "").unwrap();
     // 32 bytes → 44 char URL_SAFE base64 (padding dahil)
     assert_eq!(sig.len(), 44);
     let decoded = URL_SAFE.decode(&sig).unwrap();

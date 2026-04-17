@@ -71,8 +71,8 @@ impl BotRow {
             .map_err(|e| AppError::Config(format!("strategy parse: {e}")))?;
         let run_mode: RunMode = serde_json::from_str(&format!("\"{}\"", self.run_mode))
             .map_err(|e| AppError::Config(format!("run_mode parse: {e}")))?;
-        let strategy_params: StrategyParams = serde_json::from_str(&self.strategy_params)
-            .unwrap_or_default();
+        let strategy_params: StrategyParams =
+            serde_json::from_str(&self.strategy_params).unwrap_or_default();
         Ok(BotConfig {
             id: self.id,
             name: self.name.clone(),
@@ -138,21 +138,15 @@ pub async fn get_bot(pool: &SqlitePool, bot_id: i64) -> Result<Option<BotRow>, A
     Ok(row)
 }
 
-pub async fn set_bot_state(
-    pool: &SqlitePool,
-    bot_id: i64,
-    state: &str,
-) -> Result<(), AppError> {
+pub async fn set_bot_state(pool: &SqlitePool, bot_id: i64, state: &str) -> Result<(), AppError> {
     let now = now_ms() as i64;
-    sqlx::query(
-        "UPDATE bots SET state = ?, updated_at_ms = ?, last_active_ms = ? WHERE id = ?",
-    )
-    .bind(state)
-    .bind(now)
-    .bind(now)
-    .bind(bot_id)
-    .execute(pool)
-    .await?;
+    sqlx::query("UPDATE bots SET state = ?, updated_at_ms = ?, last_active_ms = ? WHERE id = ?")
+        .bind(state)
+        .bind(now)
+        .bind(now)
+        .bind(bot_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
@@ -235,12 +229,18 @@ pub async fn get_credentials(
     .await?;
 
     Ok(row.map(|r| Credentials {
-        poly_address: r.get::<Option<String>, _>("poly_address").unwrap_or_default(),
-        poly_api_key: r.get::<Option<String>, _>("poly_api_key").unwrap_or_default(),
+        poly_address: r
+            .get::<Option<String>, _>("poly_address")
+            .unwrap_or_default(),
+        poly_api_key: r
+            .get::<Option<String>, _>("poly_api_key")
+            .unwrap_or_default(),
         poly_passphrase: r
             .get::<Option<String>, _>("poly_passphrase")
             .unwrap_or_default(),
-        poly_secret: r.get::<Option<String>, _>("poly_secret").unwrap_or_default(),
+        poly_secret: r
+            .get::<Option<String>, _>("poly_secret")
+            .unwrap_or_default(),
         polygon_private_key: r
             .get::<Option<String>, _>("polygon_private_key")
             .unwrap_or_default(),
@@ -575,6 +575,7 @@ pub async fn upsert_market_resolved(
 // snapshots
 // --------------------------------------------------------------------------
 
+#[allow(clippy::too_many_arguments)]
 pub async fn insert_pnl_snapshot(
     pool: &SqlitePool,
     bot_id: i64,

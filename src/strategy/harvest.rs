@@ -20,7 +20,9 @@ pub enum HarvestState {
     /// Hem YES hem NO GTC emirleri açık.
     OpenDualOpen,
     /// Yalnız bir taraf doldu, averaging döngüsünde.
-    SingleLeg { filled_side: Outcome },
+    SingleLeg {
+        filled_side: Outcome,
+    },
     /// Kâr kilitlendi — yeni emir yok.
     ProfitLock,
     Done,
@@ -103,9 +105,7 @@ pub fn decide(state: HarvestState, ctx: &HarvestContext) -> (HarvestState, Decis
         HarvestState::Pending => open_dual(ctx),
         HarvestState::OpenDualOpen => evaluate_open_dual(ctx),
         HarvestState::SingleLeg { filled_side } => single_leg(filled_side, ctx),
-        HarvestState::ProfitLock | HarvestState::Done => {
-            (HarvestState::Done, Decision::NoOp)
-        }
+        HarvestState::ProfitLock | HarvestState::Done => (HarvestState::Done, Decision::NoOp),
     }
 }
 
@@ -158,7 +158,10 @@ fn evaluate_open_dual(ctx: &HarvestContext) -> (HarvestState, Decision) {
                 } else {
                     Outcome::Down
                 };
-                (HarvestState::SingleLeg { filled_side: side }, Decision::NoOp)
+                (
+                    HarvestState::SingleLeg { filled_side: side },
+                    Decision::NoOp,
+                )
             }
         }
         (true, false) => single_leg(Outcome::Up, ctx),
@@ -320,7 +323,12 @@ mod tests {
         let params = StrategyParams::default();
         let ctx = default_ctx(&metrics, &params);
         let (state, _) = decide(HarvestState::OpenDualOpen, &ctx);
-        assert_eq!(state, HarvestState::SingleLeg { filled_side: Outcome::Up });
+        assert_eq!(
+            state,
+            HarvestState::SingleLeg {
+                filled_side: Outcome::Up
+            }
+        );
     }
 
     #[test]
@@ -331,7 +339,9 @@ mod tests {
         let mut ctx = default_ctx(&metrics, &params);
         ctx.no_best_ask = 0.49; // first_leg(0.48) + hedge_leg(0.49) = 0.97 <= 0.98
         let (state, dec) = decide(
-            HarvestState::SingleLeg { filled_side: Outcome::Up },
+            HarvestState::SingleLeg {
+                filled_side: Outcome::Up,
+            },
             &ctx,
         );
         assert_eq!(state, HarvestState::ProfitLock);
@@ -354,10 +364,17 @@ mod tests {
         ctx.zone = MarketZone::StopTrade;
         ctx.no_best_ask = 0.80; // ProfitLock tetiklenmez
         let (state, dec) = decide(
-            HarvestState::SingleLeg { filled_side: Outcome::Up },
+            HarvestState::SingleLeg {
+                filled_side: Outcome::Up,
+            },
             &ctx,
         );
-        assert_eq!(state, HarvestState::SingleLeg { filled_side: Outcome::Up });
+        assert_eq!(
+            state,
+            HarvestState::SingleLeg {
+                filled_side: Outcome::Up
+            }
+        );
         matches!(dec, Decision::NoOp);
     }
 
@@ -371,10 +388,17 @@ mod tests {
         ctx.yes_best_bid = 0.48; // düştü
         ctx.no_best_ask = 0.55; // ProfitLock tetiklemez (0.5 + 0.55 = 1.05 > 0.98)
         let (state, dec) = decide(
-            HarvestState::SingleLeg { filled_side: Outcome::Up },
+            HarvestState::SingleLeg {
+                filled_side: Outcome::Up,
+            },
             &ctx,
         );
-        assert_eq!(state, HarvestState::SingleLeg { filled_side: Outcome::Up });
+        assert_eq!(
+            state,
+            HarvestState::SingleLeg {
+                filled_side: Outcome::Up
+            }
+        );
         match dec {
             Decision::PlaceOrders(orders) => {
                 assert_eq!(orders.len(), 1);

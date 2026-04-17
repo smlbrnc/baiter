@@ -29,7 +29,7 @@ pub struct MetricMask {
 impl MetricMask {
     /// Geçerlilik: `profit == true` ⇒ `avgsum == true`.
     pub const fn is_valid(self) -> bool {
-        !(self.profit && !self.avgsum)
+        !self.profit || self.avgsum
     }
 }
 

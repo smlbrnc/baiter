@@ -161,7 +161,9 @@ mod tests {
         let line = format!("{EVENT_PREFIX}{json}");
         let parsed = parse_event_line(&line).expect("must parse");
         match parsed {
-            FrontendEvent::OrderPlaced { order_id, price, .. } => {
+            FrontendEvent::OrderPlaced {
+                order_id, price, ..
+            } => {
                 assert_eq!(order_id, "0xff35");
                 assert!((price - 0.57).abs() < 1e-9);
             }

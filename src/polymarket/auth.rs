@@ -91,8 +91,7 @@ pub fn make_l2_headers(
     path: &str,
     body: &str,
 ) -> Result<L2Headers, AppError> {
-    let signature =
-        build_l2_signature(&creds.poly_secret, timestamp, method, path, body)?;
+    let signature = build_l2_signature(&creds.poly_secret, timestamp, method, path, body)?;
     Ok(L2Headers {
         address: creds.poly_address.clone(),
         api_key: creds.poly_api_key.clone(),

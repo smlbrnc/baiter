@@ -84,7 +84,7 @@ struct AggTrade {
 #[derive(Debug, Clone, Copy)]
 struct TradeEntry {
     ts_ms: u64,
-    delta: f64,        // +q (buy) veya -q (sell)
+    delta: f64, // +q (buy) veya -q (sell)
     is_buy: bool,
 }
 
@@ -205,11 +205,7 @@ impl SignalComputer {
 
 /// Binance aggTrade WebSocket görevini başlatır; state'i güncelle.
 /// Kopma süresince `signal_score` nötr (`5.0`) kalır.
-pub async fn run_binance_signal(
-    symbol: &str,
-    interval: Interval,
-    state: SharedSignalState,
-) {
+pub async fn run_binance_signal(symbol: &str, interval: Interval, state: SharedSignalState) {
     let url = format!("wss://fstream.binance.com/ws/{}@aggTrade", symbol);
     let mut backoff = 1u64;
     loop {
