@@ -45,6 +45,132 @@ Resmi WebSocket olayı [UMA çözümleme](https://docs.polymarket.com/concepts/r
 
 **T−15**, **1 sn frontend polling**, **stop_before_end_ms**, strateji adları ve pencere seçimi bu repoya özgü **iş kurallarıdır**; Polymarket dokümanında ayrı bir “T−15 endpoint”i yoktur. Zamanlama, Gamma’daki market **`startDate` / `endDate`** ([örnek alanlar](api/polymarket-gamma.md)) ile uyumlu seçilir.
 
+**Desteklenen market kısıtı (kripto varlık zorunluluğu):** Bu platform **yalnızca** aşağıdaki slug şemasına uyan Polymarket marketleri üzerinde işlem yapabilir:
+
+```
+{asset}-updown-{interval}-{unix_timestamp_saniye}
+```
+
+| Varlık (`asset`) | Binance Futures sembolü | Desteklenen aralıklar (`interval`) | Aralık (sn) |
+|---|---|---|---|
+| `btc` | `btcusdt` | `5m`, `15m`, `1h`, `4h` | 300, 900, 3600, 14400 |
+| `eth` | `ethusdt` | `5m`, `15m`, `1h`, `4h` | 300, 900, 3600, 14400 |
+| `sol` | `solusdt` | `5m`, `15m`, `1h`, `4h` | 300, 900, 3600, 14400 |
+| `xrp` | `xrpusdt` | `5m`, `15m`, `1h`, `4h` | 300, 900, 3600, 14400 |
+
+Slug örnekleri (resmi Polymarket URL’lerinden doğrulandı):
+
+```
+btc-updown-5m-1776500700    → BTC 5 dk pencere
+eth-updown-15m-1776427200   → ETH 15 dk pencere
+sol-updown-1h-1776427200    → SOL 1 saat pencere
+xrp-updown-4h-1776427200    → XRP 4 saat pencere
+```
+
+Timestamp hesabı: `ts = (unix_now_saniye // interval_saniye) * interval_saniye`.
+
+**Eşleşmeyen slug → bot başlatma reddi** (ürün hatası; konfigürasyon aşamasında yakalanr). Politika, seçim, spor gibi diğer kategoriler desteklenmez.
+
+**Çözümleme kaynağı notu:** Bu marketler Chainlink `{asset}/USD` akışıyla çözümlenir — Binance spot veya futures fiyatıyla değil. Binance Futures aggTrade verileri **yalnızca dahili harici sinyal** (`binance_signal`) olarak kullanılır; çözümleme kaynağıyla karıştırılmaz (bkz. §14).
+
+**Aktif market keşfi:** `GET https://gamma-api.polymarket.com/markets?active=true&closed=false` yanıtı slug öneki ile filtrelenir (ör. `btc-updown-5m-`). Doğrudan slug tahmini yerine liste filtresi tercih edilir; bkz. [Fetching markets](https://docs.polymarket.com/market-data/fetching-markets).
+
+---
+
+## ⚡ Temel Mimari Kural: Minimum Gecikme ve Anlık Emir
+
+> **Bu kural tüm mimari kararların üzerindedir. Projedeki her bileşen bu kurala göre tasarlanır ve değerlendirilir.**
+
+Polymarket binary marketlerinde fiyatlar hızlı hareket eder ve orderbook derinliği sınırlıdır. **Emir geciktiği her milisaniye potansiyel fill fiyatını kötüleştirir veya fırsatı tamamen kaçırır.** Bu nedenle aşağıdaki kurallar projenin tamamında değiştirilemez temel kabul edilir.
+
+### Kural 1 — Emir Yolu (Critical Path) Sıfır Blok
+
+Bir strateji kararı verildikten sonra **emir gönderimi (POST /order veya POST /orders) hiçbir şeyle bloke edilemez:**
+
+| Yasak | Neden |
+|---|---|
+| DB yazımını beklemek | SQLite I/O bloke eder |
+| Log flush'ı beklemek | Disk I/O bloke eder |
+| Metrik hesabını beklemek | CPU işi bloke eder |
+| Frontend bildirimini beklemek | Network I/O bloke eder |
+
+**Doğru sıra:**
+```
+[Event geldi] → [Strateji kararı] → [POST /order] → (paralel/arka plan)
+                                                     ├── DB yaz
+                                                     ├── Log yaz
+                                                     └── Frontend'e push
+```
+
+### Kural 2 — State Önceden Hazır Olmalı
+
+Strateji motoru bir `best_bid_ask` veya `trade MATCHED` event'i geldiğinde **tüm kararı anında verebilmelidir:**
+
+- `StrategyMetrics` (imbalance, avg_*, signal_score, MarketZone, MarketPnL) her event sonrasında güncellenir ve **hafızada** tutulur.
+- Emir kararı anında bu hazır state'i okur; **yeniden hesap yapmaz**, **WS veya REST'ten bilgi beklemez**.
+- `binance_signal` (§14) ve `MarketZone` (§15) ayrı görevlerde sürekli güncellenir; strateji motoru **lock-free read** (`Arc<RwLock<>>` okuma kilidi) ile anında erişir.
+
+### Kural 3 — Async, Non-Blocking, Connection Pooling
+
+```rust
+// Her bot için tek paylaşımlı reqwest::Client (connection pool dahil).
+// Emir başına yeni connection açılmaz.
+let client = reqwest::Client::builder()
+    .tcp_nodelay(true)          // Nagle algoritması kapalı — küçük paket gecikme yok
+    .pool_max_idle_per_host(4)  // Bağlantı havuzu; auth endpoint dahil
+    .build()?;
+```
+
+- Tüm HTTP çağrıları (`POST /order`, `DELETE /orders`, heartbeat) `tokio::spawn` veya `async/await` zinciriyle non-blocking gönderilir.
+- `tokio::sync::broadcast` veya `mpsc` channel'ları: WS okuyucu → strateji motoru → emir gönderici arasındaki veri yolu sıfır kopyayla aktarılır.
+- **Signing** (EIP-712, `alloy`) senkron CPU işidir; order struct hazırlığı event loop'u bloke etmemek için `tokio::task::spawn_blocking` içinde veya önceden (market açılışında) yapılır.
+
+### Kural 4 — DB ve Log = Fire-and-Forget
+
+Emir gönderildikten hemen sonra DB ve log yazımı **ayrı bir tokio task'ında** yapılır; emir gönderen coroutine tamamlanmayı **beklemez:**
+
+```rust
+// Emir gönder
+let resp = clob_client.post_order(signed_order).await?;
+
+// DB + log: fire-and-forget
+tokio::spawn(async move {
+    db.upsert_order(&resp).await;
+    logger.write_order_line(&resp).await;
+});
+
+// Frontend push: hemen
+frontend_tx.send(FrontendEvent::OrderPlaced(resp));
+```
+
+### Kural 5 — Frontend'e Anlık Push
+
+Frontend 1 sn polling ile özet verileri okur (§2); ancak **kritik olaylar (emir gönderimi, fill, PnL değişimi) bu polling'i beklemez:**
+
+- Bot, emir gönderdikten hemen sonra `broadcast` channel'ına `FrontendEvent` yazar.
+- Supervisor bu event'i SSE (Server-Sent Events) veya WebSocket üzerinden frontend'e **anında iletir**.
+- 1 sn polling **sadece** özet/durum ekranı için; **kritik olay akışı push** ile taşınır.
+
+### Kural 6 — WS Okuyucu Önceliği
+
+Market WS (`best_bid_ask`, `book`) ve User WS (`trade MATCHED`) event'leri **diğer tüm işlemler üzerinde önceliklidir:**
+
+- WS okuyucu task'ı hiçbir zaman bloke olmaz; gelen mesajı `mpsc::Sender` ile strateji motoruna **anında** iletir.
+- Strateji motoru kanaldan mesajı alır almaz state'i günceller ve emir kararını verir.
+- Heartbeat (§4.1) ayrı bir `tokio::interval` task'ında çalışır; strateji motoruyla aynı thread'i paylaşmaz.
+
+### Gecikme Hedefi (Referans)
+
+| Aşama | Hedef gecikme |
+|---|---|
+| WS event → strateji kararı | < 1 ms |
+| Strateji kararı → POST /order gönderildi | < 1 ms |
+| POST /order → yanıt alındı | network RTT (~50–200 ms) |
+| Fill (MATCHED) → Frontend push | < 50 ms |
+| Fill → DB yazımı | < 500 ms (arka plan) |
+
+> **Not:** Network RTT Polymarket CLOB sunucularına olan bağlantı kalitesine bağlıdır ve kontrol dışıdır. Kontrol altındaki tüm aşamalar (karar, gönderim, push) milisaniye hedefinde tutulur.
+
 ---
 
 ## 1. Genel mantık
@@ -76,7 +202,50 @@ Kullanıcı yeni bot oluştururken **hangi event/metin (ör. “BTC 15dk”)** v
 ### Dağıtım ve süreç modeli
 
 - **Tek makine** hedeflenir.
-- **Maksimum performans** için her bot **ayrı işlem (ayrı PID)** olarak çalışabilir; denetleyici süreç botları başlatır, durdurur ve sağlığını izler.
+- **Maksimum performans** için her bot **ayrı işlem (ayrı PID)** olarak çalışır; denetleyici süreç botları başlatır, durdurur ve sağlığını izler.
+
+### Süreç mimarisi (supervisor / denetleyici)
+
+**Yönetim:** Supervisor, **systemd servis birimi değildir** — Rust içinde çalışan **ana süreçtir** (`main.rs`). Bot işlemleri `std::process::Command` (veya `tokio::process::Command`) ile alt süreç olarak başlatılır; supervisor `stdin`/`stdout` uçlarını veya Unix domain socket'ı tutmaz, yalnızca **PID** ve **çıkış kodunu** izler.
+
+**Genel topoloji:**
+```
+Frontend (Axum HTTP API)
+    │  HTTP (tek port — supervisor üzerinden)
+    ▼
+Supervisor süreci  ←─── SQLite (bot durumu, log, trade)
+    │  spawn / kill
+    ├── Bot-A (ayrı PID)
+    ├── Bot-B (ayrı PID)
+    └── Bot-C (ayrı PID)
+```
+
+**IPC / port:** Her bot **ayrı port açmaz**. Frontend, **yalnızca supervisor**'un HTTP API'sine bağlanır; supervisor bot kimliklerini uç yollar aracılığıyla yayar. Bot'tan supervisor'a veri akışı **stdout/stderr log satırları** (supervisor tarafından okunup SQLite'a yazılır) veya **paylaşımlı SQLite** üzerinden olur.
+
+**Crash loop ve yeniden başlatma:**
+
+| Durum | Kural |
+|-------|-------|
+| Bot beklenmedik çıkış (exit code ≠ 0) | Supervisor **exponential backoff** ile yeniden başlatır: `1s → 2s → 4s → 8s → …` |
+| Maksimum deneme | Ürün sabitler (ör. **5 deneme** ya da **toplam 60 s backoff**); aşılırsa bot `FAILED` olarak işaretlenir, log satırı yazılır, el ile `başlat` komutu gerekir |
+| Temiz durdurma (kullanıcı `durdur`) | Supervisor `SIGTERM` gönderir; bot açık emirleri temizler / heartbeat döngüsünü durdurur ve normal çıkar — crash loop sayacına **eklemez** |
+| Market penceresi bitti, normal geçiş | Bot **çıkmaz** — iç döngü sonraki markete geçer; supervisor bu durumu izlemez (PID hâlâ aktif) |
+
+**Sağlık (health) mekanizması:**
+
+- **Heartbeat dosyası:** Her bot belirli aralıkta (ör. 5 s) **paylaşımlı dizindeki** `bots/<id>.heartbeat` dosyasını günceller (`mtime` yeterlidir). Supervisor `mtime` değerini okur; **belirli eşiği** (ör. 15 s) aşan bot sağlıksız kabul edilir ve crash loop kuralı tetiklenir.
+- **Alternatif (SQLite):** Bot son aktif zamanını `bots` tablosuna yazar; supervisor periyodik sorgu ile kontrol eder. Bu mimari ek IPC gerektirmez.
+- **HTTP health endpoint:** Bot kendi HTTP ucu açmaz — supervisor `/api/bots/{id}/status` ile bot'un `RUNNING / FAILED / STOPPED` durumunu SQLite'tan okur ve frontend'e döner.
+
+**Komut → süreç akışı (frontend → bot):**
+
+| Frontend komutu | Supervisor davranışı |
+|-----------------|----------------------|
+| `POST /api/bots/{id}/start` | PID yoksa `Command::spawn`; PID varsa hata |
+| `POST /api/bots/{id}/stop` | PID'e `SIGTERM`; belirli süre sonra hâlâ çalışıyorsa `SIGKILL` |
+| `DELETE /api/bots/{id}` | Önce `stop`, ardından kayıt ve log temizliği |
+
+**Loglama akışı:** Bot `stdout`'u supervisor'un `tokio::process::ChildStdout` akışına bağlıdır; supervisor satırları okuyup SQLite `logs` tablosuna (bot_id + timestamp + satır) yazar — frontend bu tablodan sayfalı veya SSE akışıyla okur. Bot kendi başına log dosyası **açmaz**.
 
 ### Stratejiler (genişletilebilir)
 
@@ -98,12 +267,13 @@ Aşağıdaki üç strateji adı sabit; ileride yeni stratejiler eklenebilir.
 |--------------------|:------------:|:---------:|:-------:|
 | Pay dengesizliği: `imbalance` (`UP − DOWN`, share) | ✓ | ✓ | — |
 | Maliyet farkı: `imb_cost_up`, `imb_cost_down`, `imbalance_cost` | ✓ | ✓ | — |
-| `avgsum`: `avg_up`, `avg_down`, `AVG SUM` | ✓ | — | ✓ |
+| `avgsum`: `avg_up`, `avg_down`, `AVG SUM` | ✓ | ✓ | ✓ |
 | `profit`: türetilen **profit %** (`AVG SUM` üzerinden) | ✓ | — | ✓ |
 | Brüt hacim: `sum_up`, `sum_down` | ✓ | ✓ | ✓ |
 | `POSITION Δ` (pay `imbalance` + brüt hacim oranı ve yön) | ✓ | ✓ | — |
+| Harici sinyal: `binance_signal` (aggTrade CVD/BSI/OFI, 0–10 skor) | ✓ | ✓ | ✓ |
 
-**Not:** `prism` ne pay `imbalance` ne maliyet `imbalance_cost` hattını kullanmaz; `harvest` **`avgsum`** ve **`profit`** hatlarını kullanmaz. Yeni strateji eklenirken `MetricMask` yalnızca aşağıdaki **geçerli** `(avgsum, profit)` çiftleriyle genişletilir: `(false,false)`, `(true,false)`, `(true,true)` — **`(false,true)` yasaktır** (`profit` açıkken `avgsum` kapalı olamaz). Matris **yapılandırma veya sabit enum** (`MetricSubscription` benzeri) ile genişletilir; metrik tanımı katalogda kalır.
+**Not:** `prism` ne pay `imbalance` ne maliyet `imbalance_cost` hattını kullanmaz; `harvest` **`profit`** hattını kullanmaz (`avgsum` ProfitLock koşulunda `avg_YES + avg_NO` için açıktır). Yeni strateji eklenirken `MetricMask` yalnızca aşağıdaki **geçerli** `(avgsum, profit)` çiftleriyle genişletilir: `(false,false)`, `(true,false)`, `(true,true)` — **`(false,true)` yasaktır** (`profit` açıkken `avgsum` kapalı olamaz). Matris **yapılandırma veya sabit enum** (`MetricSubscription` benzeri) ile genişletilir; metrik tanımı katalogda kalır.
 
 #### Rust uygulama taslağı (`Strategy` ↔ metrik maskesi)
 
@@ -132,7 +302,56 @@ pub struct MetricMask {
     pub profit: bool,
     /// `sum_up`, `sum_down`
     pub sum_volume: bool,
+    /// Binance USD-M Futures aggTrade sinyali (0–10 skor).
+    /// Yalnızca desteklenen slug kalıbında (`{btc|eth|sol|xrp}-updown-{5m|15m|1h|4h}-{ts}`) true.
+    pub binance_signal: bool,
 }
+
+/// Bot başlatma konfigürasyonu (frontend / .env'den gelir).
+pub struct BotConfig {
+    // slug, kimlik bilgileri vb. runtime alanları buraya eklenir.
+
+    /// Çalışma modu — bkz. §16.
+    pub run_mode: RunMode,
+
+    /// Emir başına harcanacak USDC miktarı (tüm stratejiler için ortak).
+    /// GTC size = max(⌈order_usdc / bid_price⌉, api_min_order_size)
+    /// FAK size = imbalance (bu formül dışında).
+    /// `api_min_order_size`: market init'te GET /book → min_order_size'dan okunur;
+    /// BotConfig'de saklanmaz, market state'ine yazılır.
+    pub order_usdc: f64,
+
+    /// Binance aggTrade sinyal ağırlığı: 0 = sinyali tamamen yoksay (çarpan 1.0),
+    /// 10 = maksimum etki. Varsayılan: 5. Aralık: [0, 10].
+    pub signal_weight: u8,
+
+    /// Strateji seçimine göre strateji-spesifik parametreler.
+    /// Kolun `Strategy` enum değeriyle uyumlu olması zorunludur.
+    pub strategy_params: StrategyConfig,
+}
+
+/// Strateji-spesifik parametre bloğu (tagged union).
+/// Her kol yalnızca ilgili stratejiye özgü alanları taşır.
+pub enum StrategyConfig {
+    DutchBook(DutchBookParams),
+    Harvest(HarvestParams),
+    Prism(PrismParams),
+}
+
+pub struct HarvestParams {
+    /// OpenDual YES (UP) tarafı GTC bid fiyatı (zorunlu, kullanıcı girer).
+    pub up_bid: f64,
+    /// OpenDual NO (DOWN) tarafı GTC bid fiyatı (zorunlu, kullanıcı girer).
+    pub down_bid: f64,
+    /// avg_YES + avg_NO ≤ avg_threshold → ProfitLock tetikler.
+    pub avg_threshold: f64,       // varsayılan: 0.98
+    /// İki averaging GTC arasındaki minimum bekleme (ms).
+    pub cooldown_ms: u64,         // varsayılan: 30_000
+    /// Tek tarafın toplam share limiti; aşılırsa yeni averaging yasak.
+    pub max_position_size: f64,   // varsayılan: 100.0
+}
+
+// DutchBookParams ve PrismParams implementasyon sırasında tanımlanır.
 
 impl Strategy {
     pub const fn required_metrics(self) -> MetricMask {
@@ -143,13 +362,15 @@ impl Strategy {
                 avgsum: true,
                 profit: true,
                 sum_volume: true,
+                binance_signal: true,
             },
             Self::Harvest => MetricMask {
                 imbalance: true,
-                imbalance_cost: true,
-                avgsum: false,
+                imbalance_cost: true,   // UI gösterimi için
+                avgsum: true,           // avg_up/avg_down = avg_YES/avg_NO — ProfitLock koşulunda kullanılır
                 profit: false,
                 sum_volume: true,
+                binance_signal: true,
             },
             Self::Prism => MetricMask {
                 imbalance: false,
@@ -157,6 +378,7 @@ impl Strategy {
                 avgsum: true,
                 profit: true,
                 sum_volume: true,
+                binance_signal: true,
             },
         }
     }
@@ -169,14 +391,17 @@ impl Strategy {
 }
 
 impl MetricMask {
-    /// `profit == true` ⇒ `avgsum == true` olmalı; aksi halde maske geçersiz.
+    /// Geçerlilik kuralları:
+    /// 1. `profit == true` ⇒ `avgsum == true` (AVG SUM girdisi olmadan profit tanımsız).
+    /// 2. `binance_signal == true` ⇒ market slug kalıbı {btc|eth|sol|xrp}-updown-* olmalı
+    ///    (çalışma zamanı kontrolü BotConfig::validate'te yapılır; bu kural belgeseldir).
     pub const fn is_valid(self) -> bool {
         !self.profit || self.avgsum
     }
 }
 ```
 
-**Maske tutarlılığı:** `profit` üretilecekse **`avgsum`** da açık olmalıdır (`AVG SUM` girdisi olmadan `profit %` tanımsız); `avgsum: false` iken `profit: true` **ürün hatası** sayılır (`MetricMask::is_valid` false). `avgsum: true`, `profit: false` geçerlidir (ör. yalnız VWAP / `AVG SUM` gösterimi).
+**Maske tutarlılığı:** `profit` üretilecekse **`avgsum`** da açık olmalıdır (`AVG SUM` girdisi olmadan `profit %` tanımsız); `avgsum: false` iken `profit: true` **ürün hatası** sayılır (`MetricMask::is_valid` false). `avgsum: true`, `profit: false` geçerlidir (ör. yalnız VWAP / `AVG SUM` gösterimi). `binance_signal: true` iken market slug kalbı desteklenen kripto şemasında (ör. `btc-updown-5m-*`) olmalı; desteklenmeyen slug’da `binance_signal` false olarak zorlanır — `signal_weight` değeri yoksayılır.
 
 **Strateji katmanı ve pozisyon:** PnL, dengesizlik, `Position: UP=… DOWN=…` gibi özetler **yalnızca strateji motorunda** hesaplanır; Polymarket’te bunların tek başına bir **resmi “pozisyon endpoint”i yoktur**. Bu satırlar logda **strateji/uygulama** üretimi olarak işaretlenir; CLOB alanlarıyla karıştırılmaz.
 
@@ -226,7 +451,7 @@ Birim: **quote per share**. Net pozisyon `UP` / `DOWN` ve `imb_cost_*` ile aynı
 1. **Yüzde:** `|imbalance| / (sum_up + sum_down) × 100` — net dengesizliğin **brüt hacme** oranı (ör. **3.5%**).
 2. **Yön + büyüklük:** İşaretli **`imbalance = UP − DOWN`** share cinsinden (ör. **+3.0 UP** = net 3 share UP fazlası; **−** ise DOWN tarafı baskın).
 
-`sum_up + sum_down` sıfırsa yüzde tanımsızdır. Referans trade kümesi (tüm oturum / son N işlem / pencere) UI ve API’de **aynı** seçilmelidir; **ortak katalog** metrikleri bu kümeden türetilir — hangi stratejinin hangi alt kümeyi okuduğu matristeki **Strateji → metrik** satırlarıyla uyumlu olmalıdır (`harvest` için `avgsum` / `profit` yok; `prism` için pay `imbalance`, `imbalance_cost` ve `POSITION Δ` yok).
+`sum_up + sum_down` sıfırsa yüzde tanımsızdır. Referans trade kümesi (tüm oturum / son N işlem / pencere) UI ve API’de **aynı** seçilmelidir; **ortak katalog** metrikleri bu kümeden türetilir — hangi stratejinin hangi alt kümeyi okuduğu matristeki **Strateji → metrik** satırlarıyla uyumlu olmalıdır (`harvest` için `profit` yok; `prism` için pay `imbalance`, `imbalance_cost` ve `POSITION Δ` yok).
 
 ---
 
@@ -237,7 +462,7 @@ Aşağıdakiler tipik bir ayrımdır; uç yollar implementasyonda netleşir.
 - **Read-only:** bot listesi, bot detayı, ayar özeti, **akış logları** (metin veya sayfalı), **bota ait slug/market listesi**, **slug altında market bazlı loglar**.
 - **Yazma (komut):** yeni bot, ayar güncelleme, **başlat**, **durdur**, **sil** — bunlar API’de iş kuyruğu veya durum bayrağı ile yürütülür; frontend yalnızca isteği tetikler.
 
-**Canlı monitoring:** API, CLOB/WS üzerinden gelen **fiyat, emir, trade** bilgisini işledikten sonra hem **log kanalına** yazar hem de (aşağıdaki gibi) **veritabanına** düşer.
+**Canlı monitoring:** API, CLOB/WS üzerinden gelen **fiyat, emir, trade** bilgisini işler. Emir gönderimi **kritik yolun** ilk adımıdır (bkz. §⚡ Kural 1); log ve DB yazımı ardından **fire-and-forget** arka plan task'larında yapılır — emir göndericisini bloke etmez. **Kritik olaylar** (emir gönderimi, fill/MATCHED, PnL değişimi) SSE kanalı üzerinden frontend'e **anında push** edilir (bkz. §⚡ Kural 5); özet ekranlar polling ile güncellenir.
 
 **Özet ekran yenileme:** Frontend, pano ve özet metrikleri (pozisyon, son işlemler, bot durumu) **yaklaşık 1 saniye aralıkla** API’den okuyarak günceller (kısa aralıklı **polling**). Ham WebSocket akışı API’de işlenir; istemci tarafında WS zorunlu değildir.
 
@@ -252,7 +477,7 @@ Kullanıcı örneğin **“BTC 15dk”** (veya 5dk vb.) gibi tekrarlayan bir **p
 | **Güncel (aktif) market** | Bot, **şu anda devam eden** pencereye ait marketten başlar (Gamma/slug ile çözülen güncel `market` / `clobTokenIds`). |
 | **Sonraki market** | Bot, **sıradaki** markete odaklanır; o marketin **Gamma** kaydındaki **startDate** ve **endDate** pencere sınırları olarak kullanılır (geçerli zaman dilimine düşen market satırı). |
 
-“Şu anki güncel market” ile “bir sonraki periyot marketi” ayrımı böyle netleşir.
+Bu seçim **yalnızca başlangıç noktasını** belirler. Bot çalışmaya başladıktan sonra her pencere kapandığında **otomatik olarak sıradaki markete** geçer — ayrı bir `başlat` komutu gerekmez. Bot, **kullanıcı `durdur` komutunu gönderene kadar** (veya kritik hata ile crash olana kadar) sürekli çalışır; supervisor bu döngüye müdahil olmaz.
 
 ---
 
@@ -262,6 +487,7 @@ Kullanıcı örneğin **“BTC 15dk”** (veya 5dk vb.) gibi tekrarlayan bir **p
 
 - Hedef marketin **başlangıcından 15 saniye önce (T−15)** ilgili market için **ön veri hazırlanır** (Gamma’dan çözümlenmiş slug/market, `clobTokenIds`, **startDate / endDate**).
 - **T−15** anında **CLOB REST** (kimlik, orderbook, hazırlık) ve **Market WebSocket** (+ gerekiyorsa **User WebSocket**) bu market için **hazır** olur; abonelikler ilgili `asset_id` listesiyle kurulur.
+- **T−15 market init:** `GET /book` ile her token için **`api_min_order_size`** (share cinsinden minimum emir) ve **`tick_size`** (minimum fiyat artımı) okunur; her ikisi market state'ine yazılır. `tick_size`'a uymayan limit fiyatlar API tarafından `INVALID_ORDER_MIN_TICK_SIZE` hatasıyla reddedilir. `HarvestParams::up_bid` / `down_bid` bu aşamada `tick_size` ile doğrulanır; uyumsuzluk bot başlatmayı reddeder.
 - Pencere boyunca seçilen **strateji** (`dutch_book` / `harvest` / `prism`) döngüsü çalışır; pencere sonuna doğru (ör. `stop_before_end_ms`) erken durdurma kuralları uygulanabilir.
 - Pencere **endDate** (veya strateji kuralı) ile uyumlu şekilde sonlandırılır; log: market tamamlandı, sıradaki hedefe geçiş.
 
@@ -272,6 +498,8 @@ Kullanıcı örneğin **“BTC 15dk”** (veya 5dk vb.) gibi tekrarlayan bir **p
 Resmi [WebSocket overview](https://docs.polymarket.com/market-data/websocket/overview): **Market** ve **User** kanallarında istemci yaklaşık **10 saniyede bir** düz metin **`PING`** gönderir; sunucu **`PONG`** döner — bağlantı kopmasını önlemek için zorunlu kabul edilir.
 
 **Yeniden bağlanma:** Oturum koptuğunda veya bot market değiştirdiğinde **abonelik mesajı yeniden** gönderilir (`type`, `assets_ids` / `markets`, User için `auth`, Market için `custom_feature_enabled: true`); aksi halde olay akışı gelmez.
+
+**Market kanalı — orderbook (yalnız resmi şema):** [Market Channel](https://docs.polymarket.com/market-data/websocket/market-channel) tanımına göre **`book`** olayı **bir `asset_id` için ilk abonelikte** ve **defteri etkileyen trade’de** yayınlanır; tam `bids` / `asks` ve **`hash`** payload’da taşınır. **`price_change`** yeni emir veya iptalde seviye güncellemelerini taşır; her öğede **`hash`** vardır; **`size` = `"0"`** seviyenin kaldırıldığını belirtir (resmi metin). Bağlantı koptuğunda [WebSocket overview](https://docs.polymarket.com/market-data/websocket/overview) ile abonelik yenilenir; lokal defter, **kopuk süreye ait varsayım taşınmaz** — güncel durum yalnızca bu kanaldan gelen **`book`** ve **`price_change`** ile güncellenir. Resmi dokümanda yer almayan yerel `hash` yeniden hesaplama veya REST ile paralel “ikinci baseline” mimaride tanımlanmaz; `hash` alanları kayıtta sunucunun döndüğü değerle saklanabilir. §6 SQLite orderbook satırları bu olaylarla uyumludur.
 
 ### 4.1 REST heartbeat (CLOB — resmi [Orders overview — Heartbeat](https://docs.polymarket.com/trading/orders/overview))
 
@@ -292,7 +520,7 @@ Aşağıdaki maddeler **doğrudan** resmi dokümandaki Heartbeat bölümüyle uy
 
 - Her satır: `[HH:MM:SS.mmm] [bot_etiketi] mesaj` (ör. `[btc]`).
 - **Bot etiketi** kullanıcı tanımlı kısa ad; **slug/market** ve **pencere** bilgisi ayrı satırlarda tekrarlanır.
-- Metinler **stdout**, **dosya** ve API üzerinden **SSE/WebSocket log akışı** için aynı formatta üretilebilir.
+- Metinler **stdout** (supervisor tarafından okunup SQLite'a yazılır; bkz. §1 Loglama akışı) ve API üzerinden **SSE log akışı** için aynı formatta üretilebilir. Bot kendi başına ayrı log dosyası **açmaz** (§1 kuralı).
 
 ### 5.2 Örnek: tek market penceresi (tam metin)
 
@@ -302,7 +530,7 @@ Aşağıdaki blok **örnek veridir**; zaman damgaları ve id’ler hayalidir.
 [10:19:55.725] [btc] Target market: btc-updown-5m-1776420900
 [10:19:55.725] [btc] Window: 2026-04-17 10:15:00 UTC - 2026-04-17 10:20:00 UTC
 [10:19:55.725] [btc] 📡 Fetching market: btc-updown-5m-1776420900
-[10:19:55.763] [btc]    ✅ Found market: Bitcoin Up or Down - April 17, 6:15AM-6:20AM ET
+[10:19:55.763] [btc] ✅ Found market: Bitcoin Up or Down - April 17, 6:15AM-6:20AM ET
 [10:19:55.763] [btc]       UP:   10888309533765379088623246783892...
 [10:19:55.763] [btc]       DOWN: 30504641493152850985876961001926...
 [10:19:55.763] [btc] 🔐 Initializing trading client...
@@ -323,8 +551,8 @@ Aşağıdaki blok **örnek veridir**; zaman damgaları ve id’ler hayalidir.
 [10:19:56.540] [btc]    ✅ Subscribed to UP and DOWN assets
 [10:19:56.553] [btc] 📚 [PRICE] UP | Bid: $0.99 | Ask: $0.00 | Spread: $-0.99
 [10:19:56.553] [btc] 📚 [PRICE] DOWN | Bid: $0.00 | Ask: $0.01 | Spread: $0.01
-[10:19:56.553] [btc]  📦 POST /order (249ms)
-[10:19:56.553] [btc]  ✅ orderType=GTC side=BUY outcome=YES | POST status=live orderID=0x8e9a3174e6429c...
+[10:19:56.553] [btc] 📦 POST /order (249ms)
+[10:19:56.553] [btc] ✅ orderType=GTC side=BUY outcome=YES | POST status=live orderID=0x8e9a3174e6429c...
 ```
 
 **POST `/order` yanıtı `matched` ise** (deftere düşmeden eşleşme; `tradeIDs` dönebilir — **FOK** tam dolum, **FAK/GTC** ilk vuruşta kısmi olabilir; bkz. §5.5 `matched` satırı):
@@ -365,7 +593,7 @@ Aşağıdaki blok **örnek veridir**; zaman damgaları ve id’ler hayalidir.
 **Pencere sonu / erken durdurma / sıradaki market:**
 
 ```
-[10:19:56.642] [btc] ⏰ Only 4s until window end, stopping early (stop_before_end_ms=30000)
+[10:19:56.642] [btc] ⏰ Only 30s until window end, stopping early (stop_before_end_ms=30000)
 [10:19:56.664] [btc] 🏁 Market window complete, transitioning to next market...
 [10:19:56.664] [btc] ✅ Market #10 complete, moving to next...
 ```
@@ -397,7 +625,7 @@ Alan adları mümkün olduğunca **CLOB** ile aynı: `orderType`, `status` (POST
 ```
 
 ```json
-{"ts":"2026-04-17T10:19:56.553Z","bot":"btc","source":"user_ws","event_type":"order","type":"UPDATE","id":"0xff35...","size_matched":"50000000","associate_trades":["28c4d2eb-bbea-40e7-a9f0-b2fdb56b2c2e"]}
+{"ts":"2026-04-17T10:19:56.553Z","bot":"btc","source":"user_ws","event_type":"order","type":"UPDATE","id":"0xff35...","size_matched":"5","associate_trades":["28c4d2eb-bbea-40e7-a9f0-b2fdb56b2c2e"]}
 ```
 
 ```json
@@ -432,6 +660,15 @@ Kaynak: resmi [docs.polymarket.com](https://docs.polymarket.com/) CLOB bölümü
 | **FAK** | Olabildiğince fill, kalan iptal (Fill and Kill / IOC). |
 
 Logda her emir satırında **`orderType=`** ve mümkünse **`expiration=`** (GTD için) kullanılmalıdır.
+
+**Platform emir fiyatı kuralı (ürün geneli):**
+
+| Emir tipi | Fiyat tarafı | Rol | Açıklama |
+|---|---|---|---|
+| **GTC** (ve GTD, FOK) | **Bid** (alış teklifi) | Maker | Deftere yazılır; karşı taraf gelene kadar bekler. Fiyat `best_bid` veya altında belirlenir. |
+| **FAK** | **Ask** (satış teklifi) | Taker | Spread’i geçer; mevcut `best_ask`’a çarpar ve anında dolar. |
+
+Tüm stratejiler bu kurala uyar: **GTC = bid fiyatıyla maker emir; FAK = ask fiyatıyla taker emir.** Aksi belirtilmedikçe strateji dokümanlarındaki fiyat ifadeleri bu sözleşmeye göredir.
 
 #### Emir tipi ve fill / kısmi dolum (resmi [Orders overview — Order Types](https://docs.polymarket.com/trading/orders/overview))
 
@@ -495,19 +732,21 @@ Polymarket dokümantasyonunda açık emirler için REST [Querying Orders](https:
 … WS trade id=… status=MATCHED taker_order_id=0x… trader_side=TAKER
 … WS trade id=… status=CONFIRMED (aynı id, güncelleme)
 … DELETE /order canceled=[0x…] not_canceled={}
+… DELETE /orders (bulk) canceled=[0x…, 0x…] not_canceled={}
 ```
 
 ---
 
 ## 6. SQLite — WebSocket orderbook anlık görüntüsü
 
-**Market** kanalından gelen `book` (veya eşdeğer) olayları API’de işlendikten sonra, **her kayıt** için en az şu alanlar saklanabilir:
+**Market** kanalından resmi **`book`** ve **`price_change`** olayları ([Market Channel — Message Types](https://docs.polymarket.com/market-data/websocket/market-channel)) API’de işlendikten sonra, **her kayıt** için en az şu alanlar saklanabilir — alan adları resmi örneklerle uyumludur:
 
 | Alan | Anlamı |
 |------|--------|
 | `asset_id` | Outcome token kimliği |
 | `market` | Market (condition) kimliği |
 | `bids` / `asks` | Derinlik yapısı (JSON veya normalize tablo) |
+| `hash` | Resmi `book` / `price_change` payload’ındaki değer (varsa) |
 | `timestamp` | Olayın zaman damgası (kaynak: WS payload) |
 
 Amaç: frontend’in “son bilinen orderbook”ı ve geçmiş kırılımını göstermesi; ham WS gövdesinin tamamını değil, **işlenmiş** anlık görüntüyü tutmak yeterlidir.
@@ -572,7 +811,7 @@ Repo içi özet (Market WS): [polymarket-clob.md](api/polymarket-clob.md) — re
 
 Her **bot** ve her **market oturumu** için trade satırları **yalnızca User WebSocket `trade` olaylarından** loglanır ve yazılır — **REST `GET /trades` kullanılmaz**; içeride uydurulmuş trade yoktur.
 
-**Her `trade` olayı:** İşlendiğinde **(1)** metin loga **en az bir** trade satırı, **(2)** SQLite’ta **`trade.id`** anahtarıyla kayıt: **ilk** mesaj (genelde `MATCHED`) **ekleme**, **aynı `id` ile sonraki** mesajlar (`MINED`, `CONFIRMED`, …) **aynı satırı günceller** — çift satır yok, durum ilerlemesi tek kayıtta tutulur. Strateji özeti (pozisyon, `imbalance`, vb.) **aynı `trade.id` için `MATCHED` ile bir kez** güncellenir; sonraki status’lar yalnız trade kaydındaki alanları günceller (bkz. üst bölüm **«imbalance»**).
+**Her `trade` olayı:** İşlendiğinde strateji motoru önce state'i günceller (`imbalance`, `avg_*`, `MarketPnL`), ardından gerekiyorsa sonraki emir kararını verir. Log ve SQLite yazımı **fire-and-forget** arka plan task'larında yapılır; strateji motorunu veya emir göndericisini bloke etmez (bkz. §⚡ Kural 4). Yazım içeriği: **(1)** metin loga **en az bir** trade satırı, **(2)** SQLite’ta **`trade.id`** anahtarıyla kayıt: **ilk** mesaj (genelde `MATCHED`) **ekleme**, **aynı `id` ile sonraki** mesajlar (`MINED`, `CONFIRMED`, …) **aynı satırı günceller** — çift satır yok, durum ilerlemesi tek kayıtta tutulur. Strateji özeti (pozisyon, `imbalance`, vb.) **aynı `trade.id` için `MATCHED` ile bir kez** güncellenir; sonraki status’lar yalnız trade kaydındaki alanları günceller (bkz. üst bölüm **«imbalance»**).
 
 **Kaynak:** [User channel / trade](api/polymarket-clob.md) — resmi şema [docs.polymarket.com](https://docs.polymarket.com/market-data/websocket/user-channel) ile uyumlu tutulur.
 
@@ -590,7 +829,7 @@ Her **bot** ve her **market oturumu** için trade satırları **yalnızca User W
 | `status` | §11 — User WS `trade` yaşam döngüsü (`MATCHED` → `MINED` → `CONFIRMED` veya `FAILED` / `RETRYING`) |
 | `matchtime` / `last_update` | User WS `trade` payload (CLOB örnekleriyle uyumlu) |
 | `outcome` | Ham string — resmi payload ile bire bir (ör. `"YES"`) |
-| `trader_side` | Örn. `TAKER` — kullanıcı **taker** mı **maker** mı anlamı için |
+| `trader_side` | `TAKER` / `MAKER` — User WS `trade` payload'ında gelir (resmi [Orders overview — Trade Object](https://docs.polymarket.com/trading/orders/overview) şemasında tanımlı; WS kanalında da aynı alan adı ve değerle iletilir) |
 | `maker_orders` | Maker tarafında birden fazla parça varsa JSON; **maker** perspektifinde log üretilecekse bu dizi işlenir |
 
 **Not:** Kullanıcı bazen **maker**, bazen **taker** olur; raporlama ve PnL için `trader_side` ve `maker_orders` ayrımı önemlidir.
@@ -619,13 +858,487 @@ Tahminî veya REST’ten türetilmiş **synthetic** `status` yazılmaz; **yalnı
 
 | Olay | Ne zaman | Nereye |
 |------|----------|--------|
-| Metin log | Sürekli | Log dosyası / API stream |
-| WS orderbook özeti | Olay geldikçe | SQLite (işlenmiş `asset_id`, `market`, `bids`/`asks`, `timestamp`) |
+| Metin log | Sürekli (fire-and-forget — bkz. §⚡ Kural 4) | stdout → supervisor → SQLite `logs` |
+| **Kritik olay push** (emir gönderildi, fill/MATCHED, PnL değişimi) | **Anında** — emir göndericisi tamamlandıktan hemen sonra | SSE kanalı → Frontend (bkz. §⚡ Kural 5) |
+| WS orderbook özeti | Olay geldikçe (fire-and-forget) | SQLite (işlenmiş `asset_id`, `market`, `bids`/`asks`, `timestamp`) |
 | Sonraki market planı | Pencere öncesi | SQLite (ön kayıt) |
 | Pencere başlangıcı | T=0 | Aynı satırın güncellenmesi |
-| Trade satırları | Her User WS `trade` mesajı (aynı `id`’de güncelleme); log + SQLite upsert | SQLite §10 + log (`GET /trades` yok) |
-| Emir satırları | User WS `order` + REST `POST`/`DELETE` emir yanıtları işlendiğinde | SQLite §8 (bkz. «Kalıcılık ve sonradan sorgu») |
+| Trade satırları | Her User WS `trade` mesajı — state güncellemesi önce, log + SQLite upsert fire-and-forget | SQLite §10 + log (`GET /trades` yok) |
+| Emir satırları | Emir gönderildikten sonra fire-and-forget (User WS `order` + REST `POST`/`DELETE`) | SQLite §8 (bkz. «Kalıcılık ve sonradan sorgu») |
 | `market_resolved` | Market WS (`custom_feature_enabled: true`); bekleme **5+5+10**; yoksa **`not resolved`** | SQLite §9 (payload veya `not resolved`) |
+
+---
+
+## 14. Binance USD-M Futures aggTrade — harici sinyal katmanı
+
+Bu bölüm, desteklenen kripto marketleri (`btc/eth/sol/xrp-updown-*`) için Binance Futures aggTrade akışından üretilen `binance_signal` metriğini tanımlar. Sinyal, emir öncesinde tüm stratejiler tarafından `signal_weight` parametresiyle ağırlıklı olarak tüketilir; Polymarket CLOB veya orderbook akışlarına dokunmaz.
+
+### 14.1 WebSocket Bağlantısı
+
+| Alan | Değer |
+|---|---|
+| Uç nokta | `wss://fstream.binance.com/ws/<symbol>@aggTrade` |
+| Desteklenen semboller | `btcusdt`, `ethusdt`, `solusdt`, `xrpusdt` |
+| Güncelleme hızı | gerçek zamanlı (100 ms agg. penceresi) |
+| Protokol | Binance her 20 sn `PING` frame → bot `PONG` (WS protocol-level) |
+
+**Slug → Binance sembol eşlemesi:**
+
+| Market slug öneki | aggTrade sembolü |
+|---|---|
+| `btc-updown-*` | `btcusdt` |
+| `eth-updown-*` | `ethusdt` |
+| `sol-updown-*` | `solusdt` |
+| `xrp-updown-*` | `xrpusdt` |
+
+Sembol, Gamma `slug` alanından bot başlatıldığında bir kez çözümlenir ve ömür boyunca sabit kalır.
+
+aggTrade payload (USD-M Futures):
+
+```json
+{
+  "e": "aggTrade",
+  "E": 1776500700123,
+  "s": "BTCUSDT",
+  "a": 5933014,
+  "p": "84200.50",
+  "q": "1.250",
+  "f": 100,
+  "l": 105,
+  "T": 1776500700100,
+  "m": false
+}
+```
+
+Trade sınıflandırması:
+
+| `m` alanı | Anlam | İşlem |
+|---|---|---|
+| `false` | Taker BUY (ask'e vurdu) | `buy_vol += q` |
+| `true` | Taker SELL (bid'e vurdu) | `sell_vol += q` |
+
+### 14.2 Türetilen Ham Metrikler
+
+**CVD (Cumulative Volume Delta) — kayan pencere W:**
+
+```
+delta_i = if m==false { +q } else { -q }
+CVD(t, W) = Σ_{t_i ∈ [t−W, t]} delta_i
+```
+
+Pencere `W` market aralığına göre otomatik seçilir:
+
+| Market aralığı | CVD penceresi W |
+|---|---|
+| `5m` | 60 s |
+| `15m` | 180 s |
+| `1h` | 600 s |
+| `4h` | 1800 s |
+
+`CVD > 0` → net agresif alış baskısı; `CVD < 0` → net agresif satış baskısı.
+
+**BSI (Buy-Sell Imbalance — Hawkes üstel bozunumu):**
+
+```
+BSI(t) = BSI(t−1) × e^(−κ × Δt_saniye) + delta_t
+```
+
+- `κ = 0.1` (yavaş bozunum); her market oturumu başında `BSI = 0`
+- Kaynak: [tr8dr.github.io/BuySellImbalance](https://tr8dr.github.io/BuySellImbalance/)
+
+**OFI (Order Flow Imbalance — sayı bazlı oran):**
+
+```
+OFI(t, W) = (N_buy − N_sell) / (N_buy + N_sell)    ∈ [−1, +1]
+```
+
+`N_buy`, `N_sell`: `[t−W, t]` içindeki agresif alış/satış trade sayısı.
+
+### 14.3 Sinyal Skoru — 0–10 Ölçeği
+
+Ham OFI, **rolling z-score** ile normalize edilip `[0, 10]` aralığına çevrilir:
+
+```
+z             = clamp((OFI_t − μ_OFI) / σ_OFI,  −3, +3)
+signal_score  = round((z + 3) / 6 × 10,  1)       ∈ [0.0, 10.0]
+```
+
+- `μ_OFI`, `σ_OFI`: son `N = 300` OFI ölçümünün kayan istatistiği
+- Warmup (`N < 300`): `signal_score = 5.0` (nötr)
+- `5.0` = nötr; `> 5.0` = alış baskısı; `< 5.0` = satış baskısı
+
+**Etkin skor (`signal_weight` uygulanmış):**
+
+```
+effective_score = 5.0 + (signal_score − 5.0) × (signal_weight / 10.0)
+```
+
+| `signal_weight` | Etki |
+|---|---|
+| `0` | `effective_score` her zaman `5.0`; sinyal devre dışı |
+| `5` (varsayılan) | Yarım ağırlık |
+| `10` | Tam ağırlık; `effective_score = signal_score` |
+
+### 14.4 Strateji Bazlı Etki
+
+| `effective_score` aralığı | Yorumlama | `dutch_book` | `harvest` | `prism` |
+|---|---|---|---|---|
+| `8–10` (güçlü alış) | Agresif UP baskısı | UP boyut `×1.5`; yön teyit zorunlu | Avg YES `×1.0` (zıt); Avg NO `×1.3` (teyit) | Giriş eşiği düşürülür (erken pozisyon) |
+| `6–8` (hafif alış) | Hafif UP baskısı | UP boyut `×1.2` | Avg YES `×0.9`; Avg NO `×1.1` | Eşik normale yakın |
+| `4–6` (nötr) | Baskı yok | `×1.0` (değişmez) | `×1.0` | Normal zamanlama |
+| `2–4` (hafif satış) | Hafif DOWN baskısı | DOWN boyut `×1.2`; UP emirde `×0.8` | Avg YES `×1.1` (teyit); Avg NO `×0.9` | Giriş eşiği yükseltilir |
+| `0–2` (güçlü satış) | Agresif DOWN baskısı | DOWN boyut `×1.5`; zıt yönde emir atlanır | Avg YES `×1.3` (teyit); Avg NO `×1.0` (zıt) | Giriş engellenir |
+
+**`harvest` tablosu okuma kılavuzu:** Sinyal, averaging yapılan **tarafı teyit edip etmediğine** göre ölçekler. "Avg YES" = YES (UP) tarafı averaging; "Avg NO" = NO (DOWN) tarafı averaging. Güçlü alış sinyali, fiyatı yükselen YES tarafına averaging yapmayı teyit etmez (zıt); aksine düşen NO tarafı için averaging'i güçlendirir (teyit). Güçlü satış sinyali ise YES fiyatının düştüğünü gösterir, dolayısıyla YES averaging'i teyit eder. Yön filtresi yok; sinyal yalnızca **averaging GTC boyutunu** ölçekler.
+
+**Strateji mekanizma özeti:**
+- **`dutch_book`:** Sinyal hem pozisyon boyutunu hem yön doğrulamasını etkiler. `effective_score < 2` iken UP emir üretilmez.
+- **`harvest`:** Sinyal yalnızca **averaging GTC boyutunu** ölçekler (teyit mantığı); yönü filtrelemez, her koşulda emir üretilir.
+- **`prism`:** Sinyal zamanlama / giriş eşiğini etkiler. Güçlü satış → giriş ertelenir veya pencere içinde iptal edilir.
+
+**`MarketZone` ile etkileşim (bkz. §15):** Sinyal hesabı (`CVD`, `BSI`, `OFI`, `signal_score`) her bölgede sürekli yapılır. Ancak her strateji, `ZoneSignalMap` aracılığıyla bazı bölgelerde sinyali **pasif** bırakabilir. Pasif bölgede `effective_score` zorla `5.0` (nötr) olarak uygulanır; pozisyon boyutu ve yön filtresi sinyal tarafından etkilenmez. Hangi bölgelerde sinyalin aktif olduğu her stratejinin bölge haritasında (`strategies.md §1–3`) tanımlanır. `StopTrade` bölgesinde sinyal durumundan bağımsız olarak yeni emir üretilmez (§15 zorunlu kuralı).
+
+### 14.5 Rust Yapı Taslağı
+
+```rust
+/// Tek aggTrade olayı (Binance USD-M Futures şeması).
+pub struct BinanceAggTrade {
+    pub symbol:         String,
+    pub price:          f64,
+    pub qty:            f64,
+    pub is_buyer_maker: bool,   // m alanı: false = taker BUY, true = taker SELL
+    pub trade_time_ms:  u64,    // T alanı
+}
+
+/// Anlık sinyal durumu — Arc<RwLock<>> ile strateji katmanına açılır.
+pub struct BinanceSignalState {
+    pub cvd:           f64,   // kayan pencere CVD (base asset birimi)
+    pub bsi:           f64,   // Hawkes BSI
+    pub ofi:           f64,   // OFI ∈ [−1, +1]
+    pub signal_score:  f64,   // normalize 0–10 (warmup: 5.0)
+    pub updated_at_ms: u64,
+    pub warmup:        bool,  // N < 300 → nötr skor kullan
+}
+```
+
+**Görev mimarisi:**
+- `binance_aggtrade_task`: `tokio-tungstenite` → `wss://fstream.binance.com`; PING/PONG işler; `mpsc::Sender<BinanceAggTrade>`
+- `signal_processor_task`: `mpsc::Receiver` → rolling `VecDeque<(u64, f64)>`; `Arc<RwLock<BinanceSignalState>>` günceller
+- Strateji katmanı: emir kararı üretmeden önce `signal_state.read()` → `effective_score` → pozisyon çarpanı
+
+**Yeniden bağlanma:** Binance WS düşerse üstel backoff `1s → 2s → 4s → … → max 60s`; bağlantı kopuk süre boyunca `signal_score = 5.0` (nötr), emir üretimi durmaz.
+
+**Bağımsızlık:** Binance aggTrade akışı tamamen bağımsız bir görevde çalışır; Polymarket CLOB, Market WS, User WS akışlarına ve heartbeat döngüsüne dokunmaz.
+
+---
+
+## 15. Market Bölge Sistemi (`MarketZone`)
+
+Market penceresi `[startDate, endDate]` boyunca bot, anlık ilerleme yüzdesine göre 5 farklı **bölgede** çalışır. Her bölgenin emir davranışı ve `binance_signal` aktifliği strateji bazında ayrıca tanımlanır.
+
+### 15.1 Bölge Tanımları
+
+**İlerleme yüzdesi hesabı:**
+
+```
+zone_pct = (now − startDate) / (endDate − startDate) × 100.0
+```
+
+| Bölge | `zone_pct` aralığı | Özellik |
+|---|---|---|
+| `DeepTrade` | 0 – 10 % | Pencerenin en erken fazı; referans fiyat henüz oturmamış, spread geniş |
+| `NormalTrade` | 10 – 50 % | Ana işlem penceresi; orderbook derinleşmiş, fiyat yavaş yavaş belirginleşir |
+| `AggTrade` | 50 – 90 % | İkinci yarı; momentum netleşir, fiyat hareketi hızlanabilir |
+| `FakTrade` | 90 – 97 % | Kapanış öncesi; likidite azalır, spread genişler, yanıltıcı hareketler artabilir |
+| `StopTrade` | 97 – 100 % | Kapanışa yakın; **yeni emir üretimi durdurulur**, açık emirler yönetilir |
+
+**Terminoloji notu:** `AggTrade` bölge adı, §14'teki Binance `aggTrade` WebSocket akışıyla aynı terim değildir. Bağlamdan ayırt edilmeli; doküman içinde `MarketZone::AggTrade` şeklinde tam nitelikli kullanım tercih edilir.
+
+### 15.2 Rust Enum Taslağı
+
+```rust
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MarketZone {
+    DeepTrade,   //  0–10 %
+    NormalTrade, // 10–50 %
+    AggTrade,    // 50–90 %
+    FakTrade,    // 90–97 %
+    StopTrade,   // 97–100 %
+}
+
+impl MarketZone {
+    /// `zone_pct` = (now − startDate) / (endDate − startDate) × 100.0
+    /// Sınır değerler alt bölgeye dahildir (örn. 10.0 → NormalTrade).
+    pub fn from_pct(zone_pct: f64) -> Self {
+        match zone_pct {
+            p if p < 10.0 => Self::DeepTrade,
+            p if p < 50.0 => Self::NormalTrade,
+            p if p < 90.0 => Self::AggTrade,
+            p if p < 97.0 => Self::FakTrade,
+            _              => Self::StopTrade,
+        }
+    }
+
+    /// Bölge indeksi — ZoneSignalMap dizisinde konum olarak kullanılır.
+    pub const fn index(self) -> usize {
+        self as usize
+    }
+}
+```
+
+### 15.3 Per-Strateji Bölge × Sinyal Haritası (`ZoneSignalMap`)
+
+Her strateji, her bölgede `binance_signal`'ın aktif mi pasif mi olduğunu `ZoneSignalMap` ile tanımlar.
+
+```rust
+/// Beş bölge için binance_signal aktifliği.
+/// Sıra: [DeepTrade, NormalTrade, AggTrade, FakTrade, StopTrade]
+pub struct ZoneSignalMap(pub [bool; 5]);
+
+impl ZoneSignalMap {
+    /// Verilen bölgede sinyal aktif mi?
+    pub fn signal_active(&self, zone: MarketZone) -> bool {
+        self.0[zone.index()]
+    }
+}
+
+impl Strategy {
+    /// Her strateji kendi zone → sinyal haritasını döndürür.
+    /// Değerler strategies.md'deki bölge tablolarından gelir.
+    pub fn zone_signal_map(self) -> ZoneSignalMap {
+        match self {
+            // Tam değerler strategies.md bölge tablosu doldurulunca buraya yazılır.
+            Self::DutchBook | Self::Harvest | Self::Prism => ZoneSignalMap([false; 5]),
+        }
+    }
+}
+```
+
+**Kullanım akışı (strateji motoru, her emir kararı öncesinde):**
+
+```
+zone     = MarketZone::from_pct(zone_pct)
+sig_ok   = strategy.zone_signal_map().signal_active(zone)
+
+effective_score = if sig_ok {
+    // §14.3 formülü: 5.0 + (signal_score − 5.0) × (signal_weight / 10.0)
+    5.0 + (signal_score - 5.0) * (signal_weight as f64 / 10.0)
+} else {
+    5.0  // nötr — sinyal bu bölgede pasif
+}
+```
+
+`StopTrade` bölgesinde (`zone_pct ≥ 97 %`) sinyal değerinden bağımsız olarak **yeni emir üretilmez**; yalnızca açık emir yönetimi ve heartbeat döngüsü sürer. Bu kural `zone_signal_map` dışında, strateji motorunun üst katmanında zorunlu olarak uygulanır.
+
+---
+
+## 16. Çalışma Modu — `RunMode` (`live` / `dryrun`)
+
+Her bot, **`live`** veya **`dryrun`** modunda başlatılır. Mod, frontend'deki bot oluşturma formunda seçilir ve `BotConfig::run_mode` alanında saklanır. **Mod, bot çalışırken değiştirilemez.**
+
+### Mod Karşılaştırması
+
+| Bileşen | `live` | `dryrun` |
+|---|---|---|
+| Market WS (orderbook, fiyat) | Bağlanır — gerçek veri | Bağlanır — gerçek veri (aynı) |
+| User WS (order/trade event) | Bağlanır — gerçek emir olayları | **Bağlanmaz** |
+| REST heartbeat | Gönderilir | **Gönderilmez** |
+| `POST /order`, `POST /orders` | CLOB API'ye gönderilir | **Gönderilmez** — motor içinde anında fill simüle edilir |
+| `DELETE /orders` | CLOB API'ye gönderilir | **Gönderilmez** — anında başarılı yanıt simüle edilir |
+| CLOB auth header | Her istekte eklenir | **Eklenmez** |
+| DB / log yazımı | `run_mode = live` ile | `run_mode = dryrun` ile (aynı şema) |
+
+### Dryrun Simülasyon Kuralları
+
+**GTC emir (OpenDual / Averaging):**
+- `POST /order` veya `POST /orders` çağrısı engellenir.
+- Bot, emir gönderildiği anda **anında fill** olmuş gibi davranır:
+  - Fill fiyatı = emrin kendi bid fiyatı (`up_bid`, `down_bid`, `first_best_leg`)
+  - Fill boyutu = hesaplanan `effective_size` (tam fill)
+  - Simüle edilen order ID = `dryrun-<uuid-v4>`
+- `avg_*`, `imbalance`, `imbalance_cost` ve diğer metrikler gerçek fill ile aynı şekilde güncellenir.
+- User WS `trade` olayı yoktur; güncelleme doğrudan motor içinde tetiklenir.
+
+**FAK emir (ProfitLock):**
+- CLOB API'ye gönderilmez.
+- Her zaman **tam fill** simüle edilir: `filled = imbalance`, `price = hedge_leg`.
+- Kısmi fill senaryosu dryrun'da test edilmez.
+
+**GTC iptal (`DELETE /orders`):**
+- API çağrısı yapılmaz; bot iptal başarılı kabul eder ve lokal emir listesinden kaldırır.
+
+### Rust Yapısı
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum RunMode {
+    /// Gerçek CLOB API — auth gerekli, emirler iletilir.
+    Live,
+    /// Simülasyon — Market WS gerçek, emirler lokal fill ile simüle edilir.
+    DryRun,
+}
+
+impl RunMode {
+    /// Live modda CLOB auth header eklenir ve emirler iletilir.
+    pub fn is_live(self) -> bool { matches!(self, Self::Live) }
+    /// Dryrun modda emir çağrısı engellenir; anında simüle fill üretilir.
+    pub fn is_dry(self) -> bool { matches!(self, Self::DryRun) }
+}
+```
+
+`BotConfig::run_mode: RunMode` — bot başlatılırken ayarlanır, runtime'da değiştirilemez.
+
+### Loglama ve DB
+
+- Her log satırında `"run_mode":"live"` veya `"run_mode":"dryrun"` alanı bulunur.
+- SQLite tablolarında `run_mode TEXT NOT NULL` sütunu eklenir; tüm satırlara yazılır.
+- Dryrun kayıtları live kayıtlardan ayrı sorgulanabilir (`WHERE run_mode = 'dryrun'`).
+- Simüle fill kayıtlarında `order_id` `dryrun-` önekiyle başlar.
+
+### Kısıtlamalar
+
+- Dryrun'da **User WS bağlantısı yoktur** — gerçek emir/trade olayları alınamaz. Tüm durum güncellemesi motor içi simülasyondan gelir.
+- Dryrun'da **REST heartbeat yoktur** — heartbeat zaman aşımı geçerliliği test edilemez.
+- Dryrun sonuçları (kâr/zarar simülasyonu) gerçek piyasa likiditesini yansıtmaz; fill her zaman tam ve anlıktır.
+
+---
+
+## 17. Anlık PnL Hesabı (Per-Market, Per-Bot)
+
+### Veri Kaynağı
+
+Polymarket'te resmi bir "PnL endpoint" yoktur. Tüm hesap **User WS `trade`** olaylarında `status=MATCHED` olduğunda gelen `size`, `price`, `fee_rate_bps` alanlarından yapılır; market fiyatı ise Market WS **`best_bid_ask`** event'inden okunur. **`GET /trades` kullanılmaz** (bkz. §5.5 "Kullanılmaz").
+
+**Settlement kuralı (binary market):** Market çözümlendiğinde kazanan outcome'un her share'i `$1.00 USDC`, kaybeden outcome'un share'i `$0.00` öder ([UMA Optimistic Oracle](https://docs.polymarket.com/concepts/resolution)). Bu, `pnl_if_up` / `pnl_if_down` hesabının temelidir.
+
+### Temel Değişkenler
+
+Her MATCHED fill event'inde aşağıdaki değişkenler biriktirilir:
+
+| Değişken | Formül | Kaynak |
+|---|---|---|
+| `cost_basis` | `Σ(size_i × price_i + fee_i)` — tüm BUY filllerinin toplam USDC maliyeti | User WS `trade` `MATCHED` |
+| `fee_total` | `Σ(size_i × price_i × fee_rate_bps_i / 10_000)` | `fee_rate_bps` alanı (her trade'de değişebilir) |
+| `shares_YES` | `Σ size` (YES BUY) − `Σ size` (YES SELL) — net YES pozisyonu | `outcome` + `side` alanları |
+| `shares_NO` | `Σ size` (NO BUY) − `Σ size` (NO SELL) — net NO pozisyonu | `outcome` + `side` alanları |
+
+> **Strateji notu:** `harvest` dahil mevcut stratejiler yalnızca **BUY** emri gönderir (SELL olmaz); pozisyon market çözümüyle kapatılır. SELL muhasebesi ileride SELL emri olan stratejiler için hazır olacak şekilde tasarlanmıştır.
+
+### Üç PnL Metriği
+
+```
+pnl_if_up   = shares_YES × 1.0 − cost_basis   // UP (YES) kazanırsa gerçekleşecek USDC kâr/zarar
+pnl_if_down = shares_NO  × 1.0 − cost_basis   // DOWN (NO) kazanırsa gerçekleşecek USDC kâr/zarar
+mtm_pnl     = shares_YES × best_bid_YES
+            + shares_NO  × best_bid_NO
+            − cost_basis                       // Anlık mark-to-market (bugün satılabilseydi)
+```
+
+| Metrik | Anlamı | Güncelleme tetikleri |
+|---|---|---|
+| `pnl_if_up` | YES kazanırsa hesaba girecek net USDC | Her MATCHED fill |
+| `pnl_if_down` | NO kazanırsa hesaba girecek net USDC | Her MATCHED fill |
+| `mtm_pnl` | Mevcut bid fiyatlarıyla teorik anlık değer | Her MATCHED fill + her `best_bid_ask` event |
+
+**`harvest` için not:** Delta-nötr strateji ideal durumda `shares_YES ≈ shares_NO ≈ pair_count` sağlar; bu durumda `pnl_if_up ≈ pnl_if_down ≈ (1 − AVG_SUM) × pair_count` — ProfitLock'taki kâr formülüyle örtüşür.
+
+**Ücret notu:** Maker (GTC) ücreti Polymarket'te genellikle 0 bps; Taker (FAK) ücreti tipik olarak ~100–200 bps. `fee_rate_bps` değeri her trade payload'ında gelir ve `cost_basis`'e dahil edilir.
+
+### Rust Yapı Taslağı
+
+```rust
+/// Bir bot'un tek market oturumu boyunca anlık PnL durumu.
+/// Her MATCHED trade ve best_bid_ask event'inde güncellenir.
+#[derive(Debug, Clone, Default)]
+pub struct MarketPnL {
+    /// Toplam harcanan USDC (tüm BUY filllerinin notional + fee toplamı).
+    pub cost_basis:   f64,
+    /// Ödenen toplam ücret (USDC).
+    pub fee_total:    f64,
+    /// Net YES share pozisyonu.
+    pub shares_yes:   f64,
+    /// Net NO share pozisyonu.
+    pub shares_no:    f64,
+    /// YES (UP) kazanırsa gerçekleşecek PnL (USDC).
+    pub pnl_if_up:    f64,
+    /// NO (DOWN) kazanırsa gerçekleşecek PnL (USDC).
+    pub pnl_if_down:  f64,
+    /// Anlık mark-to-market PnL — best_bid fiyatlarıyla teorik değer (USDC).
+    pub mtm_pnl:      f64,
+}
+
+impl MarketPnL {
+    /// User WS `trade` `status=MATCHED` event'inde çağrılır.
+    /// `outcome`: "YES" | "NO"  — ham payload değeri (trim + uppercase ile karşılaştırılır)
+    /// `side`:    "BUY" | "SELL"
+    pub fn on_trade_matched(
+        &mut self,
+        size:          f64,
+        price:         f64,
+        fee_rate_bps:  f64,
+        outcome:       &str,
+        side:          &str,
+    ) {
+        let notional = size * price;
+        let fee      = notional * fee_rate_bps / 10_000.0;
+        let sign     = if side == "BUY" { 1.0 } else { -1.0 };
+
+        if side == "BUY" {
+            self.cost_basis += notional + fee;
+            self.fee_total  += fee;
+        } else {
+            // SELL: pozisyon azalır, maliyet tabanı satılan payın maliyeti kadar düşer
+            self.cost_basis -= notional - fee;
+        }
+
+        match outcome.trim().to_uppercase().as_str() {
+            "YES" => self.shares_yes += sign * size,
+            "NO"  => self.shares_no  += sign * size,
+            _     => {}
+        }
+
+        self.pnl_if_up   = self.shares_yes - self.cost_basis;
+        self.pnl_if_down = self.shares_no  - self.cost_basis;
+    }
+
+    /// Market WS `best_bid_ask` event'inde çağrılır (mtm_pnl güncellenir).
+    pub fn on_best_bid_ask(&mut self, best_bid_yes: f64, best_bid_no: f64) {
+        self.mtm_pnl =
+            self.shares_yes * best_bid_yes
+            + self.shares_no * best_bid_no
+            - self.cost_basis;
+    }
+}
+```
+
+### Frontend API Uç Noktası
+
+`GET /api/bots/{id}/markets/{session_id}/pnl` — supervisor, bot'un in-memory `MarketPnL` durumunu SQLite'taki son fill ozeti ile birleştirerek döndürür:
+
+```json
+{
+  "market_session_id": "...",
+  "slug": "btc-updown-5m-1776500700",
+  "cost_basis":   4.72,
+  "fee_total":    0.01,
+  "shares_yes":   10.0,
+  "shares_no":    10.0,
+  "pnl_if_up":    5.28,
+  "pnl_if_down":  5.28,
+  "mtm_pnl":      3.10,
+  "run_mode":     "live"
+}
+```
+
+**Güncelleme kanalı (§⚡ Kural 5 uyumu):**
+- **MATCHED fill** (yani `pnl_if_up` / `pnl_if_down` değişimi) → SSE kanalı üzerinden frontend'e **anında push** edilir; polling beklenmez.
+- **`mtm_pnl`** (`best_bid_ask` event'lerinde sık güncellenir) → frontend §2'deki **1 sn polling** ile okur; her WS event'inde push gerekmez.
+
+`run_mode = "dryrun"` ise tüm değerler simüle fill'lerden hesaplanır (gerçek likiditeyi yansıtmaz).
+
+### SQLite Kalıcılığı
+
+`MarketPnL` alanları market oturumu tablosunda ayrı sütunlar olarak tutulabilir **veya** her MATCHED trade satırından türetilebilir (her iki yaklaşım da desteklenir; öneri: in-memory + periyodik snapshot). Market çözümü (`market_resolved`) geldiğinde nihai `pnl_if_up` ya da `pnl_if_down` (kazanan outcome'a göre) SQLite'a `realized_pnl` olarak yazılır.
 
 ---
 

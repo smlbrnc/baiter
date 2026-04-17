@@ -1588,7 +1588,7 @@ pub async fn run_market_stream(asset_ids: Vec<String>) -> anyhow::Result<()> {
 2. **Server time sync** — HMAC imzaları timestamp'e dayanır. `GET /time` ile lokal saat sapmasını ölç.
 3. **Backoff** — 429 için `tokio::time::sleep` + exponential.
 4. **WebSocket reconnect** — `tokio_tungstenite` connection drop olursa eksponansiyel backoff ile reconnect, son subscription state'i restore et.
-5. **Order book replay** — WSS bağlandığında REST'ten `GET /book` ile snapshot al, sonra WSS delta'larını apply et.
+5. **Order book (Market WS)** — Canlı defter yalnız resmi [Market Channel](https://docs.polymarket.com/market-data/websocket/market-channel) akışıyla: abonelik sonrası **`book`** (tam seviye + `hash`), ardından **`book`** / **`price_change`** ile güncelleme; reconnect’te abonelik yenilenir, önceki lokal durum taşınmaz. `GET /book` ayrı public uçtur (ör. T−15 hazırlık); canlı senkron için REST+WS ikili baseline mimaride tanımlanmaz.
 6. **Rate limit tracking (istemci)** — Polymarket tarafı limitlere takılmamak için çıkan istekleri sınırla: **[governor](https://crates.io/crates/governor)** gibi token bucket yaygın seçimdir. `tower::limit::RateLimit` bir `Service` katmanıdır; Axum **sunucu** yanında, kendi HTTP istemcinizi `Service` olarak modellediğinizde de kullanılabilir — “yalnızca sunucu” değildir; fakat yalın `reqwest` ile **governor** genelde daha doğrudan uygulanır.
 7. **Signature type:** Yeni kullanıcılar için `GNOSIS_SAFE` (2). EOA (0) sadece doğrudan Metamask trader'lar için.
 8. **`outcome_prices`, `clob_token_ids` parsing** — String-encoded array, `serde_json::from_str` ile parse et.
