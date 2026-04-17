@@ -1,0 +1,18 @@
+[package]
+name = "baiter-pro"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.91"
+description = "Polymarket Gamma/CLOB entegrasyon iskeleti"
+
+[dependencies]
+axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio", "macros"] }
+dotenvy = "0.15.7"
+reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls", "http2"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
+thiserror = "2.0.18"
+tokio = { version = "1.52.1", features = ["rt-multi-thread", "macros", "net"] }
+tower = "0.5.3"
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
