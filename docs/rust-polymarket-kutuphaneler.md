@@ -29,6 +29,7 @@
 |------|--------|
 | Gamma REST (events, markets, tags, …) | [docs/api/polymarket-gamma.md](api/polymarket-gamma.md) |
 | CLOB REST + WebSocket (orderbook, emir, imza) | [docs/api/polymarket-clob.md](api/polymarket-clob.md) |
+| Bot mimarisi, SQLite, ortak metrik kataloğu, `Strategy` ↔ metrik Rust taslağı | [docs/bot-platform-mimari.md](bot-platform-mimari.md) («Ortak metrik kataloğu», «Rust uygulama taslağı») |
 
 Resmi üst kaynak (API referansı): [docs.polymarket.com](https://docs.polymarket.com/api-reference).
 
