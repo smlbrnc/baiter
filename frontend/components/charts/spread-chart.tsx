@@ -35,8 +35,8 @@ interface Row {
 const MAX_POINTS = 600;
 
 const chartConfig = {
-  yesSpread: { label: "YES spread", color: "#10b981" },
-  noSpread: { label: "NO spread", color: "#ef4444" },
+  yesSpread: { label: "YES spread", color: "var(--chart-1)" },
+  noSpread: { label: "NO spread", color: "oklch(0.63 0.2 352)" },
 } satisfies ChartConfig;
 
 export function SpreadChart({ botId, session }: Props) {

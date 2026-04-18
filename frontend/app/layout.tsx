@@ -4,7 +4,6 @@ import { Geist_Mono, Inter } from "next/font/google";
 import "./globals.css";
 import { ThemeProvider } from "@/components/theme-provider";
 import { AppSidebar } from "@/components/app-sidebar";
-import { Toaster } from "@/components/ui/sonner";
 import { cn } from "@/lib/utils";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-sans" });
@@ -35,11 +34,12 @@ export default function RootLayout({
         <ThemeProvider>
           <div className="bg-background text-foreground flex min-h-svh">
             <AppSidebar />
-            <main className="flex-1 overflow-auto">
-              <div className="mx-auto max-w-7xl p-6">{children}</div>
+            <main className="bg-muted/30 flex-1 overflow-auto">
+              <div className="mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8 lg:py-8">
+                {children}
+              </div>
             </main>
           </div>
-          <Toaster position="top-right" />
         </ThemeProvider>
       </body>
     </html>

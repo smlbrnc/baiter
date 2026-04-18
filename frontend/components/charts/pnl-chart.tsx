@@ -32,7 +32,7 @@ interface Row {
 const MAX_POINTS = 600;
 
 const chartConfig = {
-  mtm: { label: "mtm_pnl", color: "#f59e0b" },
+  mtm: { label: "mtm_pnl", color: "var(--chart-3)" },
 } satisfies ChartConfig;
 
 export function PnLChart({ botId, session, pollMs = 1000 }: Props) {

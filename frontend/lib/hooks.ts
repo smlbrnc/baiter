@@ -111,20 +111,17 @@ export function useEventStream(
 /** Bot listesini yükler; interval ile yeniler. */
 export function useBots(pollMs = 2000): {
   bots: BotRow[];
-  loading: boolean;
   reload: () => void;
 } {
   const [bots, setBots] = useState<BotRow[]>([]);
-  const [loading, setLoading] = useState(true);
 
   const reload = () => {
     api
       .listBots()
       .then((b) => {
         setBots(b);
-        setLoading(false);
       })
-      .catch(() => setLoading(false));
+      .catch(() => {});
   };
 
   useEffect(() => {
@@ -133,7 +130,7 @@ export function useBots(pollMs = 2000): {
     return () => clearInterval(id);
   }, [pollMs]);
 
-  return { bots, loading, reload };
+  return { bots, reload };
 }
 
 /** Tek bir bot için detay + 1 sn poll. */

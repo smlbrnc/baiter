@@ -49,7 +49,7 @@ export function LogStream({ botId }: { botId: number }) {
       <CardContent>
         <div
           ref={boxRef}
-          className="bg-muted/40 border-border h-72 overflow-auto rounded-md border p-3 font-mono text-[11px]"
+          className="bg-muted/40 h-72 overflow-auto rounded-md border border-border/45 p-3 font-mono text-[11px]"
         >
           {logs.length === 0 ? (
             <div className="text-muted-foreground">Henüz log yok.</div>

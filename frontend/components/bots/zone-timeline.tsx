@@ -32,7 +32,7 @@ export function ZoneTimeline({
         </CardTitle>
       </CardHeader>
       <CardContent>
-        <div className="border-border relative flex h-6 w-full overflow-hidden rounded-md border">
+        <div className="relative flex h-6 w-full overflow-hidden rounded-md border border-border/45">
           {ZONES.map((z) => (
             <div
               key={z.key}

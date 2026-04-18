@@ -2,13 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { HugeiconsIcon } from "@hugeicons/react";
-import {
-  ArrowLeft01FreeIcons,
-  PlayFreeIcons,
-  StopCircleFreeIcons,
-} from "@hugeicons/core-free-icons";
-import { toast } from "sonner";
+import { ArrowLeft, CircleStop, Play } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -94,7 +88,7 @@ export default function BotDetailPage() {
     return (
       <div className="space-y-4">
         <Button variant="ghost" onClick={() => router.back()}>
-          <HugeiconsIcon icon={ArrowLeft01FreeIcons} />
+          <ArrowLeft />
           Geri
         </Button>
         <p className="text-muted-foreground text-sm">Yükleniyor…</p>
@@ -103,38 +97,45 @@ export default function BotDetailPage() {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
+    <div className="space-y-8">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+        <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:gap-3">
           <Button
-            variant="ghost"
+            variant="outline"
             size="icon"
+            className="shrink-0"
             onClick={() => router.back()}
           >
-            <HugeiconsIcon icon={ArrowLeft01FreeIcons} />
+            <ArrowLeft />
           </Button>
-          <h1 className="text-xl font-semibold tracking-tight">{bot.name}</h1>
-          <Badge variant="outline">{bot.strategy}</Badge>
-          <Badge
-            className={
-              bot.run_mode === "live"
-                ? "border-transparent bg-primary/15 text-primary"
-                : "border-transparent bg-amber-500/15 text-amber-700 dark:text-amber-400"
-            }
-          >
-            {bot.run_mode}
-          </Badge>
-          <Badge
-            className={
-              bot.state === "RUNNING"
-                ? "border-transparent bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
-                : "bg-secondary text-secondary-foreground border-transparent"
-            }
-          >
-            {bot.state}
-          </Badge>
+          <div className="min-w-0 space-y-2">
+            <h1 className="font-heading truncate text-2xl font-semibold tracking-tight">
+              {bot.name}
+            </h1>
+            <div className="flex flex-wrap gap-2">
+              <Badge variant="outline">{bot.strategy}</Badge>
+              <Badge
+                className={
+                  bot.run_mode === "live"
+                    ? "border-transparent bg-primary/15 text-primary"
+                    : "border-transparent bg-amber-500/15 text-amber-700 dark:text-amber-400"
+                }
+              >
+                {bot.run_mode}
+              </Badge>
+              <Badge
+                className={
+                  bot.state === "RUNNING"
+                    ? "border-transparent bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+                    : "border-transparent bg-secondary text-secondary-foreground"
+                }
+              >
+                {bot.state}
+              </Badge>
+            </div>
+          </div>
         </div>
-        <div className="flex gap-2">
+        <div className="flex shrink-0 flex-wrap gap-2">
           {bot.state === "RUNNING" ? (
             <Button
               size="lg"
@@ -142,13 +143,12 @@ export default function BotDetailPage() {
               onClick={async () => {
                 try {
                   await api.stopBot(bot.id);
-                  toast.success(`Bot #${bot.id} durduruldu`);
-                } catch (e) {
-                  toast.error((e as Error).message);
+                } catch {
+                  /* yut */
                 }
               }}
             >
-              <HugeiconsIcon icon={StopCircleFreeIcons} />
+              <CircleStop />
               Durdur
             </Button>
           ) : (
@@ -157,13 +157,12 @@ export default function BotDetailPage() {
               onClick={async () => {
                 try {
                   await api.startBot(bot.id);
-                  toast.success(`Bot #${bot.id} başlatıldı`);
-                } catch (e) {
-                  toast.error((e as Error).message);
+                } catch {
+                  /* yut */
                 }
               }}
             >
-              <HugeiconsIcon icon={PlayFreeIcons} />
+              <Play />
               Başlat
             </Button>
           )}
@@ -218,11 +217,11 @@ export default function BotDetailPage() {
 
 function Item({ label, value }: { label: string; value: string }) {
   return (
-    <div className="flex flex-col">
-      <span className="text-muted-foreground text-[10px] tracking-wider uppercase">
+    <div className="flex flex-col gap-1">
+      <span className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
         {label}
       </span>
-      <span className="font-mono text-sm">{value}</span>
+      <span className="font-mono text-sm leading-snug">{value}</span>
     </div>
   );
 }

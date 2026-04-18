@@ -3,6 +3,7 @@ name = "baiter-pro"
 version = "0.1.0"
 edition = "2021"
 rust-version = "1.91"
+default-run = "supervisor"
 description = "Polymarket trading bot platform (supervisor + bot)"
 
 [[bin]]

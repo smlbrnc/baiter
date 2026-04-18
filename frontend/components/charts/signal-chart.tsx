@@ -39,7 +39,7 @@ interface Row {
 const MAX_POINTS = 600;
 
 const chartConfig = {
-  score: { label: "signal_score", color: "#60a5fa" },
+  score: { label: "signal_score", color: "var(--chart-2)" },
 } satisfies ChartConfig;
 
 export function SignalChart({ botId, session }: Props) {

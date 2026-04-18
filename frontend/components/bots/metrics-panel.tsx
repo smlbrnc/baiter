@@ -36,13 +36,13 @@ export function MetricsPanel({ m }: { m: LiveMetrics }) {
         <BestBlock
           title="NO bid"
           v={m.lastBestBidAsk?.no_best_bid}
-          color="red"
+          color="pink"
           bold
         />
         <BestBlock
           title="NO ask"
           v={m.lastBestBidAsk?.no_best_ask}
-          color="red"
+          color="pink"
         />
 
         <Pair
@@ -85,7 +85,7 @@ function BestBlock({
 }: {
   title: string;
   v: number | undefined;
-  color: "green" | "red";
+  color: "green" | "pink";
   bold?: boolean;
 }) {
   const klass = cn(
@@ -95,8 +95,8 @@ function BestBlock({
         ? "text-emerald-500 font-bold"
         : "text-emerald-400"
       : bold
-        ? "text-red-500 font-bold"
-        : "text-red-400",
+        ? "text-pink-500 font-bold dark:text-pink-400"
+        : "text-pink-400 dark:text-pink-300",
   );
   return (
     <div className="flex flex-col">

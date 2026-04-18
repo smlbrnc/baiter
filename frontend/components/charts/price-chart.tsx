@@ -37,10 +37,10 @@ interface Row {
 const MAX_POINTS = 600;
 
 const chartConfig = {
-  yesBid: { label: "YES bid", color: "#10b981" },
-  yesAsk: { label: "YES ask", color: "#34d399" },
-  noBid: { label: "NO bid", color: "#ef4444" },
-  noAsk: { label: "NO ask", color: "#f87171" },
+  yesBid: { label: "YES bid", color: "var(--chart-1)" },
+  yesAsk: { label: "YES ask", color: "var(--chart-2)" },
+  noBid: { label: "NO bid", color: "oklch(0.58 0.22 352)" },
+  noAsk: { label: "NO ask", color: "oklch(0.7 0.17 352)" },
 } satisfies ChartConfig;
 
 export function PriceChart({ botId, session }: Props) {
