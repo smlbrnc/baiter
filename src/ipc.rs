@@ -8,12 +8,37 @@
 
 use std::io::{self, Write};
 
+use chrono::Utc;
+use chrono_tz::America::New_York;
 use serde::{Deserialize, Serialize};
 
 use crate::types::{Outcome, Side};
 
 /// Stdout event prefix'i — supervisor bu prefix ile satırları parser'a yönlendirir.
 pub const EVENT_PREFIX: &str = "[[EVENT]] ";
+
+/// Mimari §5.1 — `[HH:MM:SS.mmm] [bot_label] mesaj` formatlı tek satır metin log.
+///
+/// Stdout'a yazılır; supervisor `[[EVENT]]` olmayan satırları logs tablosuna `info`
+/// seviyesiyle (veya satır başında `WARN`/`ERROR` belirteci varsa o seviyeyle) yazar.
+pub fn log_line(bot_label: &str, msg: impl AsRef<str>) {
+    // Mimari §5.1 örnekleri ET (America/New_York) zaman dilimindedir.
+    let ts = Utc::now()
+        .with_timezone(&New_York)
+        .format("%H:%M:%S%.3f");
+    let stdout = io::stdout();
+    let mut h = stdout.lock();
+    let _ = writeln!(h, "[{ts}] [{bot_label}] {}", msg.as_ref());
+    let _ = h.flush();
+}
+
+/// `log_line` makro — `format!` benzeri kullanım için.
+#[macro_export]
+macro_rules! log_line {
+    ($label:expr, $($arg:tt)*) => {
+        $crate::ipc::log_line($label, format!($($arg)*))
+    };
+}
 
 /// Supervisor → frontend SSE ile taşınan event tipleri.
 ///
@@ -103,7 +128,9 @@ pub enum FrontendEvent {
         cvd: f64,
         ts_ms: u64,
     },
-    /// Strateji FSM geçişi (Pending → OpenDual, SingleLeg → ProfitLock, …).
+    /// Strateji FSM geçişi
+    /// (örn. `Pending → OpenDual{deadline}`, `OpenDual → SingleLeg{Up}`,
+    /// `SingleLeg → ProfitLock`, `ProfitLock → Done`).
     StateChanged {
         bot_id: i64,
         state: String,

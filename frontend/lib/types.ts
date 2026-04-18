@@ -15,6 +15,9 @@ export interface BotRow {
   run_mode: RunMode;
   order_usdc: number;
   signal_weight: number;
+  min_price: number;
+  max_price: number;
+  cooldown_threshold: number;
   strategy_params: Record<string, unknown> | null;
   state: string;
   last_active_ms: number | null;
@@ -35,6 +38,8 @@ export interface SessionInfo {
   start_ts: number;
   end_ts: number;
   state: string;
+  title: string | null;
+  image: string | null;
 }
 
 export interface PnLSnapshot {
@@ -161,6 +166,9 @@ export interface CreateBotReq {
   run_mode: RunMode;
   order_usdc: number;
   signal_weight: number;
+  min_price: number;
+  max_price: number;
+  cooldown_threshold: number;
   strategy_params?: Record<string, unknown>;
   credentials?: Credentials;
   auto_start?: boolean;

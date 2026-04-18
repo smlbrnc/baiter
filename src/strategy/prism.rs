@@ -15,6 +15,12 @@ pub enum PrismState {
 #[derive(Debug, Clone)]
 pub struct PrismContext<'a> {
     pub metrics: &'a StrategyMetrics,
+    /// Global emir taban fiyatı — strateji içi proaktif clamp için (engine guard zaten reject eder).
+    pub min_price: f64,
+    /// Global emir tavan fiyatı — strateji içi proaktif clamp için.
+    pub max_price: f64,
+    /// Averaging cooldown (ms) — bot config'den gelir; ilerideki averaging mantığı için.
+    pub cooldown_threshold: u64,
 }
 
 /// Faz 14'te doldurulacak.

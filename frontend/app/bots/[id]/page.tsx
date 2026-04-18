@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { ArrowLeft, CircleStop, Play } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -18,14 +18,12 @@ import {
   MetricsPanel,
   type LiveMetrics,
 } from "@/components/bots/metrics-panel";
-import { ZoneTimeline } from "@/components/bots/zone-timeline";
 import { PriceChart } from "@/components/charts/price-chart";
-import { SpreadChart } from "@/components/charts/spread-chart";
 import { PnLChart } from "@/components/charts/pnl-chart";
-import { SignalChart } from "@/components/charts/signal-chart";
+import { SpreadSignalChart } from "@/components/charts/spread-signal-chart";
 import { api } from "@/lib/api";
 import { useBot, useEventStream } from "@/lib/hooks";
-import type { FrontendEvent } from "@/lib/types";
+import type { FrontendEvent, SessionInfo } from "@/lib/types";
 
 export default function BotDetailPage() {
   const { id } = useParams<{ id: string }>();
@@ -39,25 +37,24 @@ export default function BotDetailPage() {
     lastZone: null,
     lastFill: null,
   });
-  const [sessionRange, setSessionRange] = useState<{
-    start: number;
-    end: number;
-  } | null>(null);
+  const [session, setSession] = useState<SessionInfo | null>(null);
 
-  useEffect(() => {
+  const refreshSession = useCallback(() => {
     if (!Number.isFinite(botId)) return;
-    let cancelled = false;
     api
       .botSession(botId)
-      .then((s) => {
-        if (cancelled || !s) return;
-        setSessionRange({ start: s.start_ts, end: s.end_ts });
-      })
+      .then((s) => setSession(s ?? null))
       .catch(() => {});
-    return () => {
-      cancelled = true;
-    };
   }, [botId]);
+
+  useEffect(() => {
+    refreshSession();
+  }, [refreshSession]);
+
+  const sessionRange = useMemo(
+    () => (session ? { start: session.start_ts, end: session.end_ts } : null),
+    [session],
+  );
 
   const filter = useMemo(
     () => (ev: FrontendEvent) => "bot_id" in ev && ev.bot_id === botId,
@@ -79,7 +76,7 @@ export default function BotDetailPage() {
         setMetrics((m) => ({ ...m, lastFill: ev }));
         break;
       case "SessionOpened":
-        setSessionRange({ start: ev.start_ts, end: ev.end_ts });
+        refreshSession();
         break;
     }
   }, filter);
@@ -97,7 +94,7 @@ export default function BotDetailPage() {
   }
 
   return (
-    <div className="space-y-8">
+    <div className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
         <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:gap-3">
           <Button
@@ -108,30 +105,46 @@ export default function BotDetailPage() {
           >
             <ArrowLeft />
           </Button>
-          <div className="min-w-0 space-y-2">
-            <h1 className="font-heading truncate text-2xl font-semibold tracking-tight">
-              {bot.name}
-            </h1>
-            <div className="flex flex-wrap gap-2">
-              <Badge variant="outline">{bot.strategy}</Badge>
-              <Badge
-                className={
-                  bot.run_mode === "live"
-                    ? "border-transparent bg-primary/15 text-primary"
-                    : "border-transparent bg-amber-500/15 text-amber-700 dark:text-amber-400"
-                }
-              >
-                {bot.run_mode}
-              </Badge>
-              <Badge
-                className={
-                  bot.state === "RUNNING"
-                    ? "border-transparent bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
-                    : "border-transparent bg-secondary text-secondary-foreground"
-                }
-              >
-                {bot.state}
-              </Badge>
+          <div className="flex min-w-0 items-center gap-3">
+            {session?.image && (
+              <img
+                src={session.image}
+                alt=""
+                className="h-12 w-12 shrink-0 rounded-md object-cover"
+              />
+            )}
+            <div className="min-w-0 space-y-2">
+              {session?.title && (
+                <h1 className="font-heading truncate text-2xl font-semibold tracking-tight">
+                  {session.title}
+                </h1>
+              )}
+              <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
+                <p className="text-muted-foreground min-w-0 shrink font-mono text-xs break-all sm:max-w-[min(100%,42rem)] sm:break-normal sm:truncate">
+                  {session?.slug ?? bot.slug_pattern}
+                </p>
+                <div className="flex shrink-0 flex-wrap items-center gap-2">
+                  <Badge variant="outline">{bot.strategy}</Badge>
+                  <Badge
+                    className={
+                      bot.run_mode === "live"
+                        ? "border-transparent bg-primary/15 text-primary"
+                        : "border-transparent bg-amber-500/15 text-amber-700 dark:text-amber-400"
+                    }
+                  >
+                    {bot.run_mode}
+                  </Badge>
+                  <Badge
+                    className={
+                      bot.state === "RUNNING"
+                        ? "border-transparent bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+                        : "border-transparent bg-secondary text-secondary-foreground"
+                    }
+                  >
+                    {bot.state}
+                  </Badge>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -196,19 +209,11 @@ export default function BotDetailPage() {
 
       <MetricsPanel m={metrics} />
 
-      <ZoneTimeline
-        zone={metrics.lastZone?.zone ?? null}
-        pct={metrics.lastZone?.zone_pct ?? null}
-      />
-
       <PnLWidget pnl={pnl ?? null} />
 
       <PriceChart botId={botId} session={sessionRange} />
-      <SpreadChart botId={botId} session={sessionRange} />
-      <div className="grid gap-6 lg:grid-cols-2">
-        <PnLChart botId={botId} session={sessionRange} />
-        <SignalChart botId={botId} session={sessionRange} />
-      </div>
+      <SpreadSignalChart botId={botId} session={sessionRange} />
+      <PnLChart botId={botId} session={sessionRange} />
 
       <LogStream botId={botId} />
     </div>

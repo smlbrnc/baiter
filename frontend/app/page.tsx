@@ -36,7 +36,7 @@ export default function DashboardPage() {
   const { bots, reload } = useBots();
   const statsLine = useMemo(() => dashboardStatsLine(bots), [bots]);
   return (
-    <div className="space-y-6">
+    <div className="space-y-5">
       <header className={CARD_SHELL_CLASS}>
         <div className="from-muted/35 via-background to-background relative overflow-hidden bg-gradient-to-br px-4 py-4 sm:px-5 sm:py-4">
           <div

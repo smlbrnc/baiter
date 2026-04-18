@@ -26,6 +26,21 @@ size = max(⌈order_usdc / price⌉, api_min_order_size)
 
 **Market bölge notu (tüm stratejiler):** Market penceresi 5 bölgeye ayrılır; her bölgede `binance_signal` aktifliği aşağıdaki **Bölge Haritası** tablolarıyla tanımlanır. Bölge hesabı ve `ZoneSignalMap` Rust yapısı için bkz. [bot-platform-mimari.md §15](bot-platform-mimari.md). `StopTrade` bölgesinde (`zone_pct ≥ 97 %`) tüm stratejilerde sinyal durumundan bağımsız olarak **yeni emir üretilmez**.
 
+**Global price guard (tüm stratejiler):** Tüm planlanan emir fiyatları
+`[bot.min_price, bot.max_price]` aralığında olmak zorundadır (varsayılan
+`0.05` / `0.95`). Bu aralığın dışındaki emirler `engine` katmanında reject
+edilir ve `🚧 Order rejected: price=… outside [min, max] reason=…` log'u
+basılır. Strateji modülleri (örn. harvest averaging) sınır aşımını proaktif
+olarak da kontrol edip emri hiç üretmemeyi tercih eder. Bkz.
+[bot-platform-mimari.md §11.5](bot-platform-mimari.md).
+
+**Ortak averaging cooldown (tüm stratejiler):** `BotConfig.cooldown_threshold`
+(default `30_000 ms`, frontend "Ek ayarlar" → "Cooldown threshold") iki rolü
+karşılar: (1) iki averaging emri **arası** minimum bekleme, (2) **kitapta
+açık** averaging GTC'sinin maksimum yaşam süresi (geçen iptal edilir).
+`last_averaging_ms` emrin **gönderildiği** anda set edilir. Bkz.
+[bot-platform-mimari.md §15.4](bot-platform-mimari.md).
+
 ---
 
 ## 1. `dutch_book`
@@ -86,13 +101,13 @@ Emir boyutu `order_usdc` ile kontrol edilir — platform geneli kuralı bkz. yuk
 
 | Parametre | Tip | Varsayılan | Açıklama |
 |---|---|---|---|
-| `up_bid` | `f64` | — | OpenDual YES tarafı limit bid fiyatı (zorunlu) |
-| `down_bid` | `f64` | — | OpenDual NO tarafı limit bid fiyatı (zorunlu) |
-| `avg_threshold` | `f64` | `0.98` | `avg_YES + avg_NO ≤ avg_threshold` → ProfitLock tetikler |
-| `cooldown_ms` | `u64` | `30_000` | İki averaging GTC arasındaki minimum bekleme (ms) |
+| `dual_timeout` | `u64` (ms) | `5_000` | OpenDual fill bekleme süresi; sonunda fill olmayan GTC'ler iptal edilir |
+| `avg_threshold` | `f64` | `0.98` | **SingleLeg ProfitLock** eşiği: `first_leg + hedge_leg ≤ avg_threshold` |
 | `max_position_size` | `f64` | `100.0` | Tek tarafın toplam share limiti (shares) |
 
-> **`tick_size` doğrulaması:** `up_bid` ve `down_bid`, market init'te `GET /book`'tan okunan `tick_size`'ın katı olmalıdır (örn. `tick_size=0.01` ise `0.52` geçerli, `0.525` geçersiz). Uyumsuz fiyat API tarafından `INVALID_ORDER_MIN_TICK_SIZE` hatasıyla reddedilir; bot başlatmada erken doğrulama yapılarak kullanıcı önceden bilgilendirilir. Averaging fiyatı (`first_best_leg`) orderbook'tan geldiği için doğal olarak geçerlidir.
+> **OpenDual fiyatı sinyalden türetilir** (aşağıda *Giriş — OpenDual* bölümüne bakın). `up_bid` / `down_bid` artık konfigürasyonda yer almaz; her ikisi de `tick_size` katına snap edilir. Averaging GTC fiyatı `first_best_leg` orderbook'tan geldiği için doğal olarak geçerlidir.
+>
+> **`cooldown_threshold`** (averaging GTC'leri arasındaki minimum bekleme) tüm stratejilerin paylaştığı sabit `30_000 ms`'dir; bkz. [bot-platform-mimari.md §15](bot-platform-mimari.md#15).
 
 ### Tanımlar
 
@@ -114,51 +129,87 @@ Emir boyutu `order_usdc` ile kontrol edilir — platform geneli kuralı bkz. yuk
 [Başlangıç]
     │
     ▼
-[OpenDual] ── T=0: POST /orders ile YES@up_bid + NO@down_bid (effective_size her biri)
-    │          Fiyat filtresi yok — koşulsuz gönderilir
+[Pending]
+    │   T=0 (her tick): sinyali oku → up_bid/down_bid hesapla
+    │                    → POST /orders (YES + NO GTC) → deadline = now + dual_timeout
+    ▼
+[OpenDual{deadline}]
     │
-    ├── Her iki GTC doldu → avg_YES + avg_NO ≤ avg_threshold ?
-    │       Evet → imbalance=0 → [ProfitLock] (FAK yok)
-    │       Hayır → [SingleLeg] (eşik sağlanmadı)
+    ├── Her iki taraf MATCHED (deadline beklemeden)
+    │       → açık emirleri iptal et → [SingleLeg{by_signal}]
+    │         (effective_score ≥ 5 → Up; < 5 → Down)
     │
-    └── Yalnızca bir taraf doldu → [SingleLeg]
-            │
-            │   Her fill (MATCHED) ve her orderbook güncellemesinde:
-            │
-            ├── first_leg + hedge_leg ≤ avg_threshold   ← ProfitLock öncelikli
-            │       → [ProfitLock]: açık GTC'leri iptal (DELETE /orders)
-            │                       imbalance > 0 ise FAK@hedge_leg gönderilir
-            │
-            ├── (cooldown bitti) + (first_best_leg < last_fill_price)
-            │   + (pozisyon < max_position_size) + (bölge ≠ StopTrade)
-            │       → averaging GTC gönderilir → [SingleLeg] (bekle)
-            │
-            └── Pencere sona erdi → [Bitti]
+    ├── Tek taraf MATCHED + now ≥ deadline
+    │       → diğer GTC iptal → [SingleLeg{filled_side}]
+    │
+    └── Hiçbir taraf MATCHED + now ≥ deadline
+            → 2 GTC iptal → [Pending] (sonraki tick yeni sinyalle yeniden açılır)
 
-[ProfitLock] → pencere sonuna kadar yeni emir yok → [Bitti]
+[SingleLeg{filled_side}]
+    │   Her fill (MATCHED) ve her orderbook güncellemesinde:
+    │
+    ├── first_leg + hedge_leg ≤ avg_threshold   ← SingleLeg ProfitLock
+    │       → [ProfitLock]: imbalance > 0 ise FAK@hedge_leg gönderilir
+    │
+    ├── (cooldown_threshold bitti) + (first_best_leg < last_fill_price)
+    │   + (pozisyon < max_position_size) + (bölge ≠ StopTrade)
+    │       → averaging GTC (size = base × signal_multiplier) → [SingleLeg]
+    │
+    └── Pencere sona erdi → [Done]
+
+[ProfitLock] → pencere sonuna kadar yeni emir yok → [Done]
 ```
 
-### Giriş — OpenDual
+### Giriş — OpenDual (sinyal güdümlü, simetrik fiyat)
 
-- **Tetik:** Market başlangıcı (`T = 0`). Fiyat veya orderbook kontrolü olmaksızın anında gönderilir.
+- **Tetik:** `Pending` durumunda her tick. **Önkoşul:** `yes_best_bid > 0 && no_best_bid > 0` (market book quote'u gelmiş olmalı, DryRun passive-fill simulator best_ask isteyecek). Quote yoksa `Pending` korunur, log basılmaz.
 - **Endpoint:** `POST /orders` (batch) — YES ve NO emirleri tek request'te.
-- YES token: `side=BUY`, `price=up_bid`, `size=max(⌈order_usdc/up_bid⌉, api_min_order_size)`, `orderType=GTC`
-- NO token: `side=BUY`, `price=down_bid`, `size=max(⌈order_usdc/down_bid⌉, api_min_order_size)`, `orderType=GTC`
-- `avg_threshold` bu aşamada kontrol edilmez; ProfitLock değerlendirmesi yalnızca fill sonrasında yapılır.
+- **Fiyatlama** (`s = effective_score ∈ [0, 10]`, nötr 5):
+
+  ```
+  delta    = (s − 5) / 5            // [-1, +1]
+  up_bid   = 0.50 + delta · 0.25    // s=10 → 0.75, s=0 → 0.25
+  down_bid = 0.50 − delta · 0.25    // s=10 → 0.25, s=0 → 0.75
+  → tick_size'a snap
+  ```
+
+| `effective_score` | `up_bid` | `down_bid` | toplam |
+|---|---|---|---|
+| 0.0 (max düşüş) | 0.25 | 0.75 | 1.00 |
+| 2.5 | 0.375 | 0.625 | 1.00 |
+| 5.0 (nötr / `signal_weight=0` / warmup) | 0.50 | 0.50 | 1.00 |
+| 7.5 | 0.625 | 0.375 | 1.00 |
+| 10.0 (max yükseliş) | 0.75 | 0.25 | 1.00 |
+
+- Toplam her zaman `1.00` → dual fazda `avg_YES + avg_NO ≈ 1.00` → **dual fazda ProfitLock asla tetiklenmez**; ProfitLock yalnız SingleLeg averaging fazında değerlendirilir.
+- Sinyal-yön tarafı `0.50 → 0.75` lineer artar; counter-yön tarafı `0.50 → 0.25` lineer azalır. Karşı tarafa düşük bidle ucuz hedge fırsatı yakalama amaçlı.
+- `signal_weight = 0` veya warmup süresince `effective_score = 5.0` (nötr) → iki taraf da `0.50/0.50`.
+
+**DryRun davranışı:** Fiyatlar market quote'tan bağımsız üretildiği için `Simulator::fill` koşulu (`price ≥ best_ask`) çoğu zaman sağlanmaz; emirler `live` kalır. Her market book update'inde `engine::simulate_passive_fills(session)` (bot.rs içinde tetiklenir) açık emirleri yeni quote ile karşılaştırır ve dolduğunda `📥 passive_fill` logu basar.
+
+**Boyut:**
+- YES: `size = max(⌈order_usdc/up_bid⌉, api_min_order_size)`, `orderType=GTC`
+- NO:  `size = max(⌈order_usdc/down_bid⌉, api_min_order_size)`, `orderType=GTC`
+
+**`dual_timeout` sayacı:** Emirler gönderildiği tick'te `deadline_ms = now_ms + dual_timeout` saklanır. Sonraki her tick'te fill durumu ve `now_ms ≥ deadline_ms` kontrolü yapılır (yukarıdaki *Durum Makinesi* dallarına bakın).
 
 **`POST /orders` kısmi başarısızlık:** Batch yanıtında bir emir `success: false` dönerse:
 - Başarılı olan GTC defterde bırakılır, iptal edilmez.
 - Başarısız emrin `errorMsg`'i logu yazılır.
-- Başarılı emir fill olduğunda bot normal **[SingleLeg]**'e geçer — sanki yalnızca o taraf açılmış gibi davranır.
+- Başarılı emir fill olduğunda + timeout dolduğunda bot **[SingleLeg]**'e geçer.
 
 ### Averaging (SingleLeg döngüsü)
 
 Bir taraf doldu, diğer taraf hâlâ açık GTC'de bekliyorsa bot **[SingleLeg]** döngüsünde şu sırayla kontrol yapar:
 
 1. **ProfitLock öncelik kontrolü:** `first_leg + hedge_leg ≤ avg_threshold` → ProfitLock aksiyonuna geç.
-2. **Averaging koşulu** (ProfitLock yok ise):
-   - Cooldown bitmedi → bekle.
-   - Cooldown bitti + `first_best_leg < last_fill_price` + pozisyon < `max_position_size` + bölge ≠ StopTrade → aynı tarafa **GTC bid** emri gönder (`POST /order`, fiyat = `first_best_leg`).
+2. **Açık averaging GTC kontrolü:** Aynı taraf için `open_orders` listesinde `reason="harvest:averaging:*"` kayıtları varsa:
+   - En yaşlı emrin yaşı `< cooldown_threshold` (default `30_000 ms`, `BotConfig.cooldown_threshold`) → `Decision::NoOp`, kitapta beklemeye devam.
+   - Yaşı `≥ cooldown_threshold` → `Decision::CancelOrders([..])` döner; emir kaldırılır. Bir sonraki tick'te koşullar uygunsa yenisi gönderilir.
+3. **Averaging koşulu** (kitap aynı tarafta boşsa):
+   - `now − last_averaging_ms < cooldown_threshold` → bekle. (`last_averaging_ms` emrin **gönderildiği** anda set edilir; live emirler de bu sayacı tetikler.)
+   - Cooldown bitti + `first_best_leg < last_fill_price` + `pos_held < max_position_size` + bölge ≠ StopTrade + `first_best_leg ∈ [min_price, max_price]` → aynı tarafa **GTC bid** emri gönder (`POST /order`, fiyat = `first_best_leg`).
+   - **`pos_held` formülü:** `pos_held = filled_shares + Σ(open_orders.size where outcome == filled_side && side == BUY)`. LIVE notional dahil olduğundan birikmiş averaging GTC'ler `max_position_size` korumasından kaçamaz.
    - **Averaging boyutu** (iki aşamalı):
      ```
      base_size      = max(⌈order_usdc / first_best_leg⌉, api_min_order_size)
@@ -166,30 +217,30 @@ Bir taraf doldu, diğer taraf hâlâ açık GTC'de bekliyorsa bot **[SingleLeg]*
      ```
      Signal çarpanının boyutu `api_min_order_size` altına indirmesi engellenir.
    - Averaging GTC gönderildikten sonra bot [SingleLeg]'de beklemeye devam eder.
-3. **Her MATCHED fill event'inde** (kısmi fill dahil): `avg_*` ve `imbalance` güncellenir; `last_fill_price` = bu fill'in fiyatına güncellenir; **cooldown sıfırlanır**.
-4. Averaging turu sınırsızdır; `max_position_size` tek durucu kuraldır.
+4. **Her MATCHED fill event'inde** (kısmi fill dahil): `avg_*` ve `imbalance` güncellenir; `last_fill_price` = bu fill'in fiyatına güncellenir; `last_averaging_ms` fill anında da set edilir.
+5. Averaging turu sınırsızdır; `max_position_size` tek durucu kuraldır.
 
 ### ProfitLock Aksiyonu
 
-**Koşul:**
-- **SingleLeg** (bir taraf dolmuş): `first_leg + hedge_leg ≤ avg_threshold`
-  - `first_leg` = dolmuş tarafın VWAP (örn. yalnızca YES dolmuşsa → `avg_YES`)
-  - `hedge_leg` = henüz dolmamış tarafın anlık `best_ask` (WS `best_bid_ask`'tan; FAK fiyatı olarak kullanılır)
-- **Her iki taraf dolmuş** (OpenDual tam dolum): `avg_YES + avg_NO ≤ avg_threshold`
-  - `avg_YES` ve `avg_NO` = her iki tarafın MATCHED fill VWAP'ı
+**Yalnızca `SingleLeg` averaging fazında tetiklenir.** Dual fazında simetrik fiyat (toplam `1.00`) nedeniyle eşik sağlanamaz.
+
+**Koşul:** `first_leg + hedge_leg ≤ avg_threshold`
+- `first_leg` = dolmuş (tutulan) tarafın VWAP (averaging'le birlikte aşağı çekilir)
+- `hedge_leg` = henüz dolmamış (hedge edilecek) tarafın anlık `best_ask` (FAK fiyatı olarak da kullanılır)
 
 Adımlar:
 
-1. Dolu olmayan taraftaki tüm açık GTC'lerin ID'leri toplanır → `DELETE /orders` (order ID listesi) ile iptal edilir.
-2. **imbalance > 0** ise: karşı tarafa `POST /order` ile **FAK** gönderilir.
-   - `side=BUY`, `tokenId=hedge_token`, `price=hedge_leg`, `size=imbalance`, `orderType=FAK`
+1. **imbalance ≠ 0** ise: karşı tarafa `POST /order` ile **FAK** gönderilir.
+   - `side=BUY`, `tokenId=hedge_token`, `price=hedge_leg`, `size=|imbalance|`, `orderType=FAK`
    - FAK kısmi dolumda: `pair_count = min(YES_total, NO_total)`; kalan imbalance aynı pencerede işlemsiz bırakılır.
-3. **imbalance = 0** (her iki OpenDual eşit doldu) ise: FAK gönderilmez, doğrudan ProfitLock.
-4. ProfitLock sonrası aynı pencerede yeni GTC veya averaging başlatılmaz.
+2. ProfitLock sonrası aynı pencerede yeni GTC veya averaging başlatılmaz.
 
 ### Binance Sinyali Etkisi
 
-`harvest` delta-nötr stratejisidir; sinyal **yön filtresi uygulamaz**, yalnızca averaging GTC boyutunu etkiler. Averaging yapılan tarafın fiyat düşüşünü Binance sinyali de teyit ediyorsa boyut büyütülür; sinyal zıt yöndeyse standart boyut korunur.
+Sinyal iki yerde etkilidir:
+
+1. **OpenDual fiyatı** — *yukarıdaki simetrik formül.* Sinyal tarafına ağırlık verir; toplam daima `1.00`.
+2. **Averaging boyutu** (`signal_multiplier`) — averaging yapılan tarafın fiyat düşüşünü sinyal de teyit ediyorsa boyut büyütülür.
 
 | `effective_score` | Averaging YES tarafı | Averaging NO tarafı |
 |---|---|---|
@@ -199,8 +250,8 @@ Adımlar:
 | `2–4` (hafif satış) | `× 1.1` (teyit) | `× 0.9` |
 | `0–2` (güçlü satış) | `× 1.3` (teyit) | `× 1.0` (zıt — standart) |
 
-- `OpenDual` emirleri ve FAK boyutu sinyal tarafından değiştirilmez.
-- `signal_weight = 0` → çarpan her zaman `× 1.0`.
+- ProfitLock FAK boyutu sinyal tarafından değiştirilmez (`size = |imbalance|`).
+- `signal_weight = 0` → `effective_score = 5.0` (nötr) → OpenDual `0.50/0.50`, averaging çarpan `× 1.0`.
 
 ### Bölge Haritası — `binance_signal` aktif mi?
 
@@ -225,8 +276,9 @@ Adımlar:
 ### Örnek Senaryo
 
 ```
-Konfigürasyon: avg_threshold=0.98, order_usdc=2.0, cooldown_ms=30_000
-               up_bid=0.52, down_bid=0.44
+Konfigürasyon: avg_threshold=0.98, order_usdc=2.0, dual_timeout=5_000 ms
+               cooldown_threshold=30_000 ms (sabit), signal_weight=10
+               effective_score=8.0 → up_bid=0.65, down_bid=0.35  (örnek)
 Market init:   api_min_order_size=5  (GET /book)
 
 YES size = max(⌈2.0/0.52⌉, 5) = 5

@@ -15,6 +15,7 @@ use tokio::sync::RwLock;
 use tokio::time::sleep;
 use tokio_tungstenite::tungstenite::Message;
 
+use crate::ipc;
 use crate::slug::Interval;
 use crate::time::now_ms;
 
@@ -205,16 +206,35 @@ impl SignalComputer {
 
 /// Binance aggTrade WebSocket görevini başlatır; state'i güncelle.
 /// Kopma süresince `signal_score` nötr (`5.0`) kalır.
-pub async fn run_binance_signal(symbol: &str, interval: Interval, state: SharedSignalState) {
+///
+/// `bot_id` structured log etiketi olarak kullanılır (frontend log akışı için).
+pub async fn run_binance_signal(
+    symbol: &str,
+    interval: Interval,
+    state: SharedSignalState,
+    bot_id: i64,
+) {
     let url = format!("wss://fstream.binance.com/ws/{}@aggTrade", symbol);
+    let label = bot_id.to_string();
+    ipc::log_line(
+        &label,
+        format!("🛰️  Binance signal task starting (symbol={symbol}, interval={interval:?})"),
+    );
     let mut backoff = 1u64;
     loop {
-        match connect_stream(&url, interval, &state).await {
+        ipc::log_line(&label, format!("🛰️  Binance ws connecting → {url}"));
+        match connect_stream(&url, interval, &state, &label).await {
             Ok(()) => {
-                tracing::warn!(symbol, "binance ws closed, reconnect in {backoff}s");
+                ipc::log_line(
+                    &label,
+                    format!("⚠️  Binance ws closed, reconnect in {backoff}s"),
+                );
             }
             Err(e) => {
-                tracing::error!(symbol, error=%e, "binance ws error, reconnect in {backoff}s");
+                ipc::log_line(
+                    &label,
+                    format!("❌ Binance ws error: {e} (reconnect in {backoff}s)"),
+                );
             }
         }
         {
@@ -231,9 +251,15 @@ async fn connect_stream(
     url: &str,
     interval: Interval,
     state: &SharedSignalState,
+    label: &str,
 ) -> Result<(), anyhow::Error> {
-    let (ws_stream, _) = tokio_tungstenite::connect_async(url).await?;
+    let connect = tokio_tungstenite::connect_async(url);
+    let (ws_stream, _) = match tokio::time::timeout(Duration::from_secs(10), connect).await {
+        Ok(res) => res?,
+        Err(_) => return Err(anyhow::anyhow!("connect_async timeout (10s)")),
+    };
     let (_write, mut read) = ws_stream.split();
+    ipc::log_line(label, "🛰️  Binance ws connected (warmup başladı)".to_string());
 
     let mut computer = SignalComputer::new(interval);
     {
@@ -243,6 +269,9 @@ async fn connect_stream(
         s.signal_score = 5.0;
     }
 
+    let mut prev_warmup = true;
+    let mut trade_count: u64 = 0;
+    let mut last_progress_log: u64 = 0;
     while let Some(msg) = read.next().await {
         let msg = msg?;
         if let Message::Text(t) = msg {
@@ -253,15 +282,44 @@ async fn connect_stream(
             let qty: f64 = trade.qty.parse().unwrap_or(0.0);
             let is_buy = !trade.is_buyer_maker;
             computer.ingest(trade.event_time_ms, qty, is_buy);
+            trade_count += 1;
             let (cvd, bsi, ofi, score, warmup) = computer.snapshot();
-            let mut s = state.write().await;
-            s.cvd = cvd;
-            s.bsi = bsi;
-            s.ofi = ofi;
-            s.signal_score = score;
-            s.warmup = warmup;
-            s.updated_at_ms = now_ms();
-            s.connected = true;
+            {
+                let mut s = state.write().await;
+                s.cvd = cvd;
+                s.bsi = bsi;
+                s.ofi = ofi;
+                s.signal_score = score;
+                s.warmup = warmup;
+                s.updated_at_ms = now_ms();
+                s.connected = true;
+            }
+
+            // Warmup ilerleme: her 100 trade'de bir.
+            if warmup && trade_count - last_progress_log >= 100 {
+                last_progress_log = trade_count;
+                ipc::log_line(
+                    label,
+                    format!(
+                        "🛰️  Binance warmup {}/300 (cvd={:.3} bsi={:.3} ofi={:+.3})",
+                        computer.ofi_history.len(),
+                        cvd,
+                        bsi,
+                        ofi
+                    ),
+                );
+            }
+            // Warmup tamamlandı.
+            if prev_warmup && !warmup {
+                prev_warmup = false;
+                ipc::log_line(
+                    label,
+                    format!(
+                        "🟢 Binance warmup complete → signal_score={:.2} cvd={:.3} bsi={:.3} ofi={:+.3}",
+                        score, cvd, bsi, ofi
+                    ),
+                );
+            }
         }
     }
     Ok(())

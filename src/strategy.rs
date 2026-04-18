@@ -116,6 +116,11 @@ pub fn order_size(order_usdc: f64, price: f64, api_min_order_size: f64) -> f64 {
     base.max(api_min_order_size)
 }
 
+/// Averaging cooldown **default** değeri (ms). Asıl değer her bot için
+/// `BotConfig::cooldown_threshold` alanından okunur ve strateji
+/// context'lerine geçirilir; bu sabit yalnızca testler ve fallback amaçlıdır.
+pub const COOLDOWN_THRESHOLD_DEFAULT: u64 = 30_000;
+
 #[cfg(test)]
 mod tests {
     use super::*;

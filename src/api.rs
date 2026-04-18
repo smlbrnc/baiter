@@ -31,6 +31,7 @@ use tower_http::cors::{Any, CorsLayer};
 
 use crate::config::{BotConfig, Credentials, StrategyParams};
 use crate::db;
+use crate::polymarket::gamma::GammaClient;
 use crate::supervisor::{self, AppState};
 use crate::types::{RunMode, Strategy};
 
@@ -66,12 +67,30 @@ struct CreateBotReq {
     run_mode: RunMode,
     order_usdc: f64,
     signal_weight: f64,
+    #[serde(default = "default_min_price")]
+    min_price: f64,
+    #[serde(default = "default_max_price")]
+    max_price: f64,
+    #[serde(default = "default_cooldown_threshold")]
+    cooldown_threshold: u64,
     #[serde(default)]
     strategy_params: StrategyParams,
     #[serde(default)]
     credentials: Option<Credentials>,
     #[serde(default)]
     auto_start: bool,
+}
+
+fn default_min_price() -> f64 {
+    0.05
+}
+
+fn default_max_price() -> f64 {
+    0.95
+}
+
+fn default_cooldown_threshold() -> u64 {
+    30_000
 }
 
 #[derive(Debug, Serialize)]
@@ -83,6 +102,17 @@ async fn create_bot(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateBotReq>,
 ) -> Result<Json<CreateBotResp>, ApiError> {
+    if !(req.min_price > 0.0 && req.min_price < req.max_price && req.max_price < 1.0) {
+        return Err(ApiError::Internal(format!(
+            "invalid price bounds: 0 < min_price ({}) < max_price ({}) < 1 olmalı",
+            req.min_price, req.max_price
+        )));
+    }
+    if req.cooldown_threshold == 0 {
+        return Err(ApiError::Internal(
+            "invalid cooldown_threshold: > 0 ms olmalı".to_string(),
+        ));
+    }
     let cfg = BotConfig {
         id: 0,
         name: req.name,
@@ -91,6 +121,9 @@ async fn create_bot(
         run_mode: req.run_mode,
         order_usdc: req.order_usdc,
         signal_weight: req.signal_weight,
+        min_price: req.min_price,
+        max_price: req.max_price,
+        cooldown_threshold: req.cooldown_threshold,
         strategy_params: req.strategy_params,
     };
     let id = db::insert_bot(&state.pool, &cfg).await?;
@@ -225,11 +258,19 @@ async fn bot_session(
     match row {
         Some(r) => {
             use sqlx::Row as _;
+            let slug = r.get::<String, _>("slug");
+            let gamma = GammaClient::new(reqwest::Client::new(), state.env.gamma_base_url.clone());
+            let m = gamma
+                .get_market_by_slug(&slug)
+                .await
+                .map_err(ApiError::from)?;
             Ok(Json(serde_json::json!({
-                "slug": r.get::<String, _>("slug"),
+                "slug": slug,
                 "start_ts": r.get::<i64, _>("start_ts"),
-                "end_ts": r.get::<i64, _>("end_ts"),
-                "state": r.get::<String, _>("state"),
+                "end_ts":   r.get::<i64, _>("end_ts"),
+                "state":    r.get::<String, _>("state"),
+                "title":    m.question,
+                "image":    m.image,
             })))
         }
         None => Ok(Json(Value::Null)),
@@ -265,6 +306,9 @@ fn bot_row_to_json(r: db::BotRow) -> Value {
         "run_mode": r.run_mode,
         "order_usdc": r.order_usdc,
         "signal_weight": r.signal_weight,
+        "min_price": r.min_price,
+        "max_price": r.max_price,
+        "cooldown_threshold": r.cooldown_threshold,
         "strategy_params": serde_json::from_str::<Value>(&r.strategy_params).unwrap_or(Value::Null),
         "state": r.state,
         "last_active_ms": r.last_active_ms,

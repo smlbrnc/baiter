@@ -1,25 +1,36 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { CartesianGrid, Line, LineChart, XAxis, YAxis } from "recharts";
+import {
+  CartesianGrid,
+  Line,
+  LineChart,
+  ReferenceLine,
+  XAxis,
+  YAxis,
+} from "recharts";
 import {
   Card,
+  CardAction,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
 import {
   ChartContainer,
-  ChartLegend,
-  ChartLegendContent,
   ChartTooltip,
   ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart";
 import { useEventStream } from "@/lib/hooks";
 import type { FrontendEvent } from "@/lib/types";
-import { fmtTickTime, timeTicks, type SessionRange } from "@/lib/chart-utils";
+import {
+  fmtTickTime,
+  timeTicks,
+  ZONE_BOUNDARY_LABELS,
+  zoneBoundaryTimes,
+  type SessionRange,
+} from "@/lib/chart-utils";
 
 interface Props {
   botId: number;
@@ -42,6 +53,11 @@ const chartConfig = {
   noBid: { label: "NO bid", color: "oklch(0.58 0.22 352)" },
   noAsk: { label: "NO ask", color: "oklch(0.7 0.17 352)" },
 } satisfies ChartConfig;
+
+function fmtPx(v: number | undefined): string {
+  if (v == null || Number.isNaN(v)) return "—";
+  return v.toFixed(4);
+}
 
 export function PriceChart({ botId, session }: Props) {
   const [rows, setRows] = useState<Row[]>([]);
@@ -74,21 +90,44 @@ export function PriceChart({ botId, session }: Props) {
 
   if (!session) return null;
   const ticks = timeTicks(session);
+  const zoneLines = zoneBoundaryTimes(session);
+  const latest = rows.length > 0 ? rows[rows.length - 1] : null;
 
   return (
     <Card>
       <CardHeader>
         <CardTitle>Price</CardTitle>
-        <CardDescription>
-          YES bid/ask (yeşil) · NO bid/ask (kırmızı) ·{" "}
-          {fmtTickTime(session.start)} → {fmtTickTime(session.end)}
-        </CardDescription>
+        <CardAction className="flex flex-wrap items-end justify-end gap-x-5 gap-y-2">
+          {(
+            [
+              { key: "yesBid", label: "YES bid" },
+              { key: "yesAsk", label: "YES ask" },
+              { key: "noBid", label: "NO bid" },
+              { key: "noAsk", label: "NO ask" },
+            ] as const
+          ).map(({ key, label }) => {
+            const color = chartConfig[key].color;
+            return (
+              <div key={key} className="text-right">
+                <div className="text-muted-foreground text-[10px] leading-tight">
+                  {label}
+                </div>
+                <div
+                  className="font-mono text-sm tabular-nums"
+                  style={{ color }}
+                >
+                  {fmtPx(latest?.[key])}
+                </div>
+              </div>
+            );
+          })}
+        </CardAction>
       </CardHeader>
       <CardContent>
-        <ChartContainer config={chartConfig} className="h-[300px] w-full">
+        <ChartContainer config={chartConfig} className="h-[220px] w-full">
           <LineChart
             data={rows}
-            margin={{ top: 8, right: 8, left: 8, bottom: 8 }}
+            margin={{ top: 22, right: 8, left: 8, bottom: 8 }}
           >
             <CartesianGrid vertical={false} strokeDasharray="3 3" />
             <XAxis
@@ -109,6 +148,23 @@ export function PriceChart({ botId, session }: Props) {
               axisLine={false}
               width={40}
             />
+            {zoneLines.map((x, i) => (
+              <ReferenceLine
+                key={`zone-${x}`}
+                x={x}
+                stroke="var(--color-muted-foreground)"
+                strokeDasharray="4 3"
+                strokeWidth={1}
+                ifOverflow="visible"
+                label={{
+                  value: ZONE_BOUNDARY_LABELS[i] ?? "",
+                  position: "top",
+                  fill: "var(--color-muted-foreground)",
+                  fontSize: 10,
+                  offset: 6,
+                }}
+              />
+            ))}
             <ChartTooltip
               content={
                 <ChartTooltipContent
@@ -119,7 +175,6 @@ export function PriceChart({ botId, session }: Props) {
                 />
               }
             />
-            <ChartLegend content={<ChartLegendContent />} />
             <Line
               type="monotone"
               dataKey="yesBid"

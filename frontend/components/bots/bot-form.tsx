@@ -27,6 +27,9 @@ export function BotForm() {
     run_mode: "dryrun",
     order_usdc: 5,
     signal_weight: 0,
+    min_price: 0.05,
+    max_price: 0.95,
+    cooldown_threshold: 30000,
     auto_start: false,
   });
   const [asset, setAsset] = useState<MarketAsset>(DEFAULT_MARKET.asset);
@@ -68,6 +71,21 @@ export function BotForm() {
 
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
+    const minP = Number(form.min_price);
+    const maxP = Number(form.max_price);
+    if (!(minP > 0 && minP < maxP && maxP < 1)) {
+      window.alert(
+        `Geçersiz fiyat aralığı: 0 < min_price (${minP}) < max_price (${maxP}) < 1 olmalı.`,
+      );
+      return;
+    }
+    const cooldown = Number(form.cooldown_threshold);
+    if (!(Number.isFinite(cooldown) && cooldown > 0)) {
+      window.alert(
+        `Geçersiz cooldown_threshold (${cooldown}). 0'dan büyük bir milisaniye değeri gir.`,
+      );
+      return;
+    }
     setSubmitting(true);
     try {
       const nameTrim = form.name.trim();
@@ -81,6 +99,9 @@ export function BotForm() {
         slug_pattern: slugPattern(asset, interval),
         order_usdc: Number(form.order_usdc),
         signal_weight: Number(form.signal_weight),
+        min_price: minP,
+        max_price: maxP,
+        cooldown_threshold: cooldown,
       };
       if (includeCreds) body.credentials = { ...creds };
       const { id } = await api.createBot(body);

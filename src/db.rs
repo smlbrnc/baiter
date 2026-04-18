@@ -57,6 +57,9 @@ pub struct BotRow {
     pub run_mode: String,
     pub order_usdc: f64,
     pub signal_weight: f64,
+    pub min_price: f64,
+    pub max_price: f64,
+    pub cooldown_threshold: i64,
     pub strategy_params: String,
     pub state: String,
     pub last_active_ms: Option<i64>,
@@ -81,6 +84,9 @@ impl BotRow {
             run_mode,
             order_usdc: self.order_usdc,
             signal_weight: self.signal_weight,
+            min_price: self.min_price,
+            max_price: self.max_price,
+            cooldown_threshold: self.cooldown_threshold as u64,
             strategy_params,
         })
     }
@@ -99,8 +105,9 @@ pub async fn insert_bot(pool: &SqlitePool, cfg: &BotConfig) -> Result<i64, AppEr
 
     let row = sqlx::query(
         "INSERT INTO bots (name, slug_pattern, strategy, run_mode, order_usdc, signal_weight, \
-         strategy_params, state, created_at_ms, updated_at_ms) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, 'STOPPED', ?, ?) RETURNING id",
+         min_price, max_price, cooldown_threshold, strategy_params, state, created_at_ms, \
+         updated_at_ms) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'STOPPED', ?, ?) RETURNING id",
     )
     .bind(&cfg.name)
     .bind(&cfg.slug_pattern)
@@ -108,6 +115,9 @@ pub async fn insert_bot(pool: &SqlitePool, cfg: &BotConfig) -> Result<i64, AppEr
     .bind(&run_mode)
     .bind(cfg.order_usdc)
     .bind(cfg.signal_weight)
+    .bind(cfg.min_price)
+    .bind(cfg.max_price)
+    .bind(cfg.cooldown_threshold as i64)
     .bind(&params)
     .bind(now)
     .bind(now)
@@ -119,8 +129,8 @@ pub async fn insert_bot(pool: &SqlitePool, cfg: &BotConfig) -> Result<i64, AppEr
 pub async fn list_bots(pool: &SqlitePool) -> Result<Vec<BotRow>, AppError> {
     let rows = sqlx::query_as::<_, BotRow>(
         "SELECT id, name, slug_pattern, strategy, run_mode, order_usdc, signal_weight, \
-         strategy_params, state, last_active_ms, created_at_ms, updated_at_ms FROM bots \
-         ORDER BY id ASC",
+         min_price, max_price, cooldown_threshold, strategy_params, state, last_active_ms, \
+         created_at_ms, updated_at_ms FROM bots ORDER BY id ASC",
     )
     .fetch_all(pool)
     .await?;
@@ -130,7 +140,8 @@ pub async fn list_bots(pool: &SqlitePool) -> Result<Vec<BotRow>, AppError> {
 pub async fn get_bot(pool: &SqlitePool, bot_id: i64) -> Result<Option<BotRow>, AppError> {
     let row = sqlx::query_as::<_, BotRow>(
         "SELECT id, name, slug_pattern, strategy, run_mode, order_usdc, signal_weight, \
-         strategy_params, state, last_active_ms, created_at_ms, updated_at_ms FROM bots WHERE id = ?",
+         min_price, max_price, cooldown_threshold, strategy_params, state, last_active_ms, \
+         created_at_ms, updated_at_ms FROM bots WHERE id = ?",
     )
     .bind(bot_id)
     .fetch_optional(pool)
@@ -168,6 +179,9 @@ impl<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> for BotRow {
             run_mode: row.try_get("run_mode")?,
             order_usdc: row.try_get("order_usdc")?,
             signal_weight: row.try_get("signal_weight")?,
+            min_price: row.try_get("min_price")?,
+            max_price: row.try_get("max_price")?,
+            cooldown_threshold: row.try_get("cooldown_threshold")?,
             strategy_params: row.try_get("strategy_params")?,
             state: row.try_get("state")?,
             last_active_ms: row.try_get("last_active_ms")?,
@@ -523,7 +537,7 @@ pub async fn recent_logs(
         Some(id) => {
             sqlx::query_as::<_, LogRow>(
                 "SELECT id, bot_id, level, message, ts_ms FROM logs WHERE bot_id = ? \
-                 ORDER BY ts_ms DESC LIMIT ?",
+                 ORDER BY ts_ms DESC, id DESC LIMIT ?",
             )
             .bind(id)
             .bind(limit)
@@ -533,7 +547,7 @@ pub async fn recent_logs(
         None => {
             sqlx::query_as::<_, LogRow>(
                 "SELECT id, bot_id, level, message, ts_ms FROM logs \
-                 ORDER BY ts_ms DESC LIMIT ?",
+                 ORDER BY ts_ms DESC, id DESC LIMIT ?",
             )
             .bind(limit)
             .fetch_all(pool)

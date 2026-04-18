@@ -19,7 +19,9 @@ pub struct StrategyMetrics {
     pub avg_yes: f64,
     /// NO tarafı VWAP.
     pub avg_no: f64,
-    /// `avg_yes + avg_no` (ProfitLock eşiği için).
+    /// `avg_yes + avg_no` — yalnızca **SingleLeg ProfitLock** eşiği için kullanılır.
+    /// Harvest dual fazında simetrik fiyatlama nedeniyle her zaman `≈ 1.00`,
+    /// dolayısıyla dual fazında karar alınmaz.
     pub avg_sum: f64,
     /// Pencerede en son MATCHED fill fiyatı.
     pub last_fill_price_yes: f64,

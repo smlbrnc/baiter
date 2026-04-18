@@ -118,16 +118,25 @@ pub struct BotConfig {
     pub order_usdc: f64,
     /// 0-10 arası; Binance sinyal ağırlığı.
     pub signal_weight: f64,
+    /// Global emir taban fiyatı — bu değerin altındaki emirler reject (default 0.05).
+    pub min_price: f64,
+    /// Global emir tavan fiyatı — bu değerin üstündeki emirler reject (default 0.95).
+    pub max_price: f64,
+    /// Averaging cooldown (ms) — tüm stratejiler için iki rolü vardır:
+    /// (1) iki averaging emri arası min süre,
+    /// (2) açık averaging GTC max yaş.
+    /// Default: `30_000`.
+    pub cooldown_threshold: u64,
     pub strategy_params: StrategyParams,
 }
 
 /// Strateji-spesifik parametreler — JSON sütunundan parse edilir.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StrategyParams {
-    /// Harvest için açılış limit fiyat offset'i (tick cinsinden).
+    /// Harvest OpenDual fill bekleme süresi (ms; default 5_000).
     #[serde(default)]
-    pub harvest_open_offset_ticks: Option<i32>,
-    /// ProfitLock FAK tetik oranı (örn. 0.05 = +5 %).
+    pub harvest_dual_timeout: Option<u64>,
+    /// SingleLeg ProfitLock FAK tetik oranı (örn. 0.05 → avg_threshold = 0.95).
     #[serde(default)]
     pub harvest_profit_lock_pct: Option<f64>,
     /// Dutch book scale up çarpanı.

@@ -110,6 +110,55 @@ export function BotFormSettingsSection({ form, setForm }: Props) {
           </Field>
           <div aria-hidden className="hidden sm:block" />
         </div>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <Field
+            label="Min price"
+            hint="0.01 – 0.50; emirler bu fiyatın altında olamaz."
+          >
+            <Input
+              type="number"
+              step="0.01"
+              min="0.01"
+              max="0.50"
+              value={form.min_price}
+              onChange={(e) =>
+                setForm({ ...form, min_price: Number(e.target.value) })
+              }
+            />
+          </Field>
+          <Field
+            label="Max price"
+            hint="0.50 – 0.99; emirler bu fiyatın üstünde olamaz."
+          >
+            <Input
+              type="number"
+              step="0.01"
+              min="0.50"
+              max="0.99"
+              value={form.max_price}
+              onChange={(e) =>
+                setForm({ ...form, max_price: Number(e.target.value) })
+              }
+            />
+          </Field>
+        </div>
+        <Field
+          label="Cooldown threshold (ms)"
+          hint="Tüm stratejiler için averaging emirleri arası min süre ve açık averaging GTC max yaşı (default 30000 = 30 sn)."
+        >
+          <Input
+            type="number"
+            step="500"
+            min="500"
+            value={form.cooldown_threshold}
+            onChange={(e) =>
+              setForm({
+                ...form,
+                cooldown_threshold: Number(e.target.value),
+              })
+            }
+          />
+        </Field>
         <ToggleRow
           checked={form.auto_start ?? false}
           onChange={(v) => setForm({ ...form, auto_start: v })}

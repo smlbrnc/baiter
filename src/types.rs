@@ -22,6 +22,14 @@ impl Outcome {
             Self::Down => Self::Up,
         }
     }
+
+    /// CLOB wire-form ("UP" / "DOWN") — log ve API çıktısında aynı string.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Up => "UP",
+            Self::Down => "DOWN",
+        }
+    }
 }
 
 /// CLOB emir yönü — REST `side` alanı.
@@ -30,6 +38,15 @@ impl Outcome {
 pub enum Side {
     Buy,
     Sell,
+}
+
+impl Side {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Buy => "BUY",
+            Self::Sell => "SELL",
+        }
+    }
 }
 
 /// CLOB emir tipi — REST `order_type` alanı.
@@ -44,6 +61,17 @@ pub enum OrderType {
     Gtd,
     Fok,
     Fak,
+}
+
+impl OrderType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Gtc => "GTC",
+            Self::Gtd => "GTD",
+            Self::Fok => "FOK",
+            Self::Fak => "FAK",
+        }
+    }
 }
 
 /// `POST /order` yanıtındaki `status` değerleri.

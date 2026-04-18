@@ -16,9 +16,10 @@ pub struct GammaMarket {
     pub slug: String,
     #[serde(default)]
     pub question: Option<String>,
+    #[serde(default)]
+    pub image: Option<String>,
     #[serde(default, rename = "conditionId")]
     pub condition_id: Option<String>,
-    /// JSON string — `["0xYes","0xNo"]` — Polymarket stringleştirir.
     #[serde(default, rename = "clobTokenIds")]
     pub clob_token_ids: Option<String>,
     #[serde(default, rename = "orderPriceMinTickSize")]

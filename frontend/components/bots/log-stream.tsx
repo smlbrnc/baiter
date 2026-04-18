@@ -12,11 +12,17 @@ import { api } from "@/lib/api";
 import type { LogRow } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
+/** Kullanıcı alttan bu kadar px içindeyse yenilemede alta yapışık say. */
+const STICK_BOTTOM_THRESHOLD_PX = 64;
+
 export function LogStream({ botId }: { botId: number }) {
   const [logs, setLogs] = useState<LogRow[]>([]);
   const boxRef = useRef<HTMLDivElement>(null);
+  /** true: son yenilemede kullanıcı alta yakındı; false: yukarı kaydırmış. */
+  const stickToBottomRef = useRef(true);
 
   useEffect(() => {
+    stickToBottomRef.current = true;
     let cancelled = false;
     const load = async () => {
       try {
@@ -34,8 +40,17 @@ export function LogStream({ botId }: { botId: number }) {
     };
   }, [botId]);
 
+  const updateStickFromScroll = () => {
+    const el = boxRef.current;
+    if (!el) return;
+    const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
+    stickToBottomRef.current = fromBottom <= STICK_BOTTOM_THRESHOLD_PX;
+  };
+
   useEffect(() => {
-    if (boxRef.current) boxRef.current.scrollTop = boxRef.current.scrollHeight;
+    const el = boxRef.current;
+    if (!el || !stickToBottomRef.current) return;
+    el.scrollTop = el.scrollHeight;
   }, [logs]);
 
   return (
@@ -49,30 +64,25 @@ export function LogStream({ botId }: { botId: number }) {
       <CardContent>
         <div
           ref={boxRef}
+          onScroll={updateStickFromScroll}
           className="bg-muted/40 h-72 overflow-auto rounded-md border border-border/45 p-3 font-mono text-[11px]"
         >
           {logs.length === 0 ? (
             <div className="text-muted-foreground">Henüz log yok.</div>
           ) : (
             logs.map((l) => (
-              <div key={l.id} className="flex gap-2 py-0.5">
-                <span className="text-muted-foreground">
-                  {new Date(l.ts_ms).toLocaleTimeString()}
-                </span>
-                <span
-                  className={cn(
-                    l.level === "error"
-                      ? "text-destructive"
-                      : l.level === "warn"
-                        ? "text-amber-500"
-                        : "text-foreground",
-                  )}
-                >
-                  [{l.level}]
-                </span>
-                <span className="break-all whitespace-pre-wrap">
-                  {l.message}
-                </span>
+              <div
+                key={l.id}
+                className={cn(
+                  "py-0.5 break-all whitespace-pre-wrap",
+                  l.level === "error"
+                    ? "text-destructive"
+                    : l.level === "warn"
+                      ? "text-amber-500"
+                      : "text-foreground",
+                )}
+              >
+                {l.message}
               </div>
             ))
           )}

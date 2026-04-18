@@ -405,6 +405,22 @@ pub struct BotConfig {
     /// 10 = maksimum etki. Varsayılan: 5. Aralık: [0, 10].
     pub signal_weight: u8,
 
+    /// **Global emir taban fiyatı** — engine guard. Bu değerin **altındaki**
+    /// tüm `PlannedOrder.price` değerleri reject edilir. Varsayılan: `0.05`.
+    /// Aralık: `(0, max_price)`. Bkz. §11.5.
+    pub min_price: f64,
+
+    /// **Global emir tavan fiyatı** — engine guard. Bu değerin **üstündeki**
+    /// tüm `PlannedOrder.price` değerleri reject edilir. Varsayılan: `0.95`.
+    /// Aralık: `(min_price, 1)`. Bkz. §11.5.
+    pub max_price: f64,
+
+    /// **Averaging cooldown** (ms) — tüm stratejiler için ortak. İki rolü vardır:
+    /// (1) iki averaging emri arası min süre,
+    /// (2) açık averaging GTC max yaş (geçen iptal edilir).
+    /// Varsayılan: `30_000`. Aralık: `> 0`. Bkz. §15.4.
+    pub cooldown_threshold: u64,
+
     /// Strateji seçimine göre strateji-spesifik parametreler.
     /// Kolun `Strategy` enum değeriyle uyumlu olması zorunludur.
     pub strategy_params: StrategyConfig,
@@ -419,19 +435,53 @@ pub enum StrategyConfig {
 }
 
 pub struct HarvestParams {
-    /// OpenDual YES (UP) tarafı GTC bid fiyatı (zorunlu, kullanıcı girer).
-    pub up_bid: f64,
-    /// OpenDual NO (DOWN) tarafı GTC bid fiyatı (zorunlu, kullanıcı girer).
-    pub down_bid: f64,
-    /// avg_YES + avg_NO ≤ avg_threshold → ProfitLock tetikler.
+    /// OpenDual fill bekleme süresi (ms). Dolmayan GTC'ler iptal edilir.
+    pub dual_timeout: u64,        // varsayılan: 5_000
+    /// SingleLeg ProfitLock eşiği — `first_leg + hedge_leg ≤ avg_threshold`.
     pub avg_threshold: f64,       // varsayılan: 0.98
-    /// İki averaging GTC arasındaki minimum bekleme (ms).
-    pub cooldown_ms: u64,         // varsayılan: 30_000
     /// Tek tarafın toplam share limiti; aşılırsa yeni averaging yasak.
     pub max_position_size: f64,   // varsayılan: 100.0
 }
 
+// Not: OpenDual `up_bid` / `down_bid` artık kullanıcı girdisi değildir.
+// Her tick'te `effective_score`'dan simetrik olarak türetilir
+// (bkz. docs/strategies.md §2 "Giriş — OpenDual"). Toplam daima 1.00.
+//
+// Averaging cooldown'u tüm stratejilerin paylaştığı ortak parametredir;
+// `BotConfig.cooldown_threshold` (default `30_000 ms`) — her bot için
+// frontend "Ek ayarlar" bölümünden ayarlanır (bkz. §15).
+
 // DutchBookParams ve PrismParams implementasyon sırasında tanımlanır.
+
+### 11.5 Global Price Guard (`BotConfig.min_price` / `max_price`)
+
+Her bot için, hangi strateji kullanılırsa kullanılsın, **tüm planlanan emirler**
+(`PlannedOrder.price`) global bir taban/tavan aralığında olmak zorundadır.
+
+| Alan        | Default | Aralık              | Not                                 |
+| ----------- | ------- | ------------------- | ----------------------------------- |
+| `min_price` | `0.05`  | `(0, max_price)`    | Bu fiyatın **altındaki** emir reject |
+| `max_price` | `0.95`  | `(min_price, 1)`    | Bu fiyatın **üstündeki** emir reject |
+
+**Engine guard** ([`src/engine.rs::execute()`](../src/engine.rs)) — her
+`PlaceOrders`/`Batch.place` döngüsünde fiyat kontrolü:
+
+```rust
+if planned.price < session.min_price || planned.price > session.max_price {
+    tracing::info!(
+        "🚧 Order rejected: price={:.4} outside [{:.2}, {:.2}] reason={}",
+        planned.price, session.min_price, session.max_price, planned.reason
+    );
+    continue; // emir gönderilmez, fail-safe
+}
+```
+
+**Strateji içi proaktif clamp**: harvest gibi strateji modülleri averaging
+fiyatını üretmeden önce de kontrol eder ve aralık dışıysa `Decision::NoOp`
+döner; böylece engine guard yalnızca son savunma hattı olur.
+
+**Validasyon** (`POST /api/bots`): `0 < min_price < max_price < 1` koşulu
+sağlanmazsa istek `400 Bad Request` ile reddedilir.
 
 impl Strategy {
     pub const fn required_metrics(self) -> MetricMask {
@@ -567,7 +617,7 @@ Bu seçim **yalnızca başlangıç noktasını** belirler. Bot çalışmaya baş
 
 - Hedef marketin **başlangıcından 15 saniye önce (T−15)** ilgili market için **ön veri hazırlanır** (Gamma’dan çözümlenmiş slug/market, `clobTokenIds`, **startDate / endDate**).
 - **T−15** anında **CLOB REST** (kimlik, orderbook, hazırlık) ve **Market WebSocket** (+ gerekiyorsa **User WebSocket**) bu market için **hazır** olur; abonelikler ilgili `asset_id` listesiyle kurulur.
-- **T−15 market init:** `GET /book` ile her token için **`api_min_order_size`** (share cinsinden minimum emir) ve **`tick_size`** (minimum fiyat artımı) okunur; her ikisi market state'ine yazılır. `tick_size`'a uymayan limit fiyatlar API tarafından `INVALID_ORDER_MIN_TICK_SIZE` hatasıyla reddedilir. `HarvestParams::up_bid` / `down_bid` bu aşamada `tick_size` ile doğrulanır; uyumsuzluk bot başlatmayı reddeder.
+- **T−15 market init:** `GET /book` ile her token için **`api_min_order_size`** (share cinsinden minimum emir) ve **`tick_size`** (minimum fiyat artımı) okunur; her ikisi market state'ine yazılır. `tick_size`'a uymayan limit fiyatlar API tarafından `INVALID_ORDER_MIN_TICK_SIZE` hatasıyla reddedilir. Strateji motoru OpenDual fiyatlarını her tick'te `tick_size` katına snap eder (`harvest::dual_prices(effective_score, tick_size)` — sinyale göre simetrik, toplam `1.00`).
 - Pencere boyunca seçilen **strateji** (`dutch_book` / `harvest` / `prism`) döngüsü çalışır; pencere sonuna doğru (ör. `stop_before_end_ms`) erken durdurma kuralları uygulanabilir.
 - Pencere **endDate** (veya strateji kuralı) ile uyumlu şekilde sonlandırılır; log: market tamamlandı, sıradaki hedefe geçiş.
 
@@ -629,11 +679,11 @@ Aşağıdaki blok **örnek veridir**; zaman damgaları ve id’ler hayalidir.
 [10:19:56.508] [btc]    ✅ Subscribed to order updates
 [10:19:56.540] [btc]    ✅ Connected (101 Switching Protocols)
 [10:19:56.540] [btc]    ✅ Subscribed to UP and DOWN assets
-[10:19:56.553] [btc] 📚 [PRICE] UP | Bid: $0.99 | Ask: $0.00 | Spread: $-0.99
-[10:19:56.553] [btc] 📚 [PRICE] DOWN | Bid: $0.00 | Ask: $0.01 | Spread: $0.01
-[10:19:56.553] [btc] 📦 POST /order (249ms)
-[10:19:56.553] [btc] ✅ orderType=GTC side=BUY outcome=YES | POST status=live orderID=0x8e9a3174e6429c...
+[10:19:56.553] [btc] 📚 Market book ready: yes_bid=0.4800 yes_ask=0.5200 no_bid=0.4800 no_ask=0.5200
+[10:19:56.553] [btc] ✅ orderType=GTC side=BUY outcome=YES size=10 price=0.5 | status=live | reason=harvest:open_dual:yes | signal=5.00(eff 5.00)
 ```
+
+**Order log format kuralı:** `✅ orderType=…` satırına her zaman üç ek alan eklenir — `status`, `reason` (strateji `PlannedOrder.reason` alanı; ör. `harvest:open_dual:yes`, `harvest:averaging:Up`, `harvest:profit_lock:fak`), `signal=signal_score(eff effective_score)`. Periyodik Binance log satırı **basılmaz**; sinyal context'i sadece emir gönderildiği anda bu satıra düşer (bkz. §14).
 
 **POST `/order` yanıtı `matched` ise** (deftere düşmeden eşleşme; `tradeIDs` dönebilir — **FOK** tam dolum, **FAK/GTC** ilk vuruşta kısmi olabilir; bkz. §5.5 `matched` satırı):
 
@@ -677,6 +727,35 @@ Aşağıdaki blok **örnek veridir**; zaman damgaları ve id’ler hayalidir.
 [10:19:56.664] [btc] 🏁 Market window complete, transitioning to next market...
 [10:19:56.664] [btc] ✅ Market #10 complete, moving to next...
 ```
+
+### 5.2.1 Örnek: Harvest dryrun pencere (OpenDual → SingleLeg → ProfitLock)
+
+Harvest stratejisinin tek pencere boyunca ürettiği log şablonları (`run_mode=dryrun`):
+
+```
+[19:05:47.242] [25] Bot started — strategy=Harvest mode=Dryrun order_usdc=5 signal_weight=5
+[19:05:47.242] [25] Target market: btc-updown-5m-1776553500
+[19:05:47.361] [25] ✅ Found market: Bitcoin Up or Down - April 18, 7:05PM-7:10PM ET
+[19:05:47.363] [25] 🚀 Starting trading loop (strategy: Harvest, mode: Dryrun)
+[19:05:47.743] [25] 📚 Market book ready: yes_bid=0.0100 yes_ask=0.9900 no_bid=0.0100 no_ask=0.9900
+[19:05:47.864] [25] 🎯 OpenDual signal_score=5.00 effective_score=5.00 → up_bid=0.50 down_bid=0.50 deadline=1776553552864ms
+[19:05:47.864] [25] ✅ orderType=GTC side=BUY outcome=UP   size=10 price=0.5 | status=live | reason=harvest:open_dual:yes | signal=5.00(eff 5.00)
+[19:05:47.864] [25] ✅ orderType=GTC side=BUY outcome=DOWN size=10 price=0.5 | status=live | reason=harvest:open_dual:no  | signal=5.00(eff 5.00)
+[19:05:48.134] [25] 📥 passive_fill side=BUY outcome=UP size=10 price=0.3000 reason=harvest:open_dual:yes
+[19:05:50.000] [25] 📚 Book snapshot: yes_bid=0.2900 yes_ask=0.3100 no_bid=0.6700 no_ask=0.6900 | yes_spread=0.0200 no_spread=0.0200
+[19:05:52.864] [25] ⏰ OpenDual timeout (one_fill=UP) → cancelling counter side
+[19:05:52.864] [25] 🚫 DELETE /order (1 ids) ids=["dry-6ea18bca-fed8-454d-90bc-2245cb0c63a9"]
+[19:05:52.864] [25]     canceled=["dry-6ea18bca-fed8-454d-90bc-2245cb0c63a9"] not_canceled={}
+[19:05:54.864] [25] 🔒 ProfitLock triggered: first_leg(UP)=0.3000 + hedge_leg(DOWN)=0.6800 = 0.9800 ≤ threshold(0.98) → FAK
+[19:05:54.864] [25] ✅ orderType=FAK side=BUY outcome=DOWN size=10 price=0.68 | status=matched | reason=harvest:profit_lock:fak | signal=5.00(eff 5.00)
+```
+
+**Notlar:**
+- `📚 Market book ready` pencere boyunca **bir kez** basılır (her iki taraf için ilk geçerli `best_bid`).
+- `📚 Book snapshot` her **5 saniyede bir** ve sadece dört quote'tan en az biri değiştiyse loglanır (kitap statikken spam yapmaz). Spread'ler `max(ask − bid, 0)` ile gösterilir.
+- `🔒 ProfitLock triggered` `SingleLeg → ProfitLock` state geçişi anında basılır; `first_leg + hedge_leg ≤ avg_threshold` koşulunu açıkça gösterir (`avg_threshold = 1.0 − strategy_params.harvest_profit_lock_pct`, default `0.98`).
+- `📥 passive_fill` sadece dryrun'da görülür; live'da User WS `trade` (status `MATCHED`) eşdeğer satırı üretir (§5.3).
+- Periyodik Binance signal log satırı **kaldırıldı**; sinyal context'i her `✅ orderType=…` satırının `signal=…(eff …)` parçasında taşınır.
 
 ### 5.3 Örnek: `market_resolved` (metin log)
 
@@ -1104,7 +1183,7 @@ effective_score = 5.0 + (signal_score − 5.0) × (signal_weight / 10.0)
 
 ### 14.4 Strateji Bazlı Etki
 
-| `effective_score` aralığı | Yorumlama | `dutch_book` | `harvest` | `prism` |
+| `effective_score` aralığı | Yorumlama | `dutch_book` | `harvest` (averaging size) | `prism` |
 |---|---|---|---|---|
 | `8–10` (güçlü alış) | Agresif UP baskısı | UP boyut `×1.5`; yön teyit zorunlu | Avg YES `×1.0` (zıt); Avg NO `×1.3` (teyit) | Giriş eşiği düşürülür (erken pozisyon) |
 | `6–8` (hafif alış) | Hafif UP baskısı | UP boyut `×1.2` | Avg YES `×0.9`; Avg NO `×1.1` | Eşik normale yakın |
@@ -1112,11 +1191,28 @@ effective_score = 5.0 + (signal_score − 5.0) × (signal_weight / 10.0)
 | `2–4` (hafif satış) | Hafif DOWN baskısı | DOWN boyut `×1.2`; UP emirde `×0.8` | Avg YES `×1.1` (teyit); Avg NO `×0.9` | Giriş eşiği yükseltilir |
 | `0–2` (güçlü satış) | Agresif DOWN baskısı | DOWN boyut `×1.5`; zıt yönde emir atlanır | Avg YES `×1.3` (teyit); Avg NO `×1.0` (zıt) | Giriş engellenir |
 
-**`harvest` tablosu okuma kılavuzu:** Sinyal, averaging yapılan **tarafı teyit edip etmediğine** göre ölçekler. "Avg YES" = YES (UP) tarafı averaging; "Avg NO" = NO (DOWN) tarafı averaging. Güçlü alış sinyali, fiyatı yükselen YES tarafına averaging yapmayı teyit etmez (zıt); aksine düşen NO tarafı için averaging'i güçlendirir (teyit). Güçlü satış sinyali ise YES fiyatının düştüğünü gösterir, dolayısıyla YES averaging'i teyit eder. Yön filtresi yok; sinyal yalnızca **averaging GTC boyutunu** ölçekler.
+**`harvest` — OpenDual fiyatı (sinyalden simetrik türeme):**
+
+| `effective_score` | `up_bid` | `down_bid` | toplam |
+|---|---|---|---|
+| 0.0 | 0.25 | 0.75 | 1.00 |
+| 5.0 (nötr) | 0.50 | 0.50 | 1.00 |
+| 10.0 | 0.75 | 0.25 | 1.00 |
+
+OpenDual fiyatı her tick'te `harvest::dual_prices(effective_score, tick_size)` ile hesaplanır:
+- `delta = (s − 5) / 5 ∈ [−1, +1]`
+- `up_bid = 0.50 + delta·0.25`, `down_bid = 0.50 − delta·0.25` → `tick_size` katına snap
+- Toplam daima `1.00` → dual fazda ProfitLock asla tetiklenmez (yalnızca SingleLeg averaging fazında geçerli).
+
+**Önkoşul:** Her iki tarafın `best_bid > 0` olması (book WS quote'u gelmiş olmalı); aksi halde `Pending` korunur. Bu, DryRun passive-fill simulator'ının `best_ask` ile karşılaştırma yapabilmesi ve canlı market'te kitap aktif olmadan emir gönderilmesini engellemek için.
+
+**DryRun passive-fill simülasyonu:** Fiyatlar market quote'tan bağımsız üretildiği için (sabit 0.50 anchor + sinyal kayması) `Simulator::fill` koşulu (`price ≥ best_ask`) çoğu zaman sağlanmaz; emirler `live` kalır. `engine::simulate_passive_fills(session)` her market book güncellemesinden sonra (`bot.rs::handle_event` içinde) çağrılır ve açık BUY/SELL emirleri yeni quote ile karşılaştırılır (BUY için `best_ask ≤ price` olduğunda `fill_price = best_ask`). Bu sayede maker emirleri DryRun'da da gerçeğe yakın şekilde dolar.
+
+**`harvest` averaging tablosu okuma kılavuzu:** Sinyal, averaging yapılan **tarafı teyit edip etmediğine** göre boyut ölçekler. "Avg YES" = YES (UP) averaging; "Avg NO" = NO (DOWN) averaging. Güçlü alış sinyali, fiyatı yükselen YES tarafına averaging yapmayı teyit etmez (zıt); düşen NO tarafı için averaging'i güçlendirir (teyit).
 
 **Strateji mekanizma özeti:**
 - **`dutch_book`:** Sinyal hem pozisyon boyutunu hem yön doğrulamasını etkiler. `effective_score < 2` iken UP emir üretilmez.
-- **`harvest`:** Sinyal yalnızca **averaging GTC boyutunu** ölçekler (teyit mantığı); yönü filtrelemez, her koşulda emir üretilir.
+- **`harvest`:** Sinyal iki yerde: (1) **OpenDual fiyatı** (simetrik, toplam `1.00`); (2) **averaging GTC boyutu** (yukarıdaki tablo).
 - **`prism`:** Sinyal zamanlama / giriş eşiğini etkiler. Güçlü satış → giriş ertelenir veya pencere içinde iptal edilir.
 
 **`MarketZone` ile etkileşim (bkz. §15):** Sinyal hesabı (`CVD`, `BSI`, `OFI`, `signal_score`) her bölgede sürekli yapılır. Ancak her strateji, `ZoneSignalMap` aracılığıyla bazı bölgelerde sinyali **pasif** bırakabilir. Pasif bölgede `effective_score` zorla `5.0` (nötr) olarak uygulanır; pozisyon boyutu ve yön filtresi sinyal tarafından etkilenmez. Hangi bölgelerde sinyalin aktif olduğu her stratejinin bölge haritasında (`strategies.md §1–3`) tanımlanır. `StopTrade` bölgesinde sinyal durumundan bağımsız olarak yeni emir üretilmez (§15 zorunlu kuralı).
@@ -1148,6 +1244,8 @@ pub struct BinanceSignalState {
 - `binance_aggtrade_task`: `tokio-tungstenite` → `wss://fstream.binance.com`; PING/PONG işler; `mpsc::Sender<BinanceAggTrade>`
 - `signal_processor_task`: `mpsc::Receiver` → rolling `VecDeque<(u64, f64)>`; `Arc<RwLock<BinanceSignalState>>` günceller
 - Strateji katmanı: emir kararı üretmeden önce `signal_state.read()` → `effective_score` → pozisyon çarpanı
+
+**Loglama:** Bağlantı durumu (`🛰️  Binance ws connecting/connected/disconnected`) ve warmup ilerlemesi (`🛰️  Binance warmup N/300 …`, `🟢 Binance warmup complete …`) bir defalık olay loglarıdır. **Periyodik snapshot log satırı yoktur**; sinyalin anlık değeri yalnızca strateji emir gönderdiğinde, `✅ orderType=…` satırının `signal=signal_score(eff effective_score)` parçasında basılır (bkz. §5.2). SSE üzerinden frontend'e iletilen `SignalUpdate` event'i her 5 saniyede bir akar (UI gösterimi için); metin log'a düşmez.
 
 **Yeniden bağlanma:** Binance WS düşerse üstel backoff `1s → 2s → 4s → … → max 60s`; bağlantı kopuk süre boyunca `signal_score = 5.0` (nötr), emir üretimi durmaz.
 
@@ -1253,6 +1351,12 @@ effective_score = if sig_ok {
 
 `StopTrade` bölgesinde (`zone_pct ≥ 97 %`) sinyal değerinden bağımsız olarak **yeni emir üretilmez**; yalnızca açık emir yönetimi ve heartbeat döngüsü sürer. Bu kural `zone_signal_map` dışında, strateji motorunun üst katmanında zorunlu olarak uygulanır.
 
+### 15.4 Ortak Parametreler
+
+| Parametre | Default | Kaynak | Kullanım |
+|---|---|---|---|
+| `cooldown_threshold` | `30_000 ms` | `BotConfig.cooldown_threshold` (frontend "Ek ayarlar"). Varsayılan sabit: `src/strategy.rs::COOLDOWN_THRESHOLD_DEFAULT`. | Tüm stratejilerin averaging davranışında **iki rolü** vardır: (1) iki averaging emri **arası** minimum bekleme: `now_ms − last_averaging_ms ≥ cooldown_threshold`; (2) **kitapta açık** averaging GTC'sinin maksimum yaşam süresi — bu yaşı geçen emir cancel edilir ve bir sonraki tick'te koşullar uygunsa yenisi gönderilir. `last_averaging_ms` emrin **gönderildiği** anda set edilir (önceden yalnızca fill anında güncellenirdi); bu sayede live emirler yeni averaging atışını bloklar. Bot bazında ayarlanabilir; engine `MarketSession.cooldown_threshold` üzerinden strateji ctx'lerine geçirir. |
+
 ---
 
 ## 16. Çalışma Modu — `RunMode` (`live` / `dryrun`)
@@ -1275,12 +1379,31 @@ Her bot, **`live`** veya **`dryrun`** modunda başlatılır. Mod, frontend'deki 
 
 **GTC emir (OpenDual / Averaging):**
 - `POST /order` veya `POST /orders` çağrısı engellenir.
-- Bot, emir gönderildiği anda **anında fill** olmuş gibi davranır:
-  - Fill fiyatı = emrin kendi bid fiyatı (`up_bid`, `down_bid`, `first_best_leg`)
-  - Fill boyutu = hesaplanan `effective_size` (tam fill)
-  - Simüle edilen order ID = `dryrun-<uuid-v4>`
-- `avg_*`, `imbalance`, `imbalance_cost` ve diğer metrikler gerçek fill ile aynı şekilde güncellenir.
+- Simulator taker davranışını taklit eder:
+  - `BUY` ve `price ≥ counter best_ask` → matched (fill_price = `best_ask`, fill_size = planned size).
+  - `SELL` ve `price ≤ counter best_bid` → matched (fill_price = `best_bid`).
+  - Aksi halde emir **live** kabul edilir; `MarketSession::open_orders` listesine eklenir (id, outcome, side, price, size, reason, `placed_at_ms`), sonraki tick'te fill bekler veya iptal edilir.
+  - Karşı fiyat `0.0` (henüz quote yok) ise emir daima live kalır.
+  - Simüle edilen order ID = `dry-<uuid-v4>`.
+- `avg_*`, `imbalance`, `imbalance_cost` ve diğer metrikler gerçek fill ile aynı şekilde güncellenir (yalnızca matched durumda).
 - User WS `trade` olayı yoktur; güncelleme doğrudan motor içinde tetiklenir.
+
+**Averaging cancel-restart senaryosu (Harvest SingleLeg):**
+
+1. `t0`'da averaging GTC gönderildi → `open_orders` listesine eklendi
+   (`placed_at_ms = t0`, `reason = "harvest:averaging:Up"`); aynı anda
+   `last_averaging_ms = t0` set edildi (iki averaging arası min süre).
+2. `t0..t0+30s` arasında her tick'te strateji aynı taraftaki açık averaging
+   emrini görür ve `Decision::NoOp` döner; yeni averaging gönderilmez.
+3. `t0+cooldown_threshold` (default `30s`) dolduğunda → strateji
+   `Decision::CancelOrders([avg_id])` döner; emir kitaptan kaldırılır.
+4. `t0+30s+ε` tick'inde kitap boştur, `cooldown_ok = true`, koşullar uygunsa
+   (`price_fell`, `pos_held + open_size < max_position_size`,
+   fiyat `[min_price, max_price]` aralığında) yeni averaging GTC gönderilir.
+
+`pos_held` artık **filled shares + aynı taraftaki açık BUY emirlerin notional
+size'ı** olarak hesaplanır; bu sayede kitapta birikmiş averaging GTC'leri
+`max_position_size` korumasından kaçamaz.
 
 **FAK emir (ProfitLock):**
 - CLOB API'ye gönderilmez.

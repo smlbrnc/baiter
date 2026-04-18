@@ -172,7 +172,7 @@ async fn spawn_once(state: Arc<AppState>, bot_id: i64) -> Result<i32, String> {
         let reader = BufReader::new(stderr);
         let mut lines = reader.lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            let _ = db::insert_log(&s_err.pool, Some(bot_id), "warn", &line).await;
+            let _ = db::insert_log(&s_err.pool, Some(bot_id), "error", &line).await;
         }
     });
 
@@ -188,8 +188,26 @@ async fn handle_stdout_line(state: &AppState, bot_id: i64, line: &str) {
         } else {
             tracing::warn!(bot_id, "event parse failed: {line}");
         }
-    } else if !line.is_empty() {
-        let _ = db::insert_log(&state.pool, Some(bot_id), "info", line).await;
+        return;
+    }
+    if line.is_empty() {
+        return;
+    }
+    let level = detect_log_level(line);
+    let _ = db::insert_log(&state.pool, Some(bot_id), level, line).await;
+}
+
+/// Tracing'in compact formatı satır başına `INFO` / `WARN` / `ERROR` token'ı koyar
+/// (örn. `WARN ws error...`). Spec §5.2 metin satırlarında ise level token'ı
+/// yoktur — varsayılan `info`. Bu yardımcı her iki biçimi de doğru sınıflandırır.
+fn detect_log_level(line: &str) -> &'static str {
+    let head = line.trim_start();
+    let token = head.split_whitespace().next().unwrap_or("");
+    match token {
+        "ERROR" => "error",
+        "WARN" => "warn",
+        "DEBUG" | "TRACE" => "info",
+        _ => "info",
     }
 }
 

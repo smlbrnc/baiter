@@ -12,12 +12,12 @@ use uuid::Uuid;
 
 use crate::config::BotConfig;
 use crate::error::AppError;
-use crate::polymarket::clob::ClobClient;
+use crate::polymarket::clob::{CancelResponse, ClobClient};
 use crate::strategy::harvest::{decide as harvest_decide, HarvestContext, HarvestState};
 use crate::strategy::metrics::{MarketPnL, StrategyMetrics};
 use crate::strategy::{Decision, PlannedOrder};
 use crate::time::{now_ms, zone_pct, MarketZone};
-use crate::types::{Outcome, RunMode, Side, Strategy, TradeStatus};
+use crate::types::{OrderType, Outcome, RunMode, Side, Strategy, TradeStatus};
 
 /// Fee sabiti — DryRun simülasyonu için.
 pub const DRYRUN_FEE_RATE: f64 = 0.0002; // %0.02
@@ -30,6 +30,18 @@ pub struct ExecutedOrder {
     pub filled: bool,
     pub fill_price: Option<f64>,
     pub fill_size: Option<f64>,
+}
+
+/// Kitapta açık (live) emir kaydı — averaging timeout / pos_held için.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpenOrder {
+    pub id: String,
+    pub outcome: Outcome,
+    pub side: Side,
+    pub price: f64,
+    pub size: f64,
+    pub reason: String,
+    pub placed_at_ms: u64,
 }
 
 /// Market seansı — bir bot × bir pencere (slug).
@@ -59,7 +71,16 @@ pub struct MarketSession {
     pub no_best_ask: f64,
 
     pub run_mode: RunMode,
-    pub open_order_ids: Vec<String>,
+    pub open_orders: Vec<OpenOrder>,
+
+    /// Global emir taban fiyatı (bot config) — engine guard.
+    pub min_price: f64,
+    /// Global emir tavan fiyatı (bot config) — engine guard.
+    pub max_price: f64,
+    /// Averaging cooldown (ms) — strateji ctx'lerine geçirilir (bot config).
+    pub cooldown_threshold: u64,
+    /// Bir kez `📚 Market book ready` logu basıldı mı? (bot.rs içinden okunur/yazılır).
+    pub book_ready_logged: bool,
 }
 
 impl MarketSession {
@@ -79,13 +100,23 @@ impl MarketSession {
             metrics: StrategyMetrics::default(),
             last_averaging_ms: 0,
             last_fill_price: 0.0,
+            // 0.0 = "henüz quote yok" sentineli; Simulator bu durumda emri live tutar.
             yes_best_bid: 0.0,
-            yes_best_ask: 1.0,
+            yes_best_ask: 0.0,
             no_best_bid: 0.0,
-            no_best_ask: 1.0,
+            no_best_ask: 0.0,
             run_mode: cfg.run_mode,
-            open_order_ids: Vec::new(),
+            open_orders: Vec::new(),
+            min_price: cfg.min_price,
+            max_price: cfg.max_price,
+            cooldown_threshold: cfg.cooldown_threshold,
+            book_ready_logged: false,
         }
+    }
+
+    /// Açık emir id'leri (cancel için).
+    pub fn open_ids(&self) -> Vec<String> {
+        self.open_orders.iter().map(|o| o.id.clone()).collect()
     }
 
     /// Güncel market bölgesi (`zone_pct` eşikleri).
@@ -99,24 +130,20 @@ impl MarketSession {
     }
 
     /// Strateji'ye karar ver — tek döngü tick.
-    pub fn tick(&mut self, cfg: &BotConfig, now_ms_v: u64) -> Decision {
+    ///
+    /// `effective_score` Binance sinyalinden türetilir (`5.0` = nötr).
+    pub fn tick(&mut self, cfg: &BotConfig, now_ms_v: u64, effective_score: f64) -> Decision {
         match cfg.strategy {
             Strategy::Harvest => {
-                let up_bid = cfg
-                    .strategy_params
-                    .harvest_open_offset_ticks
-                    .map(|o| 0.50 + (o as f64) * self.tick_size)
-                    .unwrap_or(0.50);
-                let down_bid = cfg
-                    .strategy_params
-                    .harvest_open_offset_ticks
-                    .map(|o| 0.50 + (o as f64) * self.tick_size)
-                    .unwrap_or(0.48);
                 let avg_threshold = cfg
                     .strategy_params
                     .harvest_profit_lock_pct
                     .map(|p| 1.0 - p.abs())
                     .unwrap_or(0.98);
+                let dual_timeout = cfg
+                    .strategy_params
+                    .harvest_dual_timeout
+                    .unwrap_or(5_000);
 
                 let ctx = HarvestContext {
                     params: &cfg.strategy_params,
@@ -130,16 +157,19 @@ impl MarketSession {
                     api_min_order_size: self.api_min_order_size,
                     order_usdc: cfg.order_usdc,
                     signal_weight: cfg.signal_weight,
-                    effective_score: 5.0,
+                    effective_score,
                     zone: self.current_zone(now_ms_v / 1000),
                     now_ms: now_ms_v,
                     last_averaging_ms: self.last_averaging_ms,
                     last_fill_price: self.last_fill_price,
-                    up_bid,
-                    down_bid,
+                    tick_size: self.tick_size,
+                    dual_timeout,
+                    open_orders: &self.open_orders,
                     avg_threshold,
-                    cooldown_ms: 30_000,
                     max_position_size: 100.0,
+                    min_price: self.min_price,
+                    max_price: self.max_price,
+                    cooldown_threshold: self.cooldown_threshold,
                 };
                 let (new_state, decision) = harvest_decide(self.harvest_state, &ctx);
                 self.harvest_state = new_state;
@@ -207,13 +237,13 @@ impl Executor {
         &self,
         _session: &mut MarketSession,
         order_id: &str,
-    ) -> Result<(), AppError> {
+    ) -> Result<CancelResponse, AppError> {
         match self {
-            Self::DryRun(_) => Ok(()),
-            Self::Live(client) => {
-                let _ = client.cancel_order(order_id).await?;
-                Ok(())
-            }
+            Self::DryRun(_) => Ok(CancelResponse {
+                canceled: vec![order_id.to_string()],
+                not_canceled: serde_json::json!({}),
+            }),
+            Self::Live(client) => client.cancel_order(order_id).await,
         }
     }
 }
@@ -223,8 +253,50 @@ impl Executor {
 pub struct Simulator;
 
 impl Simulator {
+    /// Live davranışını yansıtır:
+    /// - BUY price >= karşı best_ask  → matched (taker), fill_price = best_ask
+    /// - SELL price <= karşı best_bid → matched (taker), fill_price = best_bid
+    /// - Karşı fiyat 0.0 (henüz quote yok) veya emir geçmiyorsa → live (orderbook'a girer)
     pub fn fill(&self, session: &mut MarketSession, planned: &PlannedOrder) -> ExecutedOrder {
-        let fill_price = planned.price;
+        let order_id = format!("dry-{}", Uuid::new_v4());
+
+        let counter_price = match planned.side {
+            Side::Buy => match planned.outcome {
+                Outcome::Up => session.yes_best_ask,
+                Outcome::Down => session.no_best_ask,
+            },
+            Side::Sell => match planned.outcome {
+                Outcome::Up => session.yes_best_bid,
+                Outcome::Down => session.no_best_bid,
+            },
+        };
+
+        let crosses = counter_price > 0.0
+            && match planned.side {
+                Side::Buy => planned.price >= counter_price,
+                Side::Sell => planned.price <= counter_price,
+            };
+
+        if !crosses {
+            session.open_orders.push(OpenOrder {
+                id: order_id.clone(),
+                outcome: planned.outcome,
+                side: planned.side,
+                price: planned.price,
+                size: planned.size,
+                reason: planned.reason.clone(),
+                placed_at_ms: now_ms(),
+            });
+            return ExecutedOrder {
+                order_id,
+                planned: planned.clone(),
+                filled: false,
+                fill_price: None,
+                fill_size: None,
+            };
+        }
+
+        let fill_price = counter_price;
         let fill_size = planned.size;
         let fee = fill_price * fill_size * DRYRUN_FEE_RATE;
 
@@ -233,9 +305,6 @@ impl Simulator {
             .ingest_fill(planned.outcome, fill_price, fill_size, fee);
         session.last_fill_price = fill_price;
         session.last_averaging_ms = now_ms();
-
-        let order_id = format!("dry-{}", Uuid::new_v4());
-        session.open_order_ids.retain(|id| id != &order_id);
 
         ExecutedOrder {
             order_id,
@@ -247,38 +316,74 @@ impl Simulator {
     }
 }
 
-/// Decision sonucu batch'i yürüt — `ExecutedOrder` listesi döner.
+/// `execute()` çıktısı — placed + canceled (gerçek `CancelResponse`'lar).
+#[derive(Debug, Default)]
+pub struct ExecuteOutput {
+    pub placed: Vec<ExecutedOrder>,
+    pub canceled: Vec<CancelResponse>,
+}
+
+/// Global price guard: emir fiyatı [min_price, max_price] dışındaysa reject.
+/// `info` seviyesinde log basar (supervisor stdout'tan parse eder).
+fn within_price_bounds(session: &MarketSession, planned: &PlannedOrder) -> bool {
+    if planned.price < session.min_price || planned.price > session.max_price {
+        tracing::info!(
+            "🚧 Order rejected: price={:.4} outside [{:.2}, {:.2}] reason={}",
+            planned.price,
+            session.min_price,
+            session.max_price,
+            planned.reason
+        );
+        return false;
+    }
+    true
+}
+
+/// Decision sonucu batch'i yürüt.
 pub async fn execute(
     session: &mut MarketSession,
     exec: &Executor,
     decision: Decision,
-) -> Result<Vec<ExecutedOrder>, AppError> {
+) -> Result<ExecuteOutput, AppError> {
+    let mut out = ExecuteOutput::default();
     match decision {
-        Decision::NoOp | Decision::Complete => Ok(vec![]),
+        Decision::NoOp | Decision::Complete => {}
         Decision::PlaceOrders(orders) => {
-            let mut out = Vec::with_capacity(orders.len());
             for o in orders {
-                out.push(exec.place(session, &o).await?);
+                if !within_price_bounds(session, &o) {
+                    continue;
+                }
+                let executed = exec.place(session, &o).await?;
+                if executed.planned.reason.starts_with("harvest:averaging") {
+                    session.last_averaging_ms = now_ms();
+                }
+                out.placed.push(executed);
             }
-            Ok(out)
         }
         Decision::CancelOrders(ids) => {
             for id in &ids {
-                exec.cancel(session, id).await?;
+                out.canceled.push(exec.cancel(session, id).await?);
             }
-            Ok(vec![])
+            session.open_orders.retain(|o| !ids.contains(&o.id));
         }
         Decision::Batch { cancel, place } => {
             for id in &cancel {
-                exec.cancel(session, id).await?;
+                out.canceled.push(exec.cancel(session, id).await?);
             }
-            let mut out = Vec::with_capacity(place.len());
+            session.open_orders.retain(|o| !cancel.contains(&o.id));
             for o in place {
-                out.push(exec.place(session, &o).await?);
+                if !within_price_bounds(session, &o) {
+                    continue;
+                }
+                let executed = exec.place(session, &o).await?;
+                if executed.planned.reason.starts_with("harvest:averaging") {
+                    session.last_averaging_ms = now_ms();
+                }
+                out.placed.push(executed);
             }
-            Ok(out)
         }
     }
+    Ok(out)
 }
 
 /// User WS `trade MATCHED` event'inden gelen fill'i session'a absorbla.
@@ -292,6 +397,74 @@ pub fn absorb_trade_matched(
     session.metrics.ingest_fill(outcome, price, size, fee);
     session.last_fill_price = price;
     session.last_averaging_ms = now_ms();
+}
+
+/// **DryRun passive-fill simülatörü.**
+///
+/// Market WS book güncellemesinden sonra çağrılır: `session.open_orders` içindeki
+/// her live emir mevcut book'la karşılaştırılır:
+/// - **BUY** (`outcome=Up` → karşı `yes_best_ask`, `outcome=Down` → `no_best_ask`):
+///   `best_ask > 0 && order.price >= best_ask` ise emir o anda dolar (`fill_price = best_ask`).
+/// - **SELL** sırasıyla karşı `best_bid` ile karşılaştırılır.
+///
+/// Filled emirler `open_orders`'tan silinir; `metrics`/`last_fill_price`/
+/// `last_averaging_ms` güncellenir. Live modda çağrılmaz (gerçek user WS yapar).
+pub fn simulate_passive_fills(session: &mut MarketSession) -> Vec<ExecutedOrder> {
+    let mut filled: Vec<ExecutedOrder> = Vec::new();
+    let mut keep: Vec<OpenOrder> = Vec::with_capacity(session.open_orders.len());
+    let snapshot = std::mem::take(&mut session.open_orders);
+
+    for o in snapshot {
+        let counter_price = match o.side {
+            Side::Buy => match o.outcome {
+                Outcome::Up => session.yes_best_ask,
+                Outcome::Down => session.no_best_ask,
+            },
+            Side::Sell => match o.outcome {
+                Outcome::Up => session.yes_best_bid,
+                Outcome::Down => session.no_best_bid,
+            },
+        };
+        let crosses = counter_price > 0.0
+            && match o.side {
+                Side::Buy => o.price >= counter_price,
+                Side::Sell => o.price <= counter_price,
+            };
+        if !crosses {
+            keep.push(o);
+            continue;
+        }
+        let fill_price = counter_price;
+        let fill_size = o.size;
+        let fee = fill_price * fill_size * DRYRUN_FEE_RATE;
+        session
+            .metrics
+            .ingest_fill(o.outcome, fill_price, fill_size, fee);
+        session.last_fill_price = fill_price;
+        if o.reason.starts_with("harvest:averaging") {
+            session.last_averaging_ms = now_ms();
+        }
+        filled.push(ExecutedOrder {
+            order_id: o.id.clone(),
+            planned: PlannedOrder {
+                outcome: o.outcome,
+                token_id: match o.outcome {
+                    Outcome::Up => session.yes_token_id.clone(),
+                    Outcome::Down => session.no_token_id.clone(),
+                },
+                side: o.side,
+                price: o.price,
+                size: o.size,
+                order_type: OrderType::Gtc,
+                reason: o.reason.clone(),
+            },
+            filled: true,
+            fill_price: Some(fill_price),
+            fill_size: Some(fill_size),
+        });
+    }
+    session.open_orders = keep;
+    filled
 }
 
 /// Bir WS event'in ardından `best_bid_ask`'ı güncelle.
@@ -364,6 +537,9 @@ mod tests {
             run_mode,
             order_usdc: 5.0,
             signal_weight: 0.0,
+            min_price: 0.05,
+            max_price: 0.95,
+            cooldown_threshold: 30_000,
             strategy_params: StrategyParams::default(),
         }
     }
@@ -379,15 +555,15 @@ mod tests {
         sess.start_ts = now_ms() / 1000;
         sess.end_ts = sess.start_ts + 300;
         sess.yes_best_bid = 0.50;
-        sess.yes_best_ask = 0.52;
+        sess.yes_best_ask = 0.50;
         sess.no_best_bid = 0.48;
-        sess.no_best_ask = 0.50;
+        sess.no_best_ask = 0.48;
 
-        let dec = sess.tick(&cfg, now_ms());
+        let dec = sess.tick(&cfg, now_ms(), 5.0);
         let exec = Executor::DryRun(Simulator);
         let filled = execute(&mut sess, &exec, dec).await.unwrap();
-        assert_eq!(filled.len(), 2);
-        assert!(filled.iter().all(|e| e.filled));
+        assert_eq!(filled.placed.len(), 2);
+        assert!(filled.placed.iter().all(|e| e.filled));
         assert!(sess.metrics.shares_yes > 0.0);
         assert!(sess.metrics.shares_no > 0.0);
     }
