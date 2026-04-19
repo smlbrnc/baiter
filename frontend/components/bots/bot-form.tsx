@@ -30,6 +30,7 @@ export function BotForm() {
     min_price: 0.05,
     max_price: 0.95,
     cooldown_threshold: 30000,
+    start_offset: 1,
     auto_start: false,
   });
   const [asset, setAsset] = useState<MarketAsset>(DEFAULT_MARKET.asset);

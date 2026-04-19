@@ -68,7 +68,6 @@ impl Interval {
         }
     }
 
-    /// Pencere uzunluğu saniye cinsinden.
     pub fn seconds(self) -> u64 {
         match self {
             Self::M5 => 5 * 60,
@@ -113,12 +112,9 @@ impl SlugInfo {
             self.ts,
         )
     }
-
 }
 
 /// `{asset}-updown-{interval}-{ts}` formatını parse eder.
-///
-/// Tam 4 parça beklenir; 2. parça literal `"updown"` olmak zorundadır.
 pub fn parse_slug(slug: &str) -> Result<SlugInfo, AppError> {
     let parts: Vec<&str> = slug.split('-').collect();
     if parts.len() != 4 {
@@ -168,16 +164,13 @@ pub fn parse_slug(slug: &str) -> Result<SlugInfo, AppError> {
     })
 }
 
-/// Tam slug veya `{asset}-updown-{interval}` öneki kabul eder; önek girilmişse
-/// **şu andaki** aktif pencere `ts`'ini hesaplayarak döner. `bot/ctx.rs::load`
-/// ve `bot/window.rs::next_window` arasında tek slug parse yolu olsun diye
-/// merkezdedir (eskiden `bot.rs::prefix_slug` ile çiftleşmişti).
-pub fn parse_slug_or_prefix(pattern: &str) -> Result<SlugInfo, AppError> {
+/// Tam slug → explicit `ts` döner (offset no-op).
+/// Önek (`{asset}-updown-{interval}`) → `ts = snap_active + start_offset * interval.seconds()`.
+pub fn parse_slug_or_prefix(pattern: &str, start_offset: u32) -> Result<SlugInfo, AppError> {
     if let Ok(info) = parse_slug(pattern) {
         return Ok(info);
     }
-    let trimmed = pattern.trim_end_matches('-');
-    let parts: Vec<&str> = trimmed.split('-').collect();
+    let parts: Vec<&str> = pattern.trim_end_matches('-').split('-').collect();
     if parts.len() < 3 {
         return Err(AppError::InvalidSlug {
             slug: pattern.to_string(),
@@ -189,6 +182,6 @@ pub fn parse_slug_or_prefix(pattern: &str) -> Result<SlugInfo, AppError> {
         reason: format!("önekten interval parse edilemedi: '{}'", parts[2]),
     })?;
     let secs = interval.seconds();
-    let ts = (crate::time::now_secs() / secs) * secs;
+    let ts = (crate::time::now_secs() / secs) * secs + (start_offset as u64) * secs;
     parse_slug(&format!("{}-{}-{}-{ts}", parts[0], parts[1], parts[2]))
 }

@@ -69,7 +69,7 @@ pub async fn load(bot_id: i64) -> Result<(Ctx, SlugInfo, Signal, Signal), AppErr
     let creds = load_validated_creds(&pool, bot_id, cfg.run_mode).await?;
 
     db::set_bot_state(&pool, bot_id, "RUNNING").await?;
-    let slug = parse_slug_or_prefix(&cfg.slug_pattern)?;
+    let slug = parse_slug_or_prefix(&cfg.slug_pattern, cfg.start_offset)?;
 
     let http = shared_http_client();
     let gamma = GammaClient::new(http.clone(), env_.gamma_base_url.clone());
@@ -137,7 +137,6 @@ async fn load_validated_creds(
             c.signature_type
         )));
     }
-    // type 1/2 için funder zorunlu.
     if matches!(c.signature_type, 1..=2) && c.funder.as_deref().unwrap_or("").is_empty() {
         return Err(AppError::Config(format!(
             "bot {bot_id}: signature_type {} için 'funder' adresi zorunlu",

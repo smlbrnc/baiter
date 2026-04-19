@@ -20,6 +20,7 @@ pub struct BotRow {
     pub min_price: f64,
     pub max_price: f64,
     pub cooldown_threshold: i64,
+    pub start_offset: i64,
     pub strategy_params: String,
     pub state: String,
     pub last_active_ms: Option<i64>,
@@ -53,6 +54,7 @@ impl BotRow {
             min_price: self.min_price,
             max_price: self.max_price,
             cooldown_threshold: self.cooldown_threshold as u64,
+            start_offset: self.start_offset as u32,
             strategy_params,
         })
     }
@@ -71,6 +73,7 @@ impl<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> for BotRow {
             min_price: row.try_get("min_price")?,
             max_price: row.try_get("max_price")?,
             cooldown_threshold: row.try_get("cooldown_threshold")?,
+            start_offset: row.try_get("start_offset")?,
             strategy_params: row.try_get("strategy_params")?,
             state: row.try_get("state")?,
             last_active_ms: row.try_get("last_active_ms")?,
@@ -93,9 +96,9 @@ pub async fn insert_bot(pool: &SqlitePool, cfg: &BotConfig) -> Result<i64, AppEr
 
     let row = sqlx::query(
         "INSERT INTO bots (name, slug_pattern, strategy, run_mode, order_usdc, signal_weight, \
-         min_price, max_price, cooldown_threshold, strategy_params, state, created_at_ms, \
-         updated_at_ms) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'STOPPED', ?, ?) RETURNING id",
+         min_price, max_price, cooldown_threshold, start_offset, strategy_params, \
+         state, created_at_ms, updated_at_ms) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'STOPPED', ?, ?) RETURNING id",
     )
     .bind(&cfg.name)
     .bind(&cfg.slug_pattern)
@@ -106,6 +109,7 @@ pub async fn insert_bot(pool: &SqlitePool, cfg: &BotConfig) -> Result<i64, AppEr
     .bind(cfg.min_price)
     .bind(cfg.max_price)
     .bind(cfg.cooldown_threshold as i64)
+    .bind(cfg.start_offset as i64)
     .bind(&params)
     .bind(now)
     .bind(now)
@@ -114,26 +118,23 @@ pub async fn insert_bot(pool: &SqlitePool, cfg: &BotConfig) -> Result<i64, AppEr
     Ok(row.get::<i64, _>("id"))
 }
 
+const SELECT_BOT: &str =
+    "SELECT id, name, slug_pattern, strategy, run_mode, order_usdc, signal_weight, \
+     min_price, max_price, cooldown_threshold, start_offset, strategy_params, \
+     state, last_active_ms, created_at_ms, updated_at_ms FROM bots";
+
 pub async fn list_bots(pool: &SqlitePool) -> Result<Vec<BotRow>, AppError> {
-    let rows = sqlx::query_as::<_, BotRow>(
-        "SELECT id, name, slug_pattern, strategy, run_mode, order_usdc, signal_weight, \
-         min_price, max_price, cooldown_threshold, strategy_params, state, last_active_ms, \
-         created_at_ms, updated_at_ms FROM bots ORDER BY id ASC",
-    )
-    .fetch_all(pool)
-    .await?;
+    let rows = sqlx::query_as::<_, BotRow>(&format!("{SELECT_BOT} ORDER BY id ASC"))
+        .fetch_all(pool)
+        .await?;
     Ok(rows)
 }
 
 pub async fn get_bot(pool: &SqlitePool, bot_id: i64) -> Result<Option<BotRow>, AppError> {
-    let row = sqlx::query_as::<_, BotRow>(
-        "SELECT id, name, slug_pattern, strategy, run_mode, order_usdc, signal_weight, \
-         min_price, max_price, cooldown_threshold, strategy_params, state, last_active_ms, \
-         created_at_ms, updated_at_ms FROM bots WHERE id = ?",
-    )
-    .bind(bot_id)
-    .fetch_optional(pool)
-    .await?;
+    let row = sqlx::query_as::<_, BotRow>(&format!("{SELECT_BOT} WHERE id = ?"))
+        .bind(bot_id)
+        .fetch_optional(pool)
+        .await?;
     Ok(row)
 }
 

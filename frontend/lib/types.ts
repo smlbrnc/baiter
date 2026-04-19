@@ -18,6 +18,7 @@ export interface BotRow {
   min_price: number;
   max_price: number;
   cooldown_threshold: number;
+  start_offset: number;
   strategy_params: Record<string, unknown> | null;
   state: string;
   last_active_ms: number | null;
@@ -227,6 +228,7 @@ export interface CreateBotReq {
   min_price: number;
   max_price: number;
   cooldown_threshold: number;
+  start_offset: number;
   strategy_params?: Record<string, unknown>;
   credentials?: Credentials;
   auto_start?: boolean;

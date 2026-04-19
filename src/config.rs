@@ -106,6 +106,8 @@ pub struct BotConfig {
     /// (2) açık averaging GTC max yaş.
     /// Default: `30_000`.
     pub cooldown_threshold: u64,
+    /// Pencere ofseti: 0 = aktif, 1 = sonraki. Her start'ta prefix slug'a uygulanır.
+    pub start_offset: u32,
     pub strategy_params: StrategyParams,
 }
 
@@ -116,7 +118,6 @@ pub struct StrategyParams {
     #[serde(default)]
     pub harvest_dual_timeout: Option<u64>,
     /// SingleLeg ProfitLock FAK tetik oranı (örn. 0.05 → avg_threshold = 0.95).
-    /// Default ayar yok ⇒ `harvest_avg_threshold()` 0.98 döner.
     #[serde(default)]
     pub harvest_profit_lock_pct: Option<f64>,
     /// Serbest form (ileride stratejiye özel alanlar).

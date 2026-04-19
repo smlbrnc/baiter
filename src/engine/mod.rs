@@ -74,7 +74,7 @@ pub struct MarketSession {
     pub max_price: f64,
     /// Averaging cooldown (ms) — strateji ctx'lerine geçirilir (bot config).
     pub cooldown_threshold: u64,
-    /// Bir kez `📚 Market book ready` logu basıldı mı? (bot.rs içinden okunur/yazılır).
+    /// Bir kez `📚 Market book ready` logu basıldı mı?
     pub book_ready_logged: bool,
 }
 
@@ -242,6 +242,7 @@ mod tests {
             min_price: 0.05,
             max_price: 0.95,
             cooldown_threshold: 30_000,
+            start_offset: 0,
             strategy_params: StrategyParams::default(),
         }
     }

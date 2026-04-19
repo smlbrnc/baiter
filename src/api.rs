@@ -88,6 +88,8 @@ struct CreateBotReq {
     #[serde(default = "default_cooldown_threshold")]
     cooldown_threshold: u64,
     #[serde(default)]
+    start_offset: u32,
+    #[serde(default)]
     strategy_params: StrategyParams,
     #[serde(default)]
     credentials: Option<Credentials>,
@@ -127,6 +129,12 @@ async fn create_bot(
             "invalid cooldown_threshold: > 0 ms olmalı".to_string(),
         ));
     }
+    if req.start_offset > 1 {
+        return Err(AppError::Config(format!(
+            "invalid start_offset ({}): 0 (aktif) veya 1 (sonraki) olmalı",
+            req.start_offset
+        )));
+    }
     let cfg = BotConfig {
         id: 0,
         name: req.name,
@@ -138,6 +146,7 @@ async fn create_bot(
         min_price: req.min_price,
         max_price: req.max_price,
         cooldown_threshold: req.cooldown_threshold,
+        start_offset: req.start_offset,
         strategy_params: req.strategy_params,
     };
     let id = db::insert_bot(&state.pool, &cfg).await?;
@@ -418,6 +427,7 @@ fn bot_row_to_json(r: db::BotRow) -> Result<Value, AppError> {
         "min_price": r.min_price,
         "max_price": r.max_price,
         "cooldown_threshold": r.cooldown_threshold,
+        "start_offset": r.start_offset,
         "strategy_params": strategy_params,
         "state": r.state,
         "last_active_ms": r.last_active_ms,
@@ -425,6 +435,3 @@ fn bot_row_to_json(r: db::BotRow) -> Result<Value, AppError> {
         "updated_at_ms": r.updated_at_ms,
     }))
 }
-
-// HTTP yanıt → `AppError::IntoResponse` ([crate::error]) tek noktadan yönetir;
-// ayrı bir `ApiError` katmanı tutmuyoruz.

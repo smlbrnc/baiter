@@ -4,7 +4,7 @@ import { Clock, Layers, Workflow } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import type { MarketAsset, MarketInterval } from "@/lib/market";
-import { ASSETS, INTERVALS, slugPattern } from "@/lib/market";
+import { ASSETS, INTERVALS, previewSlug, slugPattern } from "@/lib/market";
 import type { CreateBotReq } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { STRATEGY_OPTIONS } from "@/components/bots/bot-form-constants";
@@ -27,6 +27,11 @@ export function BotFormMarketSection({
   pickAsset,
   pickInterval,
 }: Props) {
+  const startOffset = form.start_offset ?? 0;
+  const setStartOffset = (offset: 0 | 1) =>
+    setForm((f) => ({ ...f, start_offset: offset }));
+  const resolvedSlug = previewSlug(asset, interval, startOffset);
+  const slugStored = slugPattern(asset, interval);
   return (
     <div className="space-y-5">
       <div>
@@ -107,6 +112,52 @@ export function BotFormMarketSection({
           </div>
         </div>
 
+        <div className="mt-4">
+          <p className="text-muted-foreground sr-only">Başlangıç penceresi</p>
+          <div
+            className="bg-muted/70 flex overflow-hidden rounded-md border border-border/40"
+            role="radiogroup"
+            aria-label="Başlangıç penceresi"
+          >
+            {[
+              {
+                id: 0 as const,
+                label: "Aktif Market",
+                hint: "Şu an açık pencere",
+              },
+              {
+                id: 1 as const,
+                label: "Sonraki Market",
+                hint: "Bir sonraki pencere",
+              },
+            ].map(({ id, label, hint }) => {
+              const selected = startOffset === id;
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  role="radio"
+                  aria-checked={selected}
+                  onClick={() => setStartOffset(id)}
+                  title={hint}
+                  className={cn(
+                    "flex min-h-9 flex-1 flex-col items-start justify-center gap-0 rounded-none border-r border-border/35 px-3 py-1.5 text-sm font-medium transition-colors last:border-r-0",
+                    "focus-visible:ring-ring/50 focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-background focus-visible:outline-none",
+                    selected
+                      ? "bg-background text-foreground shadow-sm"
+                      : "text-muted-foreground hover:bg-background/70 hover:text-foreground",
+                  )}
+                >
+                  <span className="text-sm leading-tight">{label}</span>
+                  <span className="text-muted-foreground/80 text-[11px] leading-tight">
+                    {hint}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
         <div className="border-border/40 bg-background/70 mt-4 rounded-md border px-3 py-2.5">
           <div className="flex flex-col gap-1.5 sm:flex-row sm:items-baseline sm:gap-3">
             <span className="text-muted-foreground shrink-0 text-[10px] font-medium uppercase tracking-wide">
@@ -114,9 +165,9 @@ export function BotFormMarketSection({
             </span>
             <code
               className="text-foreground min-w-0 flex-1 font-mono text-sm leading-snug break-all"
-              title={slugPattern(asset, interval)}
+              title={`Stored: ${slugStored}`}
             >
-              {slugPattern(asset, interval)}
+              {resolvedSlug}
             </code>
           </div>
         </div>

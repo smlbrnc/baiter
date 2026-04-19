@@ -23,6 +23,7 @@ fn dryrun_cfg() -> BotConfig {
         min_price: 0.05,
         max_price: 0.95,
         cooldown_threshold: 30_000,
+        start_offset: 0,
         strategy_params: StrategyParams {
             harvest_dual_timeout: Some(5_000),
             ..Default::default()
