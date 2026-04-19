@@ -122,13 +122,6 @@ export type FrontendEvent =
       ts_ms: number;
     }
   | {
-      kind: "ZoneChanged";
-      bot_id: number;
-      zone: string;
-      zone_pct: number;
-      ts_ms: number;
-    }
-  | {
       kind: "SignalUpdate";
       bot_id: number;
       symbol: string;

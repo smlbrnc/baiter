@@ -11,7 +11,6 @@ import { cn } from "@/lib/utils";
 export interface LiveMetrics {
   lastBestBidAsk: Extract<FrontendEvent, { kind: "BestBidAsk" }> | null;
   lastSignal: Extract<FrontendEvent, { kind: "SignalUpdate" }> | null;
-  lastZone: Extract<FrontendEvent, { kind: "ZoneChanged" }> | null;
   lastFill: Extract<FrontendEvent, { kind: "Fill" }> | null;
 }
 
@@ -45,15 +44,6 @@ export function MetricsPanel({ m }: { m: LiveMetrics }) {
           color="pink"
         />
 
-        <Pair
-          title="Zone"
-          primary={m.lastZone?.zone ?? "-"}
-          secondary={
-            m.lastZone
-              ? `${(m.lastZone.zone_pct * 100).toFixed(1)}%`
-              : undefined
-          }
-        />
         <Pair
           title="Signal"
           primary={m.lastSignal ? m.lastSignal.signal_score.toFixed(2) : "-"}

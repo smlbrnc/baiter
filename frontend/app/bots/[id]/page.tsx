@@ -34,7 +34,6 @@ export default function BotDetailPage() {
   const [metrics, setMetrics] = useState<LiveMetrics>({
     lastBestBidAsk: null,
     lastSignal: null,
-    lastZone: null,
     lastFill: null,
   });
   const [session, setSession] = useState<SessionInfo | null>(null);
@@ -68,9 +67,6 @@ export default function BotDetailPage() {
         break;
       case "SignalUpdate":
         setMetrics((m) => ({ ...m, lastSignal: ev }));
-        break;
-      case "ZoneChanged":
-        setMetrics((m) => ({ ...m, lastZone: ev }));
         break;
       case "Fill":
         setMetrics((m) => ({ ...m, lastFill: ev }));

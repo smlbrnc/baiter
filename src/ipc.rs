@@ -105,13 +105,6 @@ pub enum FrontendEvent {
         no_best_ask: f64,
         ts_ms: u64,
     },
-    /// MarketZone geçişi (DeepTrade → NormalTrade → …).
-    ZoneChanged {
-        bot_id: i64,
-        zone: String,
-        zone_pct: f64,
-        ts_ms: u64,
-    },
     /// Binance sinyal skor güncelleme.
     SignalUpdate {
         bot_id: i64,
@@ -204,12 +197,6 @@ mod tests {
                 bot_id: 1,
                 ts_ms: 0,
                 reason: "sigterm".into(),
-            },
-            FrontendEvent::ZoneChanged {
-                bot_id: 1,
-                zone: "NormalTrade".into(),
-                zone_pct: 0.35,
-                ts_ms: 0,
             },
             FrontendEvent::Error {
                 bot_id: 1,
