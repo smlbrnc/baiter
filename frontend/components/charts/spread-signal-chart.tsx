@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
+import { Activity } from "lucide-react";
 import {
   Bar,
   CartesianGrid,
@@ -18,14 +19,20 @@ import {
 } from "@/components/ui/card";
 import {
   ChartContainer,
-  ChartLegend,
-  ChartLegendContent,
   ChartTooltip,
   ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart";
 import type { MarketTick } from "@/lib/types";
-import { fmtTickTime, timeTicks, type SessionRange } from "@/lib/chart-utils";
+import { cn } from "@/lib/utils";
+import {
+  CHART_MARGIN_TIGHT,
+  CHART_TIME_X_AXIS_LAYOUT,
+  fmtTickTime,
+  SECTION_LABEL_CLASS,
+  timeTicks,
+  type SessionRange,
+} from "@/lib/chart-utils";
 
 interface Props {
   data: MarketTick[];
@@ -39,10 +46,11 @@ interface Row {
   score: number;
 }
 
+/** Tema chart-* hepsi yeşil aile; burada seri başına ayırt edici renkler. */
 const chartConfig = {
-  yesSpread: { label: "YES spread", color: "var(--chart-1)" },
-  noSpread: { label: "NO spread", color: "oklch(0.63 0.2 352)" },
-  score: { label: "signal_score", color: "var(--chart-2)" },
+  yesSpread: { label: "YES spread", color: "oklch(0.58 0.16 245)" },
+  noSpread: { label: "NO spread", color: "oklch(0.58 0.22 310)" },
+  score: { label: "signal_score", color: "oklch(0.78 0.16 75)" },
 } satisfies ChartConfig;
 
 function toRows(ticks: MarketTick[]): Row[] {
@@ -73,14 +81,16 @@ export function SpreadSignalChart({ data, session }: Props) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Spread &amp; Signal (Binance)</CardTitle>
+        <CardTitle
+          className={cn(SECTION_LABEL_CLASS, "flex items-center gap-1.5")}
+        >
+          <Activity className="size-3.5 shrink-0 opacity-80" aria-hidden />
+          Spread &amp; Signal (Binance)
+        </CardTitle>
       </CardHeader>
       <CardContent>
         <ChartContainer config={chartConfig} className="h-[220px] w-full">
-          <ComposedChart
-            data={rows}
-            margin={{ top: 8, right: 12, left: 8, bottom: 8 }}
-          >
+          <ComposedChart data={rows} margin={CHART_MARGIN_TIGHT}>
             <CartesianGrid vertical={false} strokeDasharray="3 3" />
             <XAxis
               dataKey="t"
@@ -89,9 +99,7 @@ export function SpreadSignalChart({ data, session }: Props) {
               ticks={ticks}
               allowDataOverflow
               tickFormatter={fmtTickTime}
-              tickLine={false}
-              axisLine={false}
-              minTickGap={20}
+              {...CHART_TIME_X_AXIS_LAYOUT}
             />
             <YAxis
               yAxisId="spread"
@@ -101,7 +109,7 @@ export function SpreadSignalChart({ data, session }: Props) {
               tickFormatter={(v) => Number(v).toFixed(2)}
               tickLine={false}
               axisLine={false}
-              width={44}
+              width={40}
               allowDataOverflow
             />
             <YAxis
@@ -129,12 +137,11 @@ export function SpreadSignalChart({ data, session }: Props) {
                 />
               }
             />
-            <ChartLegend content={<ChartLegendContent />} />
             <Bar
               yAxisId="spread"
               dataKey="yesSpread"
               fill="var(--color-yesSpread)"
-              fillOpacity={0.65}
+              fillOpacity={0.72}
               radius={[2, 2, 0, 0]}
               isAnimationActive={false}
             />
@@ -142,7 +149,7 @@ export function SpreadSignalChart({ data, session }: Props) {
               yAxisId="spread"
               dataKey="noSpread"
               fill="var(--color-noSpread)"
-              fillOpacity={0.65}
+              fillOpacity={0.72}
               radius={[2, 2, 0, 0]}
               isAnimationActive={false}
             />

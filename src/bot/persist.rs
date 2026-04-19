@@ -27,6 +27,8 @@ pub fn snapshot_pnl(pool: &SqlitePool, sess: &MarketSession) {
         pnl_if_down: pnl.pnl_if_down,
         mtm_pnl: pnl.mtm_pnl,
         pair_count: sess.metrics.pair_count(),
+        avg_yes: sess.metrics.avg_yes,
+        avg_no: sess.metrics.avg_no,
         ts_ms: 0, // DB tarafı now_ms() kullanır.
     };
     let bot_id = sess.bot_id;

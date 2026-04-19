@@ -1,42 +1,17 @@
 import type { PnLSnapshot } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-export interface SessionRange {
-  start: number; // unix secs
-  end: number;
-}
-
 interface Props {
   pnl: PnLSnapshot | null;
-  session?: SessionRange | null;
 }
 
-export function PnLWidget({ pnl, session }: Props) {
+export function PnLWidget({ pnl }: Props) {
   if (!pnl) return null;
 
-  const pct =
-    session && session.end > session.start
-      ? Math.min(
-          100,
-          Math.max(
-            0,
-            ((pnl.ts_ms / 1000 - session.start) /
-              (session.end - session.start)) *
-              100,
-          ),
-        )
-      : null;
-
-  const tsLabel = new Date(pnl.ts_ms).toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-
   return (
-    <div className="space-y-2">
+    <div>
       {/* Kartlar: If UP / If DOWN solda, sonra diğerleri */}
-      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-7">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
 
         {/* If UP — yeşil aksan */}
         <PnlCard
@@ -88,37 +63,6 @@ export function PnLWidget({ pnl, session }: Props) {
         </PnlCard>
 
       </div>
-
-      {/* Zaman progress bar */}
-      <div className="space-y-1 px-0.5">
-        <div className="bg-muted/50 dark:bg-muted/30 relative h-1 w-full overflow-hidden rounded-full">
-          <div
-            className="h-full rounded-full bg-neutral-900 transition-[width] duration-700 ease-out dark:bg-neutral-600"
-            style={{ width: pct != null ? `${pct}%` : "0%" }}
-          />
-        </div>
-        <div className="flex items-center justify-between">
-          <p className="text-muted-foreground text-[10px] tabular-nums">
-            {session
-              ? new Date(session.start * 1000).toLocaleTimeString([], {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                })
-              : ""}
-          </p>
-          <p className="text-muted-foreground/70 text-[10px] tabular-nums">
-            {tsLabel}
-          </p>
-          <p className="text-muted-foreground text-[10px] tabular-nums">
-            {session
-              ? new Date(session.end * 1000).toLocaleTimeString([], {
-                  hour: "2-digit",
-                  minute: "2-digit",
-                })
-              : ""}
-          </p>
-        </div>
-      </div>
     </div>
   );
 }
@@ -143,18 +87,10 @@ function PnlCard({
         ? "border-rose-500/30"
         : "border-border/50";
 
-  const bg =
-    accent === "up"
-      ? "bg-emerald-500/5"
-      : accent === "down"
-        ? "bg-rose-500/5"
-        : "bg-card";
-
   return (
     <div
       className={cn(
-        "flex flex-col gap-2 rounded-lg border px-3 py-2.5",
-        bg,
+        "bg-card flex flex-col gap-2 rounded-lg border px-3 py-2.5",
         border,
       )}
     >

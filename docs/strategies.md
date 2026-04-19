@@ -107,7 +107,7 @@ Emir boyutu `order_usdc` ile kontrol edilir — platform geneli kuralı bkz. yuk
 | `avg_threshold` | `f64` | `0.98` | **SingleLeg ProfitLock** eşiği: `first_leg + hedge_leg ≤ avg_threshold` |
 | `max_position_size` | `f64` | `100.0` | Tek tarafın toplam share limiti (shares) |
 
-> **OpenDual fiyatı sinyalden türetilir** (aşağıda *Giriş — OpenDual* bölümüne bakın). `up_bid` / `down_bid` artık konfigürasyonda yer almaz; her ikisi de `tick_size` katına snap edilir. Averaging GTC fiyatı `first_best_leg` orderbook'tan geldiği için doğal olarak geçerlidir.
+> **OpenDual fiyatı sinyalden + anlık book mid + market spread'inden türetilir** (aşağıda *Giriş — OpenDual* bölümüne bakın). `up_bid` / `down_bid` ve fiyat-kayma genişliği artık konfigürasyonda yer almaz; sinyal kayması her tarafın anlık `(best_ask − best_bid)` market spread'ine eşittir, böylece **tight market'te küçük, wide market'te büyük** signal effect oluşur. Çıktı `tick_size` katına snap edilir ve `[min_price, max_price]` ile clamp'lenir. Averaging GTC fiyatı `first_best_leg` orderbook'tan geldiği için doğal olarak geçerlidir.
 >
 > **`cooldown_threshold`** (averaging GTC'leri arasındaki minimum bekleme + GTD süresi kaynağı) tüm stratejiler için **`BotConfig` alanıdır**; API varsayılanı `30_000 ms` (`POST /api/bots` `cooldown_threshold`). bkz. [bot-platform-mimari.md §15](bot-platform-mimari.md#15).
 
@@ -162,32 +162,52 @@ Emir boyutu `order_usdc` ile kontrol edilir — platform geneli kuralı bkz. yuk
 [ProfitLock] → pencere sonuna kadar yeni emir yok → [Done]
 ```
 
-### Giriş — OpenDual (sinyal güdümlü, simetrik fiyat)
+### Giriş — OpenDual (sinyal güdümlü, market spread'i ölçeklenmiş)
 
 - **Tetik:** `Pending` durumunda her tick. **Önkoşul:** `yes_best_bid > 0 && no_best_bid > 0` (market book quote'u gelmiş olmalı, DryRun passive-fill simulator best_ask isteyecek). Quote yoksa `Pending` korunur, log basılmaz.
 - **Endpoint:** İki ayrı **`POST /order`** — `Decision::PlaceOrders` iki `PlannedOrder` döner; `engine::executor::place_batch` bunları **sırayla** yürütür (CLOB batch `/orders` kullanılmaz).
-- **Fiyatlama** (`s = effective_score ∈ [0, 10]`, nötr 5):
+- **Fiyatlama** (`s = effective_score ∈ [0, 10]`, nötr 5; sinyal kayması = anlık market spread):
 
   ```
-  delta    = (s − 5) / 5            // [-1, +1]
-  up_bid   = 0.50 + delta · 0.25    // s=10 → 0.75, s=0 → 0.25
-  down_bid = 0.50 − delta · 0.25    // s=10 → 0.25, s=0 → 0.75
-  → tick_size'a snap
+  delta      = (s − 5) / 5                                  // [-1, +1]
+
+  yes_spread = max(0, yes_best_ask − yes_best_bid)          // Polymarket WS BestBidAsk.spread
+  no_spread  = max(0, no_best_ask  − no_best_bid)
+
+  up_raw     = yes_best_ask + delta · yes_spread            // sinyal UP iken ask'ı geçer
+  down_raw   = no_best_ask  − delta · no_spread             // sinyal UP iken no_bid'e iner
+
+  up_bid     = clamp( snap(up_raw),   min_price, max_price )
+  down_bid   = clamp( snap(down_raw), min_price, max_price )
   ```
 
-| `effective_score` | `up_bid` | `down_bid` | toplam |
-|---|---|---|---|
-| 0.0 (max düşüş) | 0.25 | 0.75 | 1.00 |
-| 2.5 | 0.375 | 0.625 | 1.00 |
-| 5.0 (nötr / `signal_weight=0` / warmup) | 0.50 | 0.50 | 1.00 |
-| 7.5 | 0.625 | 0.375 | 1.00 |
-| 10.0 (max yükseliş) | 0.75 | 0.25 | 1.00 |
+  Örnek 1 — likit market (yes_bid=0.50, yes_ask=0.52 → yes_spread=0.02; no_bid=0.46, no_ask=0.48 → no_spread=0.02):
 
-- Toplam her zaman `1.00` → dual fazda `avg_YES + avg_NO ≈ 1.00` → **dual fazda ProfitLock asla tetiklenmez**; ProfitLock yalnız SingleLeg averaging fazında değerlendirilir.
-- Sinyal-yön tarafı `0.50 → 0.75` lineer artar; counter-yön tarafı `0.50 → 0.25` lineer azalır. Karşı tarafa düşük bidle ucuz hedge fırsatı yakalama amaçlı.
-- `signal_weight = 0` veya warmup süresince `effective_score = 5.0` (nötr) → iki taraf da `0.50/0.50`.
+  | `effective_score` | `delta` | `up_bid` | `down_bid` | not |
+  |---|---|---|---|---|
+  | 0.0 (max düşüş) | −1.0 | `0.50` | `0.50` | up=yes_bid (maker), down=no_ask+spread (agresif taker) |
+  | 5.0 (nötr / `signal_weight=0`) | 0.0 | `0.52` | `0.48` | her iki bid kendi ask'ında — taker eşiği |
+  | 10.0 (max yükseliş) | +1.0 | `0.54` | `0.46` | up=yes_ask+spread (agresif taker), down=no_bid (maker) |
 
-**DryRun davranışı:** Fiyatlar market quote'tan bağımsız üretildiği için `Simulator::fill` koşulu (`price ≥ best_ask`) çoğu zaman sağlanmaz; emirler `live` kalır. Her market book update'inde `engine::simulate_passive_fills(session)` (bot.rs içinde tetiklenir) açık emirleri yeni quote ile karşılaştırır ve dolduğunda `📥 passive_fill` logu basar.
+  Örnek 2 — illikit market (yes_bid=0.40, yes_ask=0.60 → yes_spread=0.20):
+
+  | `effective_score` | `delta` | `up_bid` | not |
+  |---|---|---|---|
+  | 5.0 (nötr) | 0.0 | `0.60` | yes_ask'da, taker eşiği |
+  | 10.0 | +1.0 | `0.80` | yes_ask=0.60'ı tam 0.20 geçer; çok agresif taker |
+
+- **Anahtar özellik:** Signal effect, market'in anlık likiditesine **otomatik ölçeklenir**. Tight book (`spread = 0.01`) → sinyal etkisi minik; wide book (`spread = 0.30`) → sinyal etkisi büyük. Bu sayede ek bir konfigürasyon parametresi gerekmez; bot adaptif davranır.
+- **Maker / Taker davranışı (asimetrik):**
+  - `delta = 0` (nötr): her iki bid kendi ask'ında → ikisi de **taker** (anlık taker fill).
+  - `delta = +1`: `up_bid = yes_ask + yes_spread` → agresif taker; `down_bid = no_bid` → pasif maker.
+  - `delta = −1`: `up_bid = yes_bid` → pasif maker; `down_bid = no_ask + no_spread` → agresif taker.
+  - Ara delta'larda bir taraf taker, diğer taraf maker bölgesine geçer.
+- **1−up simetrisi YOKTUR**: iki taraf bağımsız hesaplanır. Toplam (`up_bid + down_bid`) Polymarket'te ≈ `1.00` olur ama garanti değildir.
+- **Spread = 0** (bid = ask) → signal effect 0; her taraf kendi ask'ında (= bid) durur. `(ask − bid).max(0)` negatif spread'e karşı korur.
+- Sadece global `[min_price, max_price]` (default `0.05–0.95`) sınırı uygulanır; tick'e snap edilir.
+- **ProfitLock dual fazda tetiklenebilir**: iki taraflı taker fill sonrası `avg_YES + avg_NO` `avg_threshold`'u (default `0.98`) altına düşebilir; SingleLeg geçişi sırasında ProfitLock değerlendirmesi devreye girer.
+
+**DryRun davranışı:** Yeni formülde `up_bid ≥ yes_best_ask` durumu mümkün — `Simulator::fill` koşulu (`price ≥ best_ask`) bu emirleri **anlık doldurur** (kitap dokunduğunda taker simülasyonu). Daha düşük bid'li (passive maker) emirler ise market hareket edene kadar `live` kalır; her market book update'inde `engine::simulate_passive_fills(session)` (bot.rs içinde tetiklenir) açık emirleri yeni quote ile karşılaştırır ve dolduğunda `📥 passive_fill` logu basar.
 
 **Boyut:**
 - YES: `size = max(⌈order_usdc/up_bid⌉, api_min_order_size)`, `orderType=GTC`
@@ -238,7 +258,7 @@ Adımlar:
 
 Sinyal iki yerde etkilidir:
 
-1. **OpenDual fiyatı** — *yukarıdaki simetrik formül.* Sinyal tarafına ağırlık verir; toplam daima `1.00`.
+1. **OpenDual fiyatı** — *yukarıdaki market-spread güdümlü formül.* Her taraf kendi ask'ından ±`market_spread` kayar (likit market'te küçük, illikit market'te büyük). delta=0 nötr durumda her iki bid kendi ask'ında oturur (taker eşiği); delta saturasyonunda bir taraf agresif taker, diğer taraf pasif maker olur. Toplam ≈ `1.00` ama **garanti değil**.
 2. **Averaging boyutu** (`signal_multiplier`) — averaging yapılan tarafın fiyat düşüşünü sinyal de teyit ediyorsa boyut büyütülür.
 
 | `effective_score` | Averaging YES tarafı | Averaging NO tarafı |
@@ -250,7 +270,7 @@ Sinyal iki yerde etkilidir:
 | `0–2` (güçlü satış) | `× 1.3` (teyit) | `× 1.0` (zıt — standart) |
 
 - ProfitLock FAK boyutu sinyal tarafından değiştirilmez (`size = |imbalance|`).
-- `signal_weight = 0` → `effective_score = 5.0` (nötr) → OpenDual `0.50/0.50`, averaging çarpan `× 1.0`.
+- `signal_weight = 0` → `effective_score = 5.0` (nötr) → OpenDual her taraf kendi `ask`'ında durur (taker eşiği), averaging çarpan `× 1.0`.
 
 ### Bölge Haritası — `binance_signal` aktif mi?
 
@@ -277,37 +297,43 @@ Sinyal iki yerde etkilidir:
 ```
 Konfigürasyon: avg_threshold=0.98, order_usdc=2.0, dual_timeout=5_000 ms
                cooldown_threshold=30_000 ms (sabit), signal_weight=10
-               effective_score=8.0 → up_bid=0.65, down_bid=0.35  (örnek)
+               effective_score=8.0 → delta=+0.6
+               Book: yes_bid=0.51, yes_ask=0.53 → yes_spread=0.02
+                     no_bid=0.43,  no_ask=0.45  → no_spread=0.02
+               → up_bid   = clamp(snap(0.53 + 0.6·0.02), 0.05, 0.95) = snap(0.542) = 0.54
+                 down_bid = clamp(snap(0.45 − 0.6·0.02), 0.05, 0.95) = snap(0.438) = 0.44
 Market init:   api_min_order_size=5  (GET /book)
 
-YES size = max(⌈2.0/0.52⌉, 5) = 5
+YES size = max(⌈2.0/0.54⌉, 5) = 5
 NO  size = max(⌈2.0/0.44⌉, 5) = 5
 
-T=0    [OpenDual]    POST /orders → GTC YES@0.52(5) + GTC NO@0.44(5)
+T=0    [OpenDual]    POST /orders → GTC YES@0.54(5) + GTC NO@0.44(5)
+                     up_bid=0.54 > yes_ask=0.53 → YES anlık agresif taker, fill_price=0.53
+                     down_bid=0.44 < no_ask=0.45 → NO maker olarak kitapta bekler
 
-T+2s   [Fill]        YES GTC doldu: avg_YES=0.52, imbalance=+5
-                     hedge_leg=0.47 → ProfitLock: 0.52+0.47=0.99 > 0.98 ✗ → [SingleLeg]
+T+2s   [Fill]        YES taker doldu (fill_price=0.53): avg_YES=0.53, imbalance=+5
+                     hedge_leg=0.47 → ProfitLock: 0.53+0.47=1.00 > 0.98 ✗ → [SingleLeg]
 
-T+32s  [Cooldown]    first_best_leg=0.45 < 0.52 ✓ → size=max(⌈2.0/0.45⌉,5)=5
-                     ProfitLock: 0.99 > 0.98 ✗
+T+32s  [Cooldown]    first_best_leg=0.45 < 0.53 ✓ → size=max(⌈2.0/0.45⌉,5)=5
+                     ProfitLock: 1.00 > 0.98 ✗
                      → POST /order GTC YES@0.45(5)
 
-T+37s  [Fill]        YES GTC@0.45 doldu: avg_YES=0.485, imbalance=+10
-                     ProfitLock: 0.485+0.47=0.955 ≤ 0.98 ✓ → [ProfitLock]
+T+37s  [Fill]        YES GTC@0.45 doldu: avg_YES=0.49, imbalance=+10
+                     ProfitLock: 0.49+0.47=0.96 ≤ 0.98 ✓ → [ProfitLock]
                      → DELETE /orders [NO GTC@0.44 iptal]
                      → POST /order FAK NO@0.47(10)  [boyut=imbalance]
 
-T+37.1s [Fill]       pair_count=10, AVG_SUM=0.955
-                     profit=(1.0−0.955)×10=0.45 USDC → [Bitti]
+T+37.1s [Fill]       pair_count=10, AVG_SUM=0.96
+                     profit=(1.0−0.96)×10=0.40 USDC → [Bitti]
 
 ─── Kısmi FAK ───
                      FAK NO@0.47 → 7 doldu
                      pair_count=7, kalan 3 YES pencerede işlemsiz → [Bitti]
 
 ─── Her iki OpenDual doldu ───
-T+1s   [Fill×2]      imbalance=0, avg_YES=0.52, avg_NO=0.44 → AVG_SUM=0.96
-                     avg_threshold kontrol: 0.96 ≤ 0.98 ✓ → [ProfitLock] (FAK yok)
-                     pair_count=5, profit=(1.0−0.96)×5=0.20 USDC → [Bitti]
+T+1s   [Fill×2]      imbalance=0, avg_YES=0.53, avg_NO=0.45 → AVG_SUM=0.98
+                     avg_threshold kontrol: 0.98 ≤ 0.98 ✓ → [ProfitLock] (FAK yok)
+                     pair_count=5, profit=(1.0−0.98)×5=0.10 USDC → [Bitti]
 
 ─── Her iki OpenDual doldu ama eşik sağlanmadı ───
 T+1s   [Fill×2]      avg_YES=0.58, avg_NO=0.45 → AVG_SUM=1.03 > 0.98 ✗
@@ -315,7 +341,7 @@ T+1s   [Fill×2]      avg_YES=0.58, avg_NO=0.45 → AVG_SUM=1.03 > 0.98 ✗
                      (Averaging yalnızca imbalance>0 ise mümkün; imbalance=0 ise pencere sonuna kadar beklenir)
 
 ─── order_usdc=10.0 ile ───
-                     YES size=max(⌈10/0.52⌉,5)=20  NO size=max(⌈10/0.44⌉,5)=23
+                     YES size=max(⌈10/0.53⌉,5)=19  NO size=max(⌈10/0.45⌉,5)=23
 ```
 
 ---

@@ -106,10 +106,10 @@ pub async fn update_market_session_meta(
 }
 
 /// `pnl_snapshots`'tan session başına en son satırı LEFT JOIN eden
-/// SQL fragment'i. `list_sessions_for_bot` + `session_by_bot_slug`
-/// arasında ortak (alias `s` = market_sessions, `p` = pnl_snapshots).
-const LATEST_PNL_JOIN: &str = "FROM market_sessions s \
-     LEFT JOIN pnl_snapshots p \
+/// SQL fragment'i. Korelasyonlu MAX subquery'si idx_pnl_session_ts
+/// (migration 0009) sayesinde O(log N) index lookup'a düşer.
+/// (alias `s` = market_sessions, `p` = pnl_snapshots).
+const LATEST_PNL_JOIN: &str = "LEFT JOIN pnl_snapshots p \
        ON p.market_session_id = s.id \
       AND p.ts_ms = (SELECT MAX(ts_ms) FROM pnl_snapshots \
                      WHERE market_session_id = s.id)";
@@ -143,16 +143,25 @@ pub async fn list_sessions_for_bot(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<SessionListItem>, AppError> {
+    // Önce bot'un sayfalanmış session'larını seç (LIMIT/OFFSET burada),
+    // ardından sadece bu küçük kümeyle JOIN yap. Aksi halde JOIN tüm
+    // session'lar için subquery çalıştırır → büyük botlarda lineer patlar.
     let sql = format!(
-        "SELECT s.slug, s.start_ts, s.end_ts, s.state, s.realized_pnl, \
+        "WITH paged AS ( \
+             SELECT id, slug, start_ts, end_ts, state, realized_pnl \
+             FROM market_sessions \
+             WHERE bot_id = ? \
+             ORDER BY start_ts DESC \
+             LIMIT ? OFFSET ? \
+         ) \
+         SELECT s.slug, s.start_ts, s.end_ts, s.state, s.realized_pnl, \
                 COALESCE(p.cost_basis, 0.0) AS cost_basis, \
                 COALESCE(p.shares_yes, 0.0) AS shares_yes, \
                 COALESCE(p.shares_no,  0.0) AS shares_no,  \
                 p.pnl_if_up, p.pnl_if_down \
+         FROM paged s \
          {LATEST_PNL_JOIN} \
-         WHERE s.bot_id = ? \
-         ORDER BY s.start_ts DESC \
-         LIMIT ? OFFSET ?"
+         ORDER BY s.start_ts DESC"
     );
     let rows = sqlx::query(&sql)
         .bind(bot_id)
@@ -201,6 +210,7 @@ pub async fn session_by_bot_slug(
                 COALESCE(p.fee_total,  0.0) AS fee_total,  \
                 COALESCE(p.shares_yes, 0.0) AS shares_yes, \
                 COALESCE(p.shares_no,  0.0) AS shares_no   \
+         FROM market_sessions s \
          {LATEST_PNL_JOIN} \
          WHERE s.bot_id = ? AND s.slug = ?"
     );

@@ -56,43 +56,95 @@ fn default_ctx<'a>(
     }
 }
 
+// Test helper — yeni dual_prices imzasını çağırır.
+// Default book: yes_bid=0.50, yes_ask=0.52 (yes_spread=0.02),
+//               no_bid=0.46,  no_ask=0.48  (no_spread=0.02).
+fn dp(score: f64) -> (f64, f64) {
+    dual_prices(score, (0.50, 0.52), (0.46, 0.48), 0.01, 0.05, 0.95)
+}
+
 #[test]
-fn dual_prices_neutral_returns_50_50() {
-    let (up, down) = dual_prices(5.0, 0.01);
+fn dual_prices_neutral_sits_at_each_ask() {
+    // delta=0 → her taraf kendi ask'inde (taker eşiği)
+    let (up, down) = dp(5.0);
+    assert!((up - 0.52).abs() < 1e-9, "up={}", up);
+    assert!((down - 0.48).abs() < 1e-9, "down={}", down);
+}
+
+#[test]
+fn dual_prices_high_signal_up_aggressive_down_passive() {
+    // delta=+1, yes_spread=0.02 → up = 0.52 + 0.02 = 0.54 (yes_ask'i tam spread geçer, agresif taker)
+    //                             down = 0.48 - 0.02 = 0.46 (no_bid seviyesinde, pasif maker)
+    let (up, down) = dp(10.0);
+    assert!((up - 0.54).abs() < 1e-9, "up={}", up);
+    assert!(up > 0.52, "up bid must cross yes_ask");
+    assert!((down - 0.46).abs() < 1e-9, "down={}", down);
+}
+
+#[test]
+fn dual_prices_low_signal_up_passive_down_aggressive() {
+    // delta=-1: up = 0.52 - 0.02 = 0.50 (yes_bid seviyesinde, pasif),
+    //           down = 0.48 + 0.02 = 0.50 (no_ask'i tam spread geçer, agresif taker)
+    let (up, down) = dp(0.0);
+    assert!((up - 0.50).abs() < 1e-9, "up={}", up);
+    assert!((down - 0.50).abs() < 1e-9, "down={}", down);
+}
+
+#[test]
+fn dual_prices_wide_spread_amplifies_signal() {
+    // yes: bid=0.40, ask=0.60 (spread=0.20); delta=+1 → up = 0.60 + 0.20 = 0.80
+    let (up, _down) = dual_prices(10.0, (0.40, 0.60), (0.46, 0.48), 0.01, 0.05, 0.95);
+    assert!((up - 0.80).abs() < 1e-9, "up={}", up);
+}
+
+#[test]
+fn dual_prices_tight_spread_dampens_signal() {
+    // yes: bid=0.50, ask=0.51 (spread=0.01); delta=+1 → up = 0.51 + 0.01 = 0.52
+    let (up, _down) = dual_prices(10.0, (0.50, 0.51), (0.46, 0.48), 0.01, 0.05, 0.95);
+    assert!((up - 0.52).abs() < 1e-9, "up={}", up);
+}
+
+#[test]
+fn dual_prices_zero_spread_neutralizes_signal() {
+    // bid=ask=0.50 → spread=0; delta her ne olursa olsun bid = ask = 0.50
+    let (up, down) = dual_prices(10.0, (0.50, 0.50), (0.50, 0.50), 0.01, 0.05, 0.95);
     assert!((up - 0.50).abs() < 1e-9);
     assert!((down - 0.50).abs() < 1e-9);
-    assert!((up + down - 1.0).abs() < 1e-9);
+    let (up0, down0) = dual_prices(0.0, (0.50, 0.50), (0.50, 0.50), 0.01, 0.05, 0.95);
+    assert!((up0 - 0.50).abs() < 1e-9);
+    assert!((down0 - 0.50).abs() < 1e-9);
 }
 
 #[test]
-fn dual_prices_max_up_signal_returns_75_25() {
-    let (up, down) = dual_prices(10.0, 0.01);
-    assert!((up - 0.75).abs() < 1e-9);
-    assert!((down - 0.25).abs() < 1e-9);
-    assert!((up + down - 1.0).abs() < 1e-9);
+fn dual_prices_clamps_at_max_price() {
+    // yes_ask=0.95, yes_spread=0.10; delta=+1 → 0.95 + 0.10 = 1.05 → clamp 0.95
+    let (up, _down) = dual_prices(10.0, (0.85, 0.95), (0.05, 0.07), 0.01, 0.05, 0.95);
+    assert!((up - 0.95).abs() < 1e-9, "up={}", up);
 }
 
 #[test]
-fn dual_prices_max_down_signal_returns_25_75() {
-    let (up, down) = dual_prices(0.0, 0.01);
-    assert!((up - 0.25).abs() < 1e-9);
-    assert!((down - 0.75).abs() < 1e-9);
-    assert!((up + down - 1.0).abs() < 1e-9);
+fn dual_prices_clamps_at_min_price() {
+    // no_ask=0.10, no_spread=0.08; delta=+1 → 0.10 - 0.08 = 0.02 → clamp 0.05
+    let (_up, down) = dual_prices(10.0, (0.50, 0.52), (0.02, 0.10), 0.01, 0.05, 0.95);
+    assert!((down - 0.05).abs() < 1e-9, "down={}", down);
 }
 
 #[test]
-fn dual_prices_partial_signal_linear() {
-    let (up, down) = dual_prices(8.0, 0.01);
-    assert!((up - 0.65).abs() < 1e-9, "up={}", up);
-    assert!((down - 0.35).abs() < 1e-9, "down={}", down);
-    assert!((up + down - 1.0).abs() < 1e-9);
+fn dual_prices_independent_no_sum_invariant() {
+    // delta=0 → up=yes_ask=0.56, down=no_ask=0.41; toplam=0.97
+    let (up, down) = dual_prices(5.0, (0.54, 0.56), (0.39, 0.41), 0.01, 0.05, 0.95);
+    assert!((up - 0.56).abs() < 1e-9, "up={}", up);
+    assert!((down - 0.41).abs() < 1e-9, "down={}", down);
+    assert!(((up + down) - 0.97).abs() < 1e-9, "no sum=1 invariant");
 }
 
 #[test]
-fn dual_prices_partial_down_signal_linear() {
-    let (up, down) = dual_prices(2.0, 0.01);
-    assert!((up - 0.35).abs() < 1e-9, "up={}", up);
-    assert!((down - 0.65).abs() < 1e-9, "down={}", down);
+fn dual_prices_partial_signal_uses_market_spread() {
+    // score=8 → delta=+0.6; up = 0.52 + 0.6·0.02 = 0.532 → snap 0.53
+    //                       down = 0.48 - 0.6·0.02 = 0.468 → snap 0.47
+    let (up, down) = dp(8.0);
+    assert!((up - 0.53).abs() < 1e-9, "up={}", up);
+    assert!((down - 0.47).abs() < 1e-9, "down={}", down);
 }
 
 #[test]
@@ -127,7 +179,9 @@ fn pending_transitions_to_open_dual_with_two_orders() {
 }
 
 #[test]
-fn open_dual_high_signal_produces_075_025() {
+fn open_dual_high_signal_up_aggressive_down_passive() {
+    // Default book: yes_ask=0.52, no_ask=0.48, both spread=0.02
+    // delta=+1 → up = 0.52 + 0.02 = 0.54 (agresif taker), down = 0.48 - 0.02 = 0.46 (pasif maker)
     let metrics = StrategyMetrics::default();
     let params = StrategyParams::default();
     let opens: Vec<OpenOrder> = vec![];
@@ -138,15 +192,16 @@ fn open_dual_high_signal_produces_075_025() {
         Decision::PlaceOrders(orders) => {
             let up = orders.iter().find(|o| o.outcome == Outcome::Up).unwrap();
             let down = orders.iter().find(|o| o.outcome == Outcome::Down).unwrap();
-            assert!((up.price - 0.75).abs() < 1e-9);
-            assert!((down.price - 0.25).abs() < 1e-9);
+            assert!((up.price - 0.54).abs() < 1e-9, "up={}", up.price);
+            assert!((down.price - 0.46).abs() < 1e-9, "down={}", down.price);
         }
         _ => panic!("expected PlaceOrders"),
     }
 }
 
 #[test]
-fn open_dual_low_signal_produces_025_075() {
+fn open_dual_low_signal_up_passive_down_aggressive() {
+    // delta=-1 → up = 0.52 - 0.02 = 0.50 (pasif maker), down = 0.48 + 0.02 = 0.50 (agresif taker)
     let metrics = StrategyMetrics::default();
     let params = StrategyParams::default();
     let opens: Vec<OpenOrder> = vec![];
@@ -157,8 +212,8 @@ fn open_dual_low_signal_produces_025_075() {
         Decision::PlaceOrders(orders) => {
             let up = orders.iter().find(|o| o.outcome == Outcome::Up).unwrap();
             let down = orders.iter().find(|o| o.outcome == Outcome::Down).unwrap();
-            assert!((up.price - 0.25).abs() < 1e-9);
-            assert!((down.price - 0.75).abs() < 1e-9);
+            assert!((up.price - 0.50).abs() < 1e-9, "up={}", up.price);
+            assert!((down.price - 0.50).abs() < 1e-9, "down={}", down.price);
         }
         _ => panic!("expected PlaceOrders"),
     }

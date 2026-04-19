@@ -450,8 +450,17 @@ pub struct HarvestParams {
 }
 
 // Not: OpenDual `up_bid` / `down_bid` artık kullanıcı girdisi değildir.
-// Her tick'te `effective_score`'dan simetrik olarak türetilir
-// (bkz. docs/strategies.md §2 "Giriş — OpenDual"). Toplam daima 1.00.
+// Her tick'te `effective_score` + anlık book ask + market spread'inden türetilir:
+//   yes_spread = max(0, yes_ask − yes_bid)   ← Polymarket WS BestBidAsk.spread
+//   no_spread  = max(0, no_ask  − no_bid)
+//   up_bid   = clamp( snap(yes_ask + delta·yes_spread), min_price, max_price )
+//   down_bid = clamp( snap(no_ask  − delta·no_spread),  min_price, max_price )
+// delta=0 (nötr): up=yes_ask, down=no_ask → ikisi de taker eşiğinde.
+// delta=±1: bir taraf agresif taker (ask + spread), diğer taraf pasif maker (kendi bid'inde).
+// Signal effect, market'in anlık likiditesine otomatik ölçeklenir
+// (tight book → küçük etki, wide book → büyük etki).
+// 1−up simetrisi YOKTUR; toplam ≈ 1.00 ama garanti değil.
+// (bkz. docs/strategies.md §2 "Giriş — OpenDual".)
 //
 // Averaging cooldown'u tüm stratejilerin paylaştığı ortak parametredir;
 // `BotConfig.cooldown_threshold` (default `30_000 ms`) — her bot için
@@ -623,7 +632,7 @@ Bu seçim **yalnızca başlangıç noktasını** belirler. Bot çalışmaya baş
 
 - Hedef marketin **başlangıcından 15 saniye önce (T−15)** ilgili market için **ön veri hazırlanır** (Gamma’dan çözümlenmiş slug/market, `clobTokenIds`, **startDate / endDate**).
 - **T−15** anında **CLOB REST** (kimlik, orderbook, hazırlık) ve **Market WebSocket** (+ gerekiyorsa **User WebSocket**) bu market için **hazır** olur; abonelikler ilgili `asset_id` listesiyle kurulur.
-- **T−15 market init:** `GET /book` ile her token için **`api_min_order_size`** (share cinsinden minimum emir) ve **`tick_size`** (minimum fiyat artımı) okunur; her ikisi market state'ine yazılır. `tick_size`'a uymayan limit fiyatlar API tarafından `INVALID_ORDER_MIN_TICK_SIZE` hatasıyla reddedilir. Strateji motoru OpenDual fiyatlarını her tick'te `tick_size` katına snap eder (`harvest::dual_prices(effective_score, tick_size)` — sinyale göre simetrik, toplam `1.00`).
+- **T−15 market init:** `GET /book` ile her token için **`api_min_order_size`** (share cinsinden minimum emir) ve **`tick_size`** (minimum fiyat artımı) okunur; her ikisi market state'ine yazılır. `tick_size`'a uymayan limit fiyatlar API tarafından `INVALID_ORDER_MIN_TICK_SIZE` hatasıyla reddedilir. Strateji motoru OpenDual fiyatlarını her tick'te `tick_size` katına snap eder (`harvest::dual_prices(effective_score, yes_bid, yes_ask, no_bid, no_ask, tick_size, min_price, max_price)` — her taraf bağımsız mid + market spread'iyle ölçeklenmiş sinyal kayması; ask cap yok, sadece global `[min_price, max_price]` clamp).
 - Pencere boyunca seçilen **strateji** (`dutch_book` / `harvest` / `prism`) döngüsü çalışır; pencere sonuna doğru (ör. `stop_before_end_ms`) erken durdurma kuralları uygulanabilir.
 - Pencere **endDate** (veya strateji kuralı) ile uyumlu şekilde sonlandırılır; log: market tamamlandı, sıradaki hedefe geçiş.
 
@@ -1197,28 +1206,48 @@ effective_score = 5.0 + (signal_score − 5.0) × (signal_weight / 10.0)
 | `2–4` (hafif satış) | Hafif DOWN baskısı | DOWN boyut `×1.2`; UP emirde `×0.8` | Avg YES `×1.1` (teyit); Avg NO `×0.9` | Giriş eşiği yükseltilir |
 | `0–2` (güçlü satış) | Agresif DOWN baskısı | DOWN boyut `×1.5`; zıt yönde emir atlanır | Avg YES `×1.3` (teyit); Avg NO `×1.0` (zıt) | Giriş engellenir |
 
-**`harvest` — OpenDual fiyatı (sinyalden simetrik türeme):**
+**`harvest` — OpenDual fiyatı (her taraf bağımsız ask + market spread'i ölçekli sinyal):**
 
-| `effective_score` | `up_bid` | `down_bid` | toplam |
+Örnek 1 — likit market (yes_bid=0.50, yes_ask=0.52, yes_spread=0.02; no_bid=0.46, no_ask=0.48, no_spread=0.02):
+
+| `effective_score` | `delta` | `up_bid` | `down_bid` | not |
+|---|---|---|---|---|
+| 0.0 | −1.0 | 0.50 | 0.50 | up=yes_bid (maker), down=no_ask+spread (taker) |
+| 5.0 (nötr) | 0.0 | 0.52 | 0.48 | her iki bid kendi ask'ında — taker eşiği |
+| 10.0 | +1.0 | 0.54 | 0.46 | up=yes_ask+spread (taker), down=no_bid (maker) |
+
+Örnek 2 — illikit market (yes_bid=0.40, yes_ask=0.60, yes_spread=0.20):
+
+| `effective_score` | `delta` | `up_bid` | not |
 |---|---|---|---|
-| 0.0 | 0.25 | 0.75 | 1.00 |
-| 5.0 (nötr) | 0.50 | 0.50 | 1.00 |
-| 10.0 | 0.75 | 0.25 | 1.00 |
+| 5.0 | 0.0 | 0.60 | yes_ask'da, taker eşiği |
+| 10.0 | +1.0 | 0.80 | yes_ask=0.60'ı tam 0.20 geçer; çok agresif taker |
 
-OpenDual fiyatı her tick'te `harvest::dual_prices(effective_score, tick_size)` ile hesaplanır:
+OpenDual fiyatı her tick'te `harvest::dual_prices(effective_score, yes_bid, yes_ask, no_bid, no_ask, tick_size, min_price, max_price)` ile hesaplanır:
 - `delta = (s − 5) / 5 ∈ [−1, +1]`
-- `up_bid = 0.50 + delta·0.25`, `down_bid = 0.50 − delta·0.25` → `tick_size` katına snap
-- Toplam daima `1.00` → dual fazda ProfitLock asla tetiklenmez (yalnızca SingleLeg averaging fazında geçerli).
+- `yes_spread = max(0, yes_ask − yes_bid)` — Polymarket WS BestBidAsk.spread
+- `no_spread  = max(0, no_ask  − no_bid)`
+- `up_bid   = clamp(snap(yes_ask + delta·yes_spread), min_price, max_price)`
+- `down_bid = clamp(snap(no_ask  − delta·no_spread),  min_price, max_price)`
+- **Anahtar özellik:** Signal effect, market'in anlık likiditesine otomatik ölçeklenir — tight book'ta küçük, wide book'ta büyük.
+- **Maker/Taker davranışı (asimetrik):**
+  - delta=0 (nötr) → her iki bid kendi ask'ında: ikisi de **taker** eşiğinde (anlık taker fill).
+  - delta=+1 → `up = yes_ask + spread` agresif taker; `down = no_bid` pasif maker.
+  - delta=−1 → `up = yes_bid` pasif maker; `down = no_ask + spread` agresif taker.
+- **1−up simetrisi YOK**: iki taraf bağımsız hesaplanır; toplam ≈ 1.00 ama garanti değil.
+- **Spread = 0** (bid=ask) → signal effect 0; her taraf kendi ask'ında (= bid) durur.
+- Sadece global `[min_price, max_price]` (default `0.05–0.95`) sınırı uygulanır.
+- ProfitLock dual fazda **tetiklenebilir** hale gelir (book asimetri ya da iki taraflı taker fill sonrası).
 
 **Önkoşul:** Her iki tarafın `best_bid > 0` olması (book WS quote'u gelmiş olmalı); aksi halde `Pending` korunur. Bu, DryRun passive-fill simulator'ının `best_ask` ile karşılaştırma yapabilmesi ve canlı market'te kitap aktif olmadan emir gönderilmesini engellemek için.
 
-**DryRun passive-fill simülasyonu:** Fiyatlar market quote'tan bağımsız üretildiği için (sabit 0.50 anchor + sinyal kayması) `Simulator::fill` koşulu (`price ≥ best_ask`) çoğu zaman sağlanmaz; emirler `live` kalır. `engine::simulate_passive_fills(session)` her market book güncellemesinden sonra (`bot.rs::handle_event` içinde) çağrılır ve açık BUY/SELL emirleri yeni quote ile karşılaştırılır (BUY için `best_ask ≤ price` olduğunda `fill_price = best_ask`). Bu sayede maker emirleri DryRun'da da gerçeğe yakın şekilde dolar.
+**DryRun passive-fill simülasyonu:** Yeni formülde `up_bid ≥ yes_best_ask` durumu mümkün — `Simulator::fill` koşulu (`price ≥ best_ask`) bu emirleri **anlık doldurur**. Daha düşük bid'li (passive maker) emirler ise `live` kalır; `engine::simulate_passive_fills(session)` her market book güncellemesinden sonra (`bot.rs::handle_event` içinde) çağrılır ve açık BUY/SELL emirleri yeni quote ile karşılaştırılır (BUY için `best_ask ≤ price` olduğunda `fill_price = best_ask`). Bu sayede maker emirleri DryRun'da da gerçeğe yakın şekilde dolar.
 
 **`harvest` averaging tablosu okuma kılavuzu:** Sinyal, averaging yapılan **tarafı teyit edip etmediğine** göre boyut ölçekler. "Avg YES" = YES (UP) averaging; "Avg NO" = NO (DOWN) averaging. Güçlü alış sinyali, fiyatı yükselen YES tarafına averaging yapmayı teyit etmez (zıt); düşen NO tarafı için averaging'i güçlendirir (teyit).
 
 **Strateji mekanizma özeti:**
 - **`dutch_book`:** Sinyal hem pozisyon boyutunu hem yön doğrulamasını etkiler. `effective_score < 2` iken UP emir üretilmez.
-- **`harvest`:** Sinyal iki yerde: (1) **OpenDual fiyatı** (simetrik, toplam `1.00`); (2) **averaging GTC boyutu** (yukarıdaki tablo).
+- **`harvest`:** Sinyal iki yerde: (1) **OpenDual fiyatı** (her taraf bağımsız `ask ± delta·market_spread`; market likiditesine otomatik ölçeklenir, delta=0'da ikisi de taker, delta=±1'de bir taraf agresif taker diğeri pasif maker, toplam ≈ 1.00 garanti değil); (2) **averaging GTC boyutu** (yukarıdaki tablo).
 - **`prism`:** Sinyal zamanlama / giriş eşiğini etkiler. Güçlü satış → giriş ertelenir veya pencere içinde iptal edilir.
 
 **`MarketZone` ile etkileşim (bkz. §15):** Sinyal hesabı (`CVD`, `BSI`, `OFI`, `signal_score`) her bölgede sürekli yapılır. Ancak her strateji, `ZoneSignalMap` aracılığıyla bazı bölgelerde sinyali **pasif** bırakabilir. Pasif bölgede `effective_score` zorla `5.0` (nötr) olarak uygulanır; pozisyon boyutu ve yön filtresi sinyal tarafından etkilenmez. Hangi bölgelerde sinyalin aktif olduğu her stratejinin bölge haritasında (`strategies.md §1–3`) tanımlanır. `StopTrade` bölgesinde sinyal durumundan bağımsız olarak yeni emir üretilmez (§15 zorunlu kuralı).

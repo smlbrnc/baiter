@@ -126,6 +126,10 @@ export interface PnLSnapshot {
   mtm_pnl: number;
   /** Eşleşen YES/NO çift sayısı = min(shares_yes, shares_no). Doc §11. */
   pair_count: number;
+  /** YES tarafı VWAP (`avg_up`); eski snapshot yoksa 0. */
+  avg_yes?: number | null;
+  /** NO tarafı VWAP (`avg_down`). */
+  avg_no?: number | null;
   ts_ms: number;
 }
 

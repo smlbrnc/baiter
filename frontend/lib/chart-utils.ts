@@ -52,3 +52,49 @@ export function fmtTickTime(t: number): string {
     parts.find((p) => p.type === type)?.value ?? "00";
   return `${v("hour").padStart(2, "0")}:${v("minute")}`;
 }
+
+/** Chart / tablo bölüm başlıkları — `BotSettingsCards` `CardDescription` ile aynı ölçü ve stil. */
+export const SECTION_LABEL_CLASS =
+  "font-sans text-[10px] font-normal leading-snug tracking-wider text-muted-foreground uppercase";
+
+/**
+ * `BinanceSignalPanel` + `AvgSumChart` yan yana — kart gövdesi ve padding aynı.
+ * Grid `items-stretch` ile satır yüksekliği eşitlenir; grafik alanı `flex-1` ile dolar.
+ */
+export const SIGNAL_PAIR_CARD_CLASS =
+  "gap-0 py-0 h-full min-h-0 flex flex-col";
+export const SIGNAL_PAIR_HEADER_CLASS =
+  "flex flex-row items-center justify-between space-y-0 px-3.5 pb-2 pt-3";
+export const SIGNAL_PAIR_CONTENT_CLASS = "px-3.5 pb-3.5 pt-0";
+
+/**
+ * Recharts dış margin — X altı `margin.bottom` yerine eksen `height` ile sıkı tutulur.
+ * `PriceChart` üstte zone etiketleri için `CHART_MARGIN_PRICE` kullan.
+ */
+export const CHART_MARGIN_TIGHT = {
+  top: 6,
+  right: 8,
+  left: 2,
+  bottom: 0,
+} as const;
+
+/** `PriceChart` — üstte `ReferenceLine` zone etiketleri için ekstra boşluk. */
+export const CHART_MARGIN_PRICE = {
+  top: 22,
+  right: 8,
+  left: 2,
+  bottom: 0,
+} as const;
+
+/** Tüm zaman (X) eksenlerinde ortak düzen — Recharts varsayılan geniş alt bandı daraltır. */
+export const CHART_TIME_X_AXIS_LAYOUT = {
+  tickLine: false,
+  axisLine: false,
+  minTickGap: 20,
+  height: 18,
+  tickMargin: 4,
+  tick: { fontSize: 10, className: "fill-muted-foreground" },
+} as const;
+
+/** Eski sabit; yalnızca tek başına sabit yükseklik gerektiğinde kullanılabilir. */
+export const PNL_ROW_CHART_HEIGHT_CLASS = "h-[140px]";

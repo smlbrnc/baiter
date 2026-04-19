@@ -12,6 +12,7 @@ import {
 import { api } from "@/lib/api";
 import { useHistoryStream } from "@/lib/hooks";
 import type { TradeRow } from "@/lib/types";
+import { SECTION_LABEL_CLASS } from "@/lib/chart-utils";
 import { cn } from "@/lib/utils";
 
 type Direction = "UP" | "DOWN";
@@ -62,7 +63,7 @@ export function TradesTable({
   }, [trades]);
 
   return (
-    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+    <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
       <SideTable direction="UP" rows={up} />
       <SideTable direction="DOWN" rows={down} />
     </div>
@@ -78,13 +79,16 @@ function SideTable({ direction, rows }: { direction: Direction; rows: TradeRow[]
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between gap-3">
-        <CardTitle className="flex items-center gap-2">
-          <Icon className={cn("h-4 w-4", color)} />
-          <span className={cn("text-sm font-semibold tracking-wide", color)}>
-            {direction} TRADES
-          </span>
+        <CardTitle
+          className={cn(
+            SECTION_LABEL_CLASS,
+            "flex items-center gap-1.5",
+          )}
+        >
+          <Icon className={cn("size-3.5 shrink-0 opacity-80", color)} aria-hidden />
+          {direction} trades
         </CardTitle>
-        <div className="text-muted-foreground flex items-center gap-3 text-xs">
+        <div className="text-muted-foreground flex items-center gap-3 text-[10px] tracking-wider uppercase">
           <span>{rows.length} işlem</span>
           <span className="text-foreground font-mono">
             ${notional.toFixed(2)}
