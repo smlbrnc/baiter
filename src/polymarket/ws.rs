@@ -108,18 +108,6 @@ pub struct PriceChangeLevel {
     pub hash: Option<String>,
 }
 
-/// Kanal tipi.
-#[derive(Debug, Clone)]
-pub enum Channel {
-    /// `wss://.../ws/market` — public.
-    Market { asset_ids: Vec<String> },
-    /// `wss://.../ws/user` — L2 auth gerektirir.
-    User {
-        creds: Credentials,
-        markets: Vec<String>,
-    },
-}
-
 /// Market WS okuyucu task'ı — mpsc'ye event yayar.
 /// Kopma halinde exponential backoff (1s → 60s) ile yeniden bağlanır.
 pub async fn run_market_ws(
@@ -133,7 +121,7 @@ pub async fn run_market_ws(
         "type": "market",
         "custom_feature_enabled": true,
     });
-    run_ws_loop(&url, sub, None, tx).await;
+    run_ws_loop(&url, sub, tx).await;
 }
 
 /// User WS okuyucu task'ı.
@@ -153,15 +141,10 @@ pub async fn run_user_ws(
         "markets": markets,
         "type": "user",
     });
-    run_ws_loop(&url, sub, None, tx).await;
+    run_ws_loop(&url, sub, tx).await;
 }
 
-async fn run_ws_loop(
-    url: &str,
-    subscription: Value,
-    _filter_market: Option<String>,
-    tx: mpsc::Sender<PolymarketEvent>,
-) {
+async fn run_ws_loop(url: &str, subscription: Value, tx: mpsc::Sender<PolymarketEvent>) {
     let mut backoff_secs: u64 = 1;
     loop {
         match connect_and_stream(url, &subscription, &tx).await {
@@ -288,100 +271,134 @@ fn as_str(v: &Value, key: &str) -> Option<String> {
     v.get(key).and_then(|x| x.as_str()).map(|s| s.to_string())
 }
 
+/// Tek bir JSON event objesini `PolymarketEvent`'e map'ler.
+///
+/// `event_type`'a göre küçük yardımcılara dağıtır; her yardımcı kendi
+/// alanlarını zorunlu/opsiyonel olarak çözer.
 fn map_event(v: &Value) -> Option<PolymarketEvent> {
     let etype = v.get("event_type")?.as_str()?;
-    let timestamp_ms = as_u64(v, "timestamp").unwrap_or(0);
+    let ts = as_u64(v, "timestamp").unwrap_or(0);
     match etype {
-        "book" => Some(PolymarketEvent::Book {
-            asset_id: as_str(v, "asset_id")?,
-            market: as_str(v, "market").unwrap_or_default(),
-            bids: extract_levels(v, "bids"),
-            asks: extract_levels(v, "asks"),
-            hash: as_str(v, "hash"),
-            timestamp_ms,
-        }),
-        "price_change" => {
-            let arr = v.get("price_changes")?.as_array()?;
-            let changes = arr
-                .iter()
-                .filter_map(|c| {
-                    Some(PriceChangeLevel {
-                        asset_id: as_str(c, "asset_id")?,
-                        price: as_f64(c, "price")?,
-                        size: as_f64(c, "size")?,
-                        side: as_str(c, "side").unwrap_or_default(),
-                        best_bid: as_f64(c, "best_bid"),
-                        best_ask: as_f64(c, "best_ask"),
-                        hash: as_str(c, "hash"),
-                    })
-                })
-                .collect();
-            Some(PolymarketEvent::PriceChange {
-                market: as_str(v, "market").unwrap_or_default(),
-                changes,
-                timestamp_ms,
-            })
-        }
-        "best_bid_ask" => Some(PolymarketEvent::BestBidAsk {
-            asset_id: as_str(v, "asset_id")?,
-            market: as_str(v, "market").unwrap_or_default(),
-            best_bid: as_f64(v, "best_bid").unwrap_or(0.0),
-            best_ask: as_f64(v, "best_ask").unwrap_or(0.0),
-            spread: as_f64(v, "spread").unwrap_or(0.0),
-            timestamp_ms,
-        }),
-        "last_trade_price" => Some(PolymarketEvent::LastTradePrice {
-            asset_id: as_str(v, "asset_id")?,
-            market: as_str(v, "market").unwrap_or_default(),
-            price: as_f64(v, "price").unwrap_or(0.0),
-            size: as_f64(v, "size").unwrap_or(0.0),
-            side: as_str(v, "side").unwrap_or_default(),
-            timestamp_ms,
-        }),
-        "tick_size_change" => Some(PolymarketEvent::TickSizeChange {
-            asset_id: as_str(v, "asset_id")?,
-            market: as_str(v, "market").unwrap_or_default(),
-            new_tick_size: as_f64(v, "new_tick_size").unwrap_or(0.0),
-            timestamp_ms,
-        }),
-        "market_resolved" => Some(PolymarketEvent::MarketResolved {
-            market: as_str(v, "market")?,
-            winning_outcome: as_str(v, "winning_outcome").unwrap_or_default(),
-            winning_asset_id: as_str(v, "winning_asset_id"),
-            timestamp_ms,
-        }),
-        "order" => Some(PolymarketEvent::Order {
-            order_id: as_str(v, "id").unwrap_or_default(),
-            market: as_str(v, "market").unwrap_or_default(),
-            asset_id: as_str(v, "asset_id").unwrap_or_default(),
-            side: as_str(v, "side").unwrap_or_default(),
-            outcome: as_str(v, "outcome"),
-            original_size: as_f64(v, "original_size"),
-            size_matched: as_f64(v, "size_matched"),
-            price: as_f64(v, "price"),
-            order_type: as_str(v, "order_type"),
-            status: as_str(v, "status").unwrap_or_default(),
-            lifecycle_type: as_str(v, "type").unwrap_or_default(),
-            timestamp_ms,
-            raw: v.clone(),
-        }),
-        "trade" => Some(PolymarketEvent::Trade {
-            trade_id: as_str(v, "id").unwrap_or_default(),
-            market: as_str(v, "market").unwrap_or_default(),
-            asset_id: as_str(v, "asset_id").unwrap_or_default(),
-            side: as_str(v, "side"),
-            outcome: as_str(v, "outcome"),
-            size: as_f64(v, "size").unwrap_or(0.0),
-            price: as_f64(v, "price").unwrap_or(0.0),
-            status: as_str(v, "status").unwrap_or_default(),
-            fee_rate_bps: as_f64(v, "fee_rate_bps"),
-            timestamp_ms,
-            raw: v.clone(),
-        }),
+        "book" => map_book(v, ts),
+        "price_change" => map_price_change(v, ts),
+        "best_bid_ask" => map_best_bid_ask(v, ts),
+        "last_trade_price" => map_last_trade_price(v, ts),
+        "tick_size_change" => map_tick_size_change(v, ts),
+        "market_resolved" => map_market_resolved(v, ts),
+        "order" => Some(map_order(v, ts)),
+        "trade" => Some(map_trade(v, ts)),
         other => {
             tracing::debug!(event_type = other, "unknown event_type, skipped");
             None
         }
+    }
+}
+
+fn map_book(v: &Value, timestamp_ms: u64) -> Option<PolymarketEvent> {
+    Some(PolymarketEvent::Book {
+        asset_id: as_str(v, "asset_id")?,
+        market: as_str(v, "market").unwrap_or_default(),
+        bids: extract_levels(v, "bids"),
+        asks: extract_levels(v, "asks"),
+        hash: as_str(v, "hash"),
+        timestamp_ms,
+    })
+}
+
+fn map_price_change(v: &Value, timestamp_ms: u64) -> Option<PolymarketEvent> {
+    let arr = v.get("price_changes")?.as_array()?;
+    let changes = arr
+        .iter()
+        .filter_map(|c| {
+            Some(PriceChangeLevel {
+                asset_id: as_str(c, "asset_id")?,
+                price: as_f64(c, "price")?,
+                size: as_f64(c, "size")?,
+                side: as_str(c, "side").unwrap_or_default(),
+                best_bid: as_f64(c, "best_bid"),
+                best_ask: as_f64(c, "best_ask"),
+                hash: as_str(c, "hash"),
+            })
+        })
+        .collect();
+    Some(PolymarketEvent::PriceChange {
+        market: as_str(v, "market").unwrap_or_default(),
+        changes,
+        timestamp_ms,
+    })
+}
+
+fn map_best_bid_ask(v: &Value, timestamp_ms: u64) -> Option<PolymarketEvent> {
+    Some(PolymarketEvent::BestBidAsk {
+        asset_id: as_str(v, "asset_id")?,
+        market: as_str(v, "market").unwrap_or_default(),
+        best_bid: as_f64(v, "best_bid").unwrap_or(0.0),
+        best_ask: as_f64(v, "best_ask").unwrap_or(0.0),
+        spread: as_f64(v, "spread").unwrap_or(0.0),
+        timestamp_ms,
+    })
+}
+
+fn map_last_trade_price(v: &Value, timestamp_ms: u64) -> Option<PolymarketEvent> {
+    Some(PolymarketEvent::LastTradePrice {
+        asset_id: as_str(v, "asset_id")?,
+        market: as_str(v, "market").unwrap_or_default(),
+        price: as_f64(v, "price").unwrap_or(0.0),
+        size: as_f64(v, "size").unwrap_or(0.0),
+        side: as_str(v, "side").unwrap_or_default(),
+        timestamp_ms,
+    })
+}
+
+fn map_tick_size_change(v: &Value, timestamp_ms: u64) -> Option<PolymarketEvent> {
+    Some(PolymarketEvent::TickSizeChange {
+        asset_id: as_str(v, "asset_id")?,
+        market: as_str(v, "market").unwrap_or_default(),
+        new_tick_size: as_f64(v, "new_tick_size").unwrap_or(0.0),
+        timestamp_ms,
+    })
+}
+
+fn map_market_resolved(v: &Value, timestamp_ms: u64) -> Option<PolymarketEvent> {
+    Some(PolymarketEvent::MarketResolved {
+        market: as_str(v, "market")?,
+        winning_outcome: as_str(v, "winning_outcome").unwrap_or_default(),
+        winning_asset_id: as_str(v, "winning_asset_id"),
+        timestamp_ms,
+    })
+}
+
+fn map_order(v: &Value, timestamp_ms: u64) -> PolymarketEvent {
+    PolymarketEvent::Order {
+        order_id: as_str(v, "id").unwrap_or_default(),
+        market: as_str(v, "market").unwrap_or_default(),
+        asset_id: as_str(v, "asset_id").unwrap_or_default(),
+        side: as_str(v, "side").unwrap_or_default(),
+        outcome: as_str(v, "outcome"),
+        original_size: as_f64(v, "original_size"),
+        size_matched: as_f64(v, "size_matched"),
+        price: as_f64(v, "price"),
+        order_type: as_str(v, "order_type"),
+        status: as_str(v, "status").unwrap_or_default(),
+        lifecycle_type: as_str(v, "type").unwrap_or_default(),
+        timestamp_ms,
+        raw: v.clone(),
+    }
+}
+
+fn map_trade(v: &Value, timestamp_ms: u64) -> PolymarketEvent {
+    PolymarketEvent::Trade {
+        trade_id: as_str(v, "id").unwrap_or_default(),
+        market: as_str(v, "market").unwrap_or_default(),
+        asset_id: as_str(v, "asset_id").unwrap_or_default(),
+        side: as_str(v, "side"),
+        outcome: as_str(v, "outcome"),
+        size: as_f64(v, "size").unwrap_or(0.0),
+        price: as_f64(v, "price").unwrap_or(0.0),
+        status: as_str(v, "status").unwrap_or_default(),
+        fee_rate_bps: as_f64(v, "fee_rate_bps"),
+        timestamp_ms,
+        raw: v.clone(),
     }
 }
 

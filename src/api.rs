@@ -140,7 +140,10 @@ async fn create_bot(
 
 async fn list_bots(State(state): State<Arc<AppState>>) -> Result<Json<Vec<Value>>, ApiError> {
     let rows = db::list_bots(&state.pool).await?;
-    Ok(Json(rows.into_iter().map(bot_row_to_json).collect()))
+    rows.into_iter()
+        .map(bot_row_to_json)
+        .collect::<Result<Vec<_>, _>>()
+        .map(Json)
 }
 
 async fn get_bot(
@@ -150,7 +153,7 @@ async fn get_bot(
     let row = db::get_bot(&state.pool, id)
         .await?
         .ok_or(ApiError::NotFound)?;
-    Ok(Json(bot_row_to_json(row)))
+    bot_row_to_json(row).map(Json)
 }
 
 async fn delete_bot(
@@ -217,28 +220,19 @@ async fn bot_pnl(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, ApiError> {
-    let row = sqlx::query(
-        "SELECT cost_basis, fee_total, shares_yes, shares_no, pnl_if_up, pnl_if_down, mtm_pnl, ts_ms \
-         FROM pnl_snapshots WHERE bot_id = ? ORDER BY ts_ms DESC LIMIT 1",
-    )
-    .bind(id)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| ApiError::Internal(e.to_string()))?;
-    match row {
-        Some(r) => {
-            use sqlx::Row as _;
-            Ok(Json(serde_json::json!({
-                "cost_basis": r.get::<f64, _>("cost_basis"),
-                "fee_total": r.get::<f64, _>("fee_total"),
-                "shares_yes": r.get::<f64, _>("shares_yes"),
-                "shares_no": r.get::<f64, _>("shares_no"),
-                "pnl_if_up": r.get::<f64, _>("pnl_if_up"),
-                "pnl_if_down": r.get::<f64, _>("pnl_if_down"),
-                "mtm_pnl": r.get::<f64, _>("mtm_pnl"),
-                "ts_ms": r.get::<i64, _>("ts_ms"),
-            })))
-        }
+    let snap = db::pnl::latest_pnl_for_bot(&state.pool, id).await?;
+    match snap {
+        Some(s) => Ok(Json(serde_json::json!({
+            "cost_basis": s.cost_basis,
+            "fee_total": s.fee_total,
+            "shares_yes": s.shares_yes,
+            "shares_no": s.shares_no,
+            "pnl_if_up": s.pnl_if_up,
+            "pnl_if_down": s.pnl_if_down,
+            "mtm_pnl": s.mtm_pnl,
+            "pair_count": s.pair_count,
+            "ts_ms": s.ts_ms,
+        }))),
         None => Ok(Json(Value::Null)),
     }
 }
@@ -247,28 +241,19 @@ async fn bot_session(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, ApiError> {
-    let row = sqlx::query(
-        "SELECT slug, start_ts, end_ts, state FROM market_sessions \
-         WHERE bot_id = ? ORDER BY updated_at_ms DESC LIMIT 1",
-    )
-    .bind(id)
-    .fetch_optional(&state.pool)
-    .await
-    .map_err(|e| ApiError::Internal(e.to_string()))?;
-    match row {
-        Some(r) => {
-            use sqlx::Row as _;
-            let slug = r.get::<String, _>("slug");
+    let summary = db::sessions::latest_session_for_bot(&state.pool, id).await?;
+    match summary {
+        Some(s) => {
             let gamma = GammaClient::new(reqwest::Client::new(), state.env.gamma_base_url.clone());
             let m = gamma
-                .get_market_by_slug(&slug)
+                .get_market_by_slug(&s.slug)
                 .await
                 .map_err(ApiError::from)?;
             Ok(Json(serde_json::json!({
-                "slug": slug,
-                "start_ts": r.get::<i64, _>("start_ts"),
-                "end_ts":   r.get::<i64, _>("end_ts"),
-                "state":    r.get::<String, _>("state"),
+                "slug":     s.slug,
+                "start_ts": s.start_ts,
+                "end_ts":   s.end_ts,
+                "state":    s.state,
                 "title":    m.question,
                 "image":    m.image,
             })))
@@ -297,8 +282,14 @@ async fn events_sse(
     )
 }
 
-fn bot_row_to_json(r: db::BotRow) -> Value {
-    serde_json::json!({
+fn bot_row_to_json(r: db::BotRow) -> Result<Value, ApiError> {
+    let strategy_params: Value = serde_json::from_str(&r.strategy_params).map_err(|e| {
+        ApiError::Internal(format!(
+            "bot {id} strategy_params JSON bozuk: {e}",
+            id = r.id
+        ))
+    })?;
+    Ok(serde_json::json!({
         "id": r.id,
         "name": r.name,
         "slug_pattern": r.slug_pattern,
@@ -309,12 +300,12 @@ fn bot_row_to_json(r: db::BotRow) -> Value {
         "min_price": r.min_price,
         "max_price": r.max_price,
         "cooldown_threshold": r.cooldown_threshold,
-        "strategy_params": serde_json::from_str::<Value>(&r.strategy_params).unwrap_or(Value::Null),
+        "strategy_params": strategy_params,
         "state": r.state,
         "last_active_ms": r.last_active_ms,
         "created_at_ms": r.created_at_ms,
         "updated_at_ms": r.updated_at_ms,
-    })
+    }))
 }
 
 // ----- errors --------------------------------------------------------------

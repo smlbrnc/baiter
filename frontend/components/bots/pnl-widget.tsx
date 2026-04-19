@@ -33,6 +33,7 @@ export function PnLWidget({ pnl }: { pnl: PnLSnapshot | null }) {
         <Metric label="if DOWN" value={pnl.pnl_if_down} fmt="money" />
         <Metric label="shares YES" value={pnl.shares_yes} />
         <Metric label="shares NO" value={pnl.shares_no} />
+        <Metric label="pairs" value={pnl.pair_count} />
         <Metric label="fee" value={pnl.fee_total} fmt="money" />
         <Metric
           label="ts"

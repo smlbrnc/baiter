@@ -11,7 +11,15 @@ type Creds = {
   poly_passphrase: string;
   poly_secret: string;
   polygon_private_key: string;
-  signature_type: number;
+  /**
+   * Polymarket EIP-712 imza tipi:
+   * - 0: EOA (private key direkt sahibi)
+   * - 1: POLY_PROXY (funder zorunlu)
+   * - 2: POLY_GNOSIS_SAFE (funder zorunlu)
+   */
+  signature_type: 0 | 1 | 2;
+  /** signature_type ∈ {1,2} ise zorunlu — proxy/safe sahibi adres. */
+  funder?: string;
 };
 
 type Props = {
@@ -100,17 +108,32 @@ export function BotFormCredentialsSection({
                 />
               </Field>
               <Field label="Signature type">
-                <Input
-                  type="number"
+                <select
                   value={creds.signature_type}
                   onChange={(e) =>
                     setCreds({
                       ...creds,
-                      signature_type: Number(e.target.value),
+                      signature_type: Number(e.target.value) as 0 | 1 | 2,
                     })
                   }
-                />
+                  className="bg-background border-input flex h-9 w-full rounded-md border px-3 py-1 text-sm shadow-sm focus-visible:ring-ring/50 focus-visible:ring-2 focus-visible:outline-none"
+                >
+                  <option value={0}>0 — EOA</option>
+                  <option value={1}>1 — POLY_PROXY</option>
+                  <option value={2}>2 — POLY_GNOSIS_SAFE</option>
+                </select>
               </Field>
+              {(creds.signature_type === 1 || creds.signature_type === 2) && (
+                <Field label="FUNDER (proxy/safe adresi)">
+                  <Input
+                    value={creds.funder ?? ""}
+                    placeholder="0x..."
+                    onChange={(e) =>
+                      setCreds({ ...creds, funder: e.target.value })
+                    }
+                  />
+                </Field>
+              )}
             </div>
           </>
         )}

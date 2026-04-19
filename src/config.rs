@@ -17,8 +17,8 @@ pub struct RuntimeEnv {
     pub gamma_base_url: String,
     pub clob_base_url: String,
     pub clob_ws_base: String,
+    /// EIP-712 imza için zincir id (Polygon mainnet = 137).
     pub polygon_chain_id: u64,
-    pub fallback_creds: Option<Credentials>,
 }
 
 impl RuntimeEnv {
@@ -38,8 +38,6 @@ impl RuntimeEnv {
         );
         let polygon_chain_id = parse_env_or("POLYGON_CHAIN_ID", 137u64)?;
 
-        let fallback_creds = Credentials::from_env();
-
         Ok(Self {
             port,
             db_path,
@@ -49,7 +47,6 @@ impl RuntimeEnv {
             clob_base_url,
             clob_ws_base,
             polygon_chain_id,
-            fallback_creds,
         })
     }
 }
@@ -75,8 +72,8 @@ fn default_bot_binary() -> String {
     }
 }
 
-/// Polymarket kimlik bilgileri (L1 + L2).
-/// Bot başlatılırken önce SQLite `bot_credentials` okunur; yoksa `.env` fallback.
+/// Polymarket kimlik bilgileri (L1 + L2). Bot başlatılırken yalnızca SQLite
+/// `bot_credentials` tablosundan okunur — `.env` fallback yoktur.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Credentials {
     pub poly_address: String,
@@ -86,24 +83,6 @@ pub struct Credentials {
     pub polygon_private_key: String,
     pub signature_type: i32,
     pub funder: Option<String>,
-}
-
-impl Credentials {
-    /// Tüm POLY_* + POLYGON_PRIVATE_KEY dolu ise `Some` döner.
-    pub fn from_env() -> Option<Self> {
-        Some(Self {
-            poly_address: std::env::var("POLY_ADDRESS").ok()?,
-            poly_api_key: std::env::var("POLY_API_KEY").ok()?,
-            poly_passphrase: std::env::var("POLY_PASSPHRASE").ok()?,
-            poly_secret: std::env::var("POLY_SECRET").ok()?,
-            polygon_private_key: std::env::var("POLYGON_PRIVATE_KEY").ok()?,
-            signature_type: std::env::var("POLY_SIGNATURE_TYPE")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(0),
-            funder: std::env::var("POLY_FUNDER").ok(),
-        })
-    }
 }
 
 /// Bir bot'un tam konfigürasyonu — DB `bots` tablosundan yüklenir.
@@ -137,14 +116,27 @@ pub struct StrategyParams {
     #[serde(default)]
     pub harvest_dual_timeout: Option<u64>,
     /// SingleLeg ProfitLock FAK tetik oranı (örn. 0.05 → avg_threshold = 0.95).
+    /// Default ayar yok ⇒ `harvest_avg_threshold()` 0.98 döner.
     #[serde(default)]
     pub harvest_profit_lock_pct: Option<f64>,
-    /// Dutch book scale up çarpanı.
-    #[serde(default)]
-    pub dutch_scale_up: Option<f64>,
     /// Serbest form (ileride stratejiye özel alanlar).
     #[serde(default)]
     pub extra: serde_json::Value,
+}
+
+impl StrategyParams {
+    /// SingleLeg ProfitLock eşiği (`first_leg + hedge_leg ≤ avg_threshold`).
+    /// Doc §17 default: `0.98` (= `1.0 - 0.02`).
+    pub fn harvest_avg_threshold(&self) -> f64 {
+        self.harvest_profit_lock_pct
+            .map(|p| 1.0 - p.abs())
+            .unwrap_or(0.98)
+    }
+
+    /// OpenDual fill bekleme süresi (ms). Default `5_000`.
+    pub fn harvest_dual_timeout(&self) -> u64 {
+        self.harvest_dual_timeout.unwrap_or(5_000)
+    }
 }
 
 #[cfg(test)]
@@ -153,12 +145,31 @@ mod tests {
 
     #[test]
     fn runtime_env_defaults() {
-        // Env temiz değilse test parse etmeye çalışır; en azından default fallback'ler
-        // panic atmamalı. Port override ayarsızsa 3000 dönmeli.
         std::env::remove_var("PORT");
         std::env::remove_var("DB_PATH");
         let env = RuntimeEnv::from_env().expect("env load");
         assert_eq!(env.port, 3000);
         assert!(env.gamma_base_url.contains("gamma-api"));
+    }
+
+    #[test]
+    fn harvest_avg_threshold_default_is_098() {
+        let p = StrategyParams::default();
+        assert!((p.harvest_avg_threshold() - 0.98).abs() < 1e-9);
+    }
+
+    #[test]
+    fn harvest_avg_threshold_uses_profit_lock_pct() {
+        let p = StrategyParams {
+            harvest_profit_lock_pct: Some(0.05),
+            ..Default::default()
+        };
+        assert!((p.harvest_avg_threshold() - 0.95).abs() < 1e-9);
+    }
+
+    #[test]
+    fn harvest_dual_timeout_default_is_5000() {
+        let p = StrategyParams::default();
+        assert_eq!(p.harvest_dual_timeout(), 5_000);
     }
 }

@@ -53,15 +53,6 @@ pub fn body_to_string(value: &serde_json::Value) -> String {
     raw.replace('\'', "\"")
 }
 
-/// L1 header bundle (EIP-712 ClobAuth imzalanmış).
-#[derive(Debug, Clone)]
-pub struct L1Headers {
-    pub address: String,
-    pub signature: String,
-    pub timestamp: String,
-    pub nonce: String,
-}
-
 /// L2 header bundle.
 #[derive(Debug, Clone)]
 pub struct L2Headers {
@@ -98,66 +89,6 @@ pub fn make_l2_headers(
         passphrase: creds.poly_passphrase.clone(),
         timestamp: timestamp.to_string(),
         signature,
-    })
-}
-
-/// EIP-712 ClobAuth imzalı L1 header üret (yalnızca `/auth/*` endpoint'leri için).
-///
-/// Alloy 2.0 `signer-local` feature'i ile cüzdan yüklenir; `sign_typed_data`
-/// ile imza alınır. Gerçek zincir domain'i: `chainId=137`, `name=ClobAuthDomain`.
-pub async fn make_l1_headers(
-    private_key_hex: &str,
-    chain_id: u64,
-    timestamp: &str,
-    nonce: &str,
-) -> Result<L1Headers, AppError> {
-    use alloy::signers::local::PrivateKeySigner;
-    use alloy::signers::Signer;
-    use alloy::sol_types::{eip712_domain, SolStruct};
-
-    let signer: PrivateKeySigner = private_key_hex
-        .trim_start_matches("0x")
-        .parse()
-        .map_err(|e| AppError::Auth(format!("private key parse: {e}")))?;
-    let address = format!("{:?}", signer.address());
-
-    // EIP-712 struct'ı
-    alloy::sol! {
-        struct ClobAuth {
-            address wallet;
-            string timestamp;
-            uint256 nonce;
-            string message;
-        }
-    }
-
-    let domain = eip712_domain! {
-        name: "ClobAuthDomain",
-        version: "1",
-        chain_id: chain_id,
-    };
-
-    let nonce_u256 = alloy::primitives::U256::from_str_radix(nonce, 10)
-        .map_err(|e| AppError::Auth(format!("nonce parse: {e}")))?;
-
-    let payload = ClobAuth {
-        wallet: signer.address(),
-        timestamp: timestamp.to_string(),
-        nonce: nonce_u256,
-        message: "This message attests that I control the given wallet".to_string(),
-    };
-
-    let hash = payload.eip712_signing_hash(&domain);
-    let sig = signer
-        .sign_hash(&hash)
-        .await
-        .map_err(|e| AppError::Auth(format!("sign: {e}")))?;
-
-    Ok(L1Headers {
-        address,
-        signature: format!("0x{}", hex::encode(sig.as_bytes())),
-        timestamp: timestamp.to_string(),
-        nonce: nonce.to_string(),
     })
 }
 

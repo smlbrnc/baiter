@@ -72,9 +72,6 @@ fn cvd_window_secs(interval: Interval) -> u64 {
 struct AggTrade {
     #[serde(rename = "E")]
     event_time_ms: u64,
-    #[serde(rename = "p", default)]
-    #[allow(dead_code)]
-    price: String,
     #[serde(rename = "q")]
     qty: String,
     #[serde(rename = "m")]
@@ -259,7 +256,7 @@ async fn connect_stream(
         Err(_) => return Err(anyhow::anyhow!("connect_async timeout (10s)")),
     };
     let (_write, mut read) = ws_stream.split();
-    ipc::log_line(label, "🛰️  Binance ws connected (warmup başladı)".to_string());
+    ipc::log_line(label, "🛰️  Binance ws connected (warmup başladı)");
 
     let mut computer = SignalComputer::new(interval);
     {
@@ -279,7 +276,15 @@ async fn connect_stream(
                 Ok(t) => t,
                 Err(_) => continue,
             };
-            let qty: f64 = trade.qty.parse().unwrap_or(0.0);
+            // Bozuk qty bilinçli olarak hata: sayısal alan parse edilemezse
+            // sinyal hesabı yanıltıcı olur — trade'i atla, log'la.
+            let qty: f64 = match trade.qty.parse() {
+                Ok(v) => v,
+                Err(e) => {
+                    tracing::warn!(error=%e, qty=%trade.qty, "binance aggTrade qty parse failed, skipped");
+                    continue;
+                }
+            };
             let is_buy = !trade.is_buyer_maker;
             computer.ingest(trade.event_time_ms, qty, is_buy);
             trade_count += 1;

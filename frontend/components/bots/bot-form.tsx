@@ -55,7 +55,15 @@ export function BotForm() {
   };
 
   const [includeCreds, setIncludeCreds] = useState(false);
-  const [creds, setCreds] = useState({
+  const [creds, setCreds] = useState<{
+    poly_address: string;
+    poly_api_key: string;
+    poly_passphrase: string;
+    poly_secret: string;
+    polygon_private_key: string;
+    signature_type: 0 | 1 | 2;
+    funder?: string;
+  }>({
     poly_address: "",
     poly_api_key: "",
     poly_passphrase: "",
@@ -86,6 +94,22 @@ export function BotForm() {
       );
       return;
     }
+    if (form.run_mode === "live" && !includeCreds) {
+      window.alert(
+        "Live mod için Polymarket kimlik bilgileri (signature_type + private key) zorunludur.",
+      );
+      return;
+    }
+    if (
+      includeCreds &&
+      (creds.signature_type === 1 || creds.signature_type === 2) &&
+      !creds.funder?.trim()
+    ) {
+      window.alert(
+        `signature_type=${creds.signature_type} için FUNDER (proxy/safe) adresi zorunludur.`,
+      );
+      return;
+    }
     setSubmitting(true);
     try {
       const nameTrim = form.name.trim();
@@ -103,7 +127,12 @@ export function BotForm() {
         max_price: maxP,
         cooldown_threshold: cooldown,
       };
-      if (includeCreds) body.credentials = { ...creds };
+      if (includeCreds) {
+        body.credentials = {
+          ...creds,
+          funder: creds.funder?.trim() || null,
+        };
+      }
       const { id } = await api.createBot(body);
       router.push(`/bots/${id}`);
     } catch {

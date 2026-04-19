@@ -1,7 +1,9 @@
 //! Strateji enum'u, MetricMask, MarketZone haritası ve Decision tipi.
 //!
-//! Alt modüller: `metrics` (yardımcı), `harvest` (tam FSM),
-//! `dutch_book` + `prism` (stub).
+//! Alt modüller: `metrics` (PnL + agg), `harvest` (tam FSM), `order` (OpenOrder).
+//! `Strategy::DutchBook` ve `Strategy::Prism` API/DB sözleşmesini bozmamak için
+//! enum'da kalır; bot/ctx.rs `Strategy::Harvest` dışındaki seçimleri start aşamasında
+//! `AppError::Config` ile reddeder (doc §11 sözleşmesi).
 //!
 //! Referans: [docs/bot-platform-mimari.md §11 §15](../../../docs/bot-platform-mimari.md).
 
@@ -13,9 +15,16 @@ use crate::types::{OrderType, Outcome, Side, Strategy};
 pub mod dutch_book;
 pub mod harvest;
 pub mod metrics;
+pub mod order;
 pub mod prism;
 
-/// Strategy başına hangi metrikler hesaplanmalı.
+pub use order::OpenOrder;
+
+/// Strategy başına hangi metrikler hesaplanmalı (doc §11 sözleşmesi).
+///
+/// Şu anda yalnız `Harvest` varyantı aktif; diğer stratejiler dokümanda yer alsa
+/// bile çalışan kod yok. Maske API/log'da bot başına metric profilini taşımak için
+/// korunur.
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
 pub struct MetricMask {
     pub imbalance: bool,
@@ -33,17 +42,10 @@ impl MetricMask {
     }
 }
 
-/// Strateji metrik maskesi (mimari §11).
+/// Strateji metrik maskesi (doc §11). Yalnız `Harvest` aktif strateji; diğer
+/// varyantlar `bot/ctx.rs::load` sırasında reddedilir.
 pub fn required_metrics(strategy: Strategy) -> MetricMask {
     match strategy {
-        Strategy::DutchBook => MetricMask {
-            imbalance: true,
-            imbalance_cost: true,
-            avgsum: true,
-            profit: true,
-            sum_volume: true,
-            binance_signal: true,
-        },
         Strategy::Harvest => MetricMask {
             imbalance: true,
             imbalance_cost: false,
@@ -52,25 +54,18 @@ pub fn required_metrics(strategy: Strategy) -> MetricMask {
             sum_volume: true,
             binance_signal: true,
         },
-        Strategy::Prism => MetricMask {
-            imbalance: false,
-            imbalance_cost: false,
-            avgsum: true,
-            profit: true,
-            sum_volume: true,
-            binance_signal: true,
-        },
+        // bot/ctx.rs aktif olmayan stratejileri start anında reddeder; gelir
+        // gelmez varsayılan boş maske dönüyoruz (defansif).
+        Strategy::DutchBook | Strategy::Prism => MetricMask::default(),
     }
 }
 
-/// Bölge başına sinyal aktifliği (§15.3).
+/// Bölge başına sinyal aktifliği (doc §15.3). Yalnızca aktif strateji `Harvest`.
 #[derive(Debug, Clone, Copy)]
 pub struct ZoneSignalMap(pub [bool; 5]);
 
 impl ZoneSignalMap {
     pub const HARVEST: ZoneSignalMap = ZoneSignalMap([true, true, true, true, false]);
-    pub const DUTCH_BOOK: ZoneSignalMap = ZoneSignalMap([true, true, true, true, false]);
-    pub const PRISM: ZoneSignalMap = ZoneSignalMap([false, true, true, true, false]);
 
     pub fn is_active(&self, zone: MarketZone) -> bool {
         let idx = match zone {

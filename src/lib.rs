@@ -14,5 +14,7 @@ pub mod strategy;
 
 pub mod engine;
 
+pub mod bot;
+
 pub mod api;
 pub mod supervisor;

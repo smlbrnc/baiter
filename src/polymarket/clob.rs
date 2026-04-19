@@ -51,51 +51,6 @@ impl ClobClient {
             .ok_or_else(|| AppError::Auth("credentials eksik (dry run? env?)".to_string()))
     }
 
-    // ---------------------------- Public (no auth) ----------------------------
-
-    /// `GET /time` — sunucu UNIX timestamp (HMAC saat senkronizasyonu için).
-    pub async fn get_time(&self) -> Result<u64, AppError> {
-        #[derive(Deserialize)]
-        struct Resp {
-            #[serde(rename = "unixtime")]
-            unix_time: Option<u64>,
-            #[serde(rename = "serverTime")]
-            server_time: Option<u64>,
-        }
-        let url = format!("{}/time", self.base);
-        let resp: Value = self
-            .http
-            .get(&url)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
-        if let Ok(r) = serde_json::from_value::<Resp>(resp.clone()) {
-            if let Some(v) = r.unix_time.or(r.server_time) {
-                return Ok(v);
-            }
-        }
-        if let Some(n) = resp.as_u64() {
-            return Ok(n);
-        }
-        Err(AppError::Clob(format!("/time parse hatası: {resp}")))
-    }
-
-    /// `GET /book?token_id=...` — tek bir outcome için orderbook snapshot.
-    pub async fn get_book(&self, token_id: &str) -> Result<BookResponse, AppError> {
-        let url = format!("{}/book?token_id={}", self.base, token_id);
-        let book: BookResponse = self
-            .http
-            .get(&url)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
-        Ok(book)
-    }
-
     // ---------------------------- Authenticated (L2) ----------------------------
 
     /// Generic authenticated POST — imza + 5 header ekler.
@@ -182,43 +137,6 @@ impl ClobClient {
 }
 
 // -------------------------- DTO'lar --------------------------
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BookResponse {
-    #[serde(default)]
-    pub market: Option<String>,
-    #[serde(default)]
-    pub asset_id: Option<String>,
-    #[serde(default)]
-    pub bids: Vec<PriceLevel>,
-    #[serde(default)]
-    pub asks: Vec<PriceLevel>,
-    #[serde(default)]
-    pub hash: Option<String>,
-    #[serde(default)]
-    pub tick_size: Option<String>,
-    #[serde(default)]
-    pub min_order_size: Option<String>,
-    #[serde(default)]
-    pub neg_risk: Option<bool>,
-    #[serde(default)]
-    pub timestamp: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PriceLevel {
-    pub price: String,
-    pub size: String,
-}
-
-impl PriceLevel {
-    pub fn price_f64(&self) -> f64 {
-        self.price.parse().unwrap_or(0.0)
-    }
-    pub fn size_f64(&self) -> f64 {
-        self.size.parse().unwrap_or(0.0)
-    }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PostOrderResponse {

@@ -50,6 +50,8 @@ export interface PnLSnapshot {
   pnl_if_up: number;
   pnl_if_down: number;
   mtm_pnl: number;
+  /** Eşleşen YES/NO çift sayısı = min(shares_yes, shares_no). Doc §11. */
+  pair_count: number;
   ts_ms: number;
 }
 

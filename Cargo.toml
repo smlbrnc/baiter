@@ -55,6 +55,7 @@ tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 dotenvy = "0.15.7"
 chrono-tz = { version = "0.10.4", default-features = false }
+rand = "0.10.1"
 
 [dev-dependencies]
 tokio = { version = "1.52.1", features = ["rt-multi-thread", "macros", "test-util"] }

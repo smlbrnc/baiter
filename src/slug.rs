@@ -18,8 +18,6 @@ pub enum Asset {
 }
 
 impl Asset {
-    pub const ALL: [Asset; 4] = [Asset::Btc, Asset::Eth, Asset::Sol, Asset::Xrp];
-
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Btc => "btc",
@@ -61,8 +59,6 @@ pub enum Interval {
 }
 
 impl Interval {
-    pub const ALL: [Interval; 4] = [Interval::M5, Interval::M15, Interval::H1, Interval::H4];
-
     pub fn as_str(self) -> &'static str {
         match self {
             Self::M5 => "5m",
@@ -118,10 +114,6 @@ impl SlugInfo {
         )
     }
 
-    /// Aktif market filtresi için slug öneki (ör. "btc-updown-5m-").
-    pub fn prefix(asset: Asset, interval: Interval) -> String {
-        format!("{}-updown-{}-", asset.as_str(), interval.as_str())
-    }
 }
 
 /// `{asset}-updown-{interval}-{ts}` formatını parse eder.
@@ -174,4 +166,29 @@ pub fn parse_slug(slug: &str) -> Result<SlugInfo, AppError> {
         interval,
         ts,
     })
+}
+
+/// Tam slug veya `{asset}-updown-{interval}` öneki kabul eder; önek girilmişse
+/// **şu andaki** aktif pencere `ts`'ini hesaplayarak döner. `bot/ctx.rs::load`
+/// ve `bot/window.rs::next_window` arasında tek slug parse yolu olsun diye
+/// merkezdedir (eskiden `bot.rs::prefix_slug` ile çiftleşmişti).
+pub fn parse_slug_or_prefix(pattern: &str) -> Result<SlugInfo, AppError> {
+    if let Ok(info) = parse_slug(pattern) {
+        return Ok(info);
+    }
+    let trimmed = pattern.trim_end_matches('-');
+    let parts: Vec<&str> = trimmed.split('-').collect();
+    if parts.len() < 3 {
+        return Err(AppError::InvalidSlug {
+            slug: pattern.to_string(),
+            reason: "tam slug değil; önek de en az 3 parça olmalı".into(),
+        });
+    }
+    let interval = Interval::parse(parts[2]).ok_or_else(|| AppError::InvalidSlug {
+        slug: pattern.to_string(),
+        reason: format!("önekten interval parse edilemedi: '{}'", parts[2]),
+    })?;
+    let secs = interval.seconds();
+    let ts = (crate::time::now_secs() / secs) * secs;
+    parse_slug(&format!("{}-{}-{}-{ts}", parts[0], parts[1], parts[2]))
 }

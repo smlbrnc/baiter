@@ -133,7 +133,7 @@ export function BotFormMarketSection({
           aria-label="Strateji"
         >
           <div className="flex min-h-0 min-w-0 flex-1 flex-col divide-y divide-border/35 sm:flex-row sm:divide-x sm:divide-y-0">
-            {STRATEGY_OPTIONS.map(({ id, label, description }) => {
+            {STRATEGY_OPTIONS.map(({ id, label, description, disabled }) => {
               const selected = form.strategy === id;
               return (
                 <button
@@ -141,13 +141,24 @@ export function BotFormMarketSection({
                   type="button"
                   role="radio"
                   aria-checked={selected}
-                  onClick={() => setForm({ ...form, strategy: id })}
+                  aria-disabled={disabled}
+                  disabled={disabled}
+                  title={
+                    disabled
+                      ? "Bu strateji henüz desteklenmiyor (backend reddeder)."
+                      : undefined
+                  }
+                  onClick={() =>
+                    disabled ? undefined : setForm({ ...form, strategy: id })
+                  }
                   className={cn(
                     "flex min-h-9 flex-1 flex-col justify-center gap-0.5 px-2 py-2.5 text-left transition-colors sm:px-3 sm:py-2",
                     "rounded-none focus-visible:ring-ring/50 focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-background focus-visible:outline-none",
-                    selected
-                      ? "bg-background text-foreground shadow-sm"
-                      : "text-muted-foreground hover:bg-background/70 hover:text-foreground",
+                    disabled
+                      ? "cursor-not-allowed opacity-50"
+                      : selected
+                        ? "bg-background text-foreground shadow-sm"
+                        : "text-muted-foreground hover:bg-background/70 hover:text-foreground",
                   )}
                 >
                   <span className="text-sm font-semibold tracking-tight">

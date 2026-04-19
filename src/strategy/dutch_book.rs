@@ -1,30 +1,35 @@
-//! Dutch Book strategy — TBD stub (Faz 14).
+//! Dutch Book stratejisi — **iskelet stub**.
 //!
-//! Ayrıntılı FSM için [docs/strategies.md §1](../../../docs/strategies.md)
-//! `strategies.md` TBD alanları doldurulduktan sonra Faz 14'te implement edilir.
+//! Kural seti henüz tanımlanmadı (TBD); bu modül yalnızca enum/sözleşme yerini
+//! tutar. `bot/ctx.rs` aktif strateji olarak `Strategy::DutchBook` seçilmiş bir
+//! botu start anında reddeder; dolayısıyla `decide()` runtime'da çağrılmaz.
+//!
+//! Tam FSM doldurulurken bu dosya:
+//! 1. `DutchBookState` durumlarını listeler (`Pending → ... → Done`),
+//! 2. `DutchBookContext`'i bot/strategy ortak alanlarıyla genişletir,
+//! 3. `decide()` içine kuralları yazar,
+//! 4. `strategy::required_metrics(Strategy::DutchBook)` maskesini doldurur,
+//! 5. `strategy::ZoneSignalMap::DUTCH_BOOK` sabiti tanımlanır,
+//! 6. `engine::MarketSession::tick` içine match kolu eklenir.
+//!
+//! Referans: [docs/strategies.md §1](../../../docs/strategies.md).
 
-use crate::strategy::metrics::StrategyMetrics;
+use serde::{Deserialize, Serialize};
+
 use crate::strategy::Decision;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Dutch Book FSM durumu — TBD.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum DutchBookState {
+    #[default]
     Pending,
     Done,
 }
 
-#[derive(Debug, Clone)]
-pub struct DutchBookContext<'a> {
-    pub metrics: &'a StrategyMetrics,
-    /// Global emir taban fiyatı — strateji içi proaktif clamp için (engine guard zaten reject eder).
-    pub min_price: f64,
-    /// Global emir tavan fiyatı — strateji içi proaktif clamp için.
-    pub max_price: f64,
-    /// Averaging cooldown (ms) — bot config'den gelir; ilerideki averaging mantığı için.
-    pub cooldown_threshold: u64,
-}
-
-/// Faz 14'te doldurulacak. Şu anda herhangi bir aksiyon üretmez.
-pub fn decide(state: DutchBookState, _ctx: &DutchBookContext) -> (DutchBookState, Decision) {
-    tracing::warn!("dutch_book stratejisi henüz implement edilmedi (strategies.md §1 TBD)");
-    (state, Decision::NoOp)
+/// Karar fonksiyonu — TBD; şimdilik no-op döndürür.
+///
+/// Aktif olmayan strateji `bot/ctx.rs::load`'da reddedildiği için bu fonksiyon
+/// runtime'da çağrılmaz; yalnız modül imzasının derlenebilirliğini garanti eder.
+pub fn decide(_state: DutchBookState) -> (DutchBookState, Decision) {
+    (DutchBookState::Done, Decision::NoOp)
 }

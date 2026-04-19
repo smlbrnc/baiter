@@ -36,6 +36,11 @@ pub struct GammaMarket {
     pub closed: Option<bool>,
     #[serde(default, rename = "acceptingOrders")]
     pub accepting_orders: Option<bool>,
+    /// `negRisk` true ise Polymarket NegRisk Exchange & Adapter sözleşmesine
+    /// gönderilir; false ise standart Exchange. EIP-712 verifying_contract
+    /// seçimini doğrudan etkiler.
+    #[serde(default, rename = "negRisk")]
+    pub neg_risk: Option<bool>,
 }
 
 impl GammaMarket {
@@ -83,24 +88,4 @@ impl GammaClient {
         Ok(m)
     }
 
-    /// Aktif market listesi (öneki ile filtreli).
-    /// `GET /markets?active=true&closed=false` → slug öneki ile filtre.
-    pub async fn list_active_by_prefix(
-        &self,
-        slug_prefix: &str,
-    ) -> Result<Vec<GammaMarket>, AppError> {
-        let url = format!("{}/markets?active=true&closed=false&limit=500", self.base);
-        let markets: Vec<GammaMarket> = self
-            .http
-            .get(&url)
-            .send()
-            .await?
-            .error_for_status()?
-            .json()
-            .await?;
-        Ok(markets
-            .into_iter()
-            .filter(|m| m.slug.starts_with(slug_prefix))
-            .collect())
-    }
 }

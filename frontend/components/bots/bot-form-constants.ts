@@ -6,6 +6,8 @@ export const STRATEGY_OPTIONS: {
   id: Strategy;
   label: string;
   description: string;
+  /** Backend `bot/ctx.rs::load` aktif olmayan stratejiyle bot'u başlatmaz. */
+  disabled?: boolean;
 }[] = [
   {
     id: "harvest",
@@ -14,13 +16,15 @@ export const STRATEGY_OPTIONS: {
   },
   {
     id: "dutch_book",
-    label: "Dutch book",
-    description: "İki taraflı defter ve dengeleyici emir mantığı.",
+    label: "Dutch book (TBD)",
+    description: "İki taraflı defter ve dengeleyici emir mantığı — yakında.",
+    disabled: true,
   },
   {
     id: "prism",
-    label: "Prism",
-    description: "Sinyal ve ağırlıklarla ince ayarlı model.",
+    label: "Prism (TBD)",
+    description: "Sinyal ve ağırlıklarla ince ayarlı model — yakında.",
+    disabled: true,
   },
 ];
 
