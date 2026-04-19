@@ -8,7 +8,7 @@ use tokio::fs;
 use tokio::time::interval;
 
 use crate::binance::{self, SharedSignalState};
-use crate::polymarket::clob::ClobClient;
+use crate::polymarket::ClobClient;
 use crate::slug::Interval;
 use crate::time::now_ms;
 

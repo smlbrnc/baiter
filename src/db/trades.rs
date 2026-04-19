@@ -5,6 +5,8 @@ use sqlx::SqlitePool;
 
 use crate::error::AppError;
 
+use super::spawn_db;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TradeRecord {
     pub trade_id: String,
@@ -23,6 +25,12 @@ pub struct TradeRecord {
     pub fee: f64,
     pub ts_ms: i64,
     pub raw_payload: Option<String>,
+}
+
+/// Fire-and-forget kalıbı (§⚡ Kural 4).
+pub fn persist_trade(pool: &SqlitePool, record: TradeRecord, label: &'static str) {
+    let pool = pool.clone();
+    spawn_db(label, async move { upsert_trade(&pool, &record).await });
 }
 
 pub async fn upsert_trade(pool: &SqlitePool, r: &TradeRecord) -> Result<(), AppError> {
@@ -55,4 +63,55 @@ pub async fn upsert_trade(pool: &SqlitePool, r: &TradeRecord) -> Result<(), AppE
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// User WS `trade` event payload'ından satır üretmek için input bag.
+pub struct WsTradeInput<'a> {
+    pub bot_id: i64,
+    pub market_session_id: i64,
+    pub trade_id: String,
+    pub market: String,
+    pub asset_id: String,
+    pub side: Option<String>,
+    pub outcome: Option<String>,
+    pub size: f64,
+    pub price: f64,
+    pub status: String,
+    pub fee: f64,
+    pub ts_ms: i64,
+    pub raw: &'a serde_json::Value,
+}
+
+impl TradeRecord {
+    pub fn from_user_ws(input: WsTradeInput<'_>) -> Self {
+        let taker_order_id = input
+            .raw
+            .get("taker_order_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let maker_orders = input.raw.get("maker_orders").map(|v| v.to_string());
+        let trader_side = input
+            .raw
+            .get("trader_side")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        Self {
+            trade_id: input.trade_id,
+            bot_id: input.bot_id,
+            market_session_id: Some(input.market_session_id),
+            market: Some(input.market),
+            asset_id: Some(input.asset_id),
+            taker_order_id,
+            maker_orders,
+            trader_side,
+            side: input.side,
+            outcome: input.outcome,
+            size: input.size,
+            price: input.price,
+            status: input.status,
+            fee: input.fee,
+            ts_ms: input.ts_ms,
+            raw_payload: Some(input.raw.to_string()),
+        }
+    }
 }

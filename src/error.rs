@@ -30,9 +30,6 @@ pub enum AppError {
     #[error("config: {0}")]
     Config(String),
 
-    #[error("strategy: {0}")]
-    Strategy(String),
-
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 

@@ -32,14 +32,6 @@ pub fn log_line(bot_label: &str, msg: impl AsRef<str>) {
     let _ = h.flush();
 }
 
-/// `log_line` makro — `format!` benzeri kullanım için.
-#[macro_export]
-macro_rules! log_line {
-    ($label:expr, $($arg:tt)*) => {
-        $crate::ipc::log_line($label, format!($($arg)*))
-    };
-}
-
 /// Supervisor → frontend SSE ile taşınan event tipleri.
 ///
 /// `serde_json` ile tek satırda (newline'sız) serialize edilir.
@@ -75,7 +67,8 @@ pub enum FrontendEvent {
         winning_outcome: String,
         ts_ms: u64,
     },
-    /// Emir gönderildi (POST /order döndü).
+    /// Emir gönderildi (POST /order döndü). `status` "matched" (taker fill)
+    /// veya "live" (orderbook'a yerleşti).
     OrderPlaced {
         bot_id: i64,
         order_id: String,
@@ -84,6 +77,7 @@ pub enum FrontendEvent {
         price: f64,
         size: f64,
         order_type: String,
+        status: String,
         ts_ms: u64,
     },
     /// Emir iptal edildi.
@@ -126,14 +120,6 @@ pub enum FrontendEvent {
         bsi: f64,
         ofi: f64,
         cvd: f64,
-        ts_ms: u64,
-    },
-    /// Strateji FSM geçişi
-    /// (örn. `Pending → OpenDual{deadline}`, `OpenDual → SingleLeg{Up}`,
-    /// `SingleLeg → ProfitLock`, `ProfitLock → Done`).
-    StateChanged {
-        bot_id: i64,
-        state: String,
         ts_ms: u64,
     },
     /// Genel hata / uyarı.
@@ -182,6 +168,7 @@ mod tests {
             price: 0.57,
             size: 10.0,
             order_type: "GTC".into(),
+            status: "live".into(),
             ts_ms: 1_766_789_469_958,
         };
         let json = serde_json::to_string(&ev).unwrap();

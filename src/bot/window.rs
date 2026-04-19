@@ -15,8 +15,7 @@ use crate::db;
 use crate::engine::{Executor, MarketSession};
 use crate::error::AppError;
 use crate::ipc::{self, FrontendEvent};
-use crate::polymarket::gamma::GammaMarket;
-use crate::polymarket::ws::{run_market_ws, run_user_ws, PolymarketEvent};
+use crate::polymarket::{run_market_ws, run_user_ws, GammaMarket, PolymarketEvent};
 use crate::slug::SlugInfo;
 use crate::time::{now_secs, t_minus_15};
 
@@ -111,12 +110,16 @@ async fn prepare_window(
         ctx,
         slug,
         &market,
-        &yes_id,
-        &no_id,
-        &condition_id,
-        start_ts,
-        end_ts,
-        session_id,
+        SessionTokens {
+            yes_id: &yes_id,
+            no_id: &no_id,
+            condition_id: &condition_id,
+        },
+        SessionWindow {
+            start_ts,
+            end_ts,
+            market_session_id: session_id,
+        },
     );
 
     ipc::emit(&FrontendEvent::SessionOpened {
@@ -211,7 +214,7 @@ async fn run_trading_loop(
             _ = sigterm.recv() => return Some("sigterm"),
             _ = sigint.recv()  => return Some("sigint"),
             Some(ev) = ev_rx.recv() => {
-                event::handle_event(&mut sess, &ctx.pool, ctx.bot_id, ctx.cfg.run_mode, ev).await;
+                event::handle_event(&mut sess, &ctx.pool, ctx.bot_id, ctx.cfg.run_mode, ev);
             }
             _ = tick_timer.tick() => tick::tick(ctx, &mut sess).await,
             _ = zone_timer.tick() => {
@@ -290,28 +293,35 @@ async fn wait_for_t_minus_15(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+struct SessionTokens<'a> {
+    yes_id: &'a str,
+    no_id: &'a str,
+    condition_id: &'a str,
+}
+
+struct SessionWindow {
+    start_ts: u64,
+    end_ts: u64,
+    market_session_id: i64,
+}
+
 fn build_session(
     ctx: &Ctx,
     slug: SlugInfo,
     market: &GammaMarket,
-    yes_id: &str,
-    no_id: &str,
-    condition_id: &str,
-    start_ts: u64,
-    end_ts: u64,
-    market_session_id: i64,
+    tokens: SessionTokens<'_>,
+    window: SessionWindow,
 ) -> MarketSession {
     MarketSession {
-        yes_token_id: yes_id.to_string(),
-        no_token_id: no_id.to_string(),
-        condition_id: condition_id.to_string(),
+        yes_token_id: tokens.yes_id.to_string(),
+        no_token_id: tokens.no_id.to_string(),
+        condition_id: tokens.condition_id.to_string(),
         tick_size: market.tick_size.unwrap_or(0.01),
         api_min_order_size: market.minimum_order_size.unwrap_or(5.0),
         neg_risk: market.neg_risk.unwrap_or(false),
-        start_ts,
-        end_ts,
-        market_session_id,
+        start_ts: window.start_ts,
+        end_ts: window.end_ts,
+        market_session_id: window.market_session_id,
         ..MarketSession::new(ctx.bot_id, slug.to_slug(), &ctx.cfg)
     }
 }

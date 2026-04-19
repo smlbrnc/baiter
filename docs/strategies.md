@@ -45,6 +45,8 @@ açık** averaging GTC'sinin maksimum yaşam süresi (geçen iptal edilir).
 
 ## 1. `dutch_book`
 
+> **Kod durumu:** `src/strategy/dutch_book.rs` şu an yer tutucu; bot başlatma `Strategy::Harvest` dışını `src/bot/ctx.rs` içinde reddeder. Aşağıdaki tablolar tasarım notudur.
+
 ### Binance Sinyali Etkisi
 
 `dutch_book`'ta sinyal **hem pozisyon boyutunu hem yön doğrulamasını** etkiler.
@@ -64,7 +66,7 @@ açık** averaging GTC'sinin maksimum yaşam süresi (geçen iptal edilir).
 
 | Bölge | `zone_pct` aralığı | `binance_signal` aktif |
 |---|---|:---:|
-| `DeepTrade` | 0 – 10 % | TBD |
+| `DeepTrade` | 0 – 10 % | TBD (strateji yok) |
 | `NormalTrade` | 10 – 50 % | TBD |
 | `AggTrade` | 50 – 90 % | TBD |
 | `FakTrade` | 90 – 97 % | TBD |
@@ -107,7 +109,7 @@ Emir boyutu `order_usdc` ile kontrol edilir — platform geneli kuralı bkz. yuk
 
 > **OpenDual fiyatı sinyalden türetilir** (aşağıda *Giriş — OpenDual* bölümüne bakın). `up_bid` / `down_bid` artık konfigürasyonda yer almaz; her ikisi de `tick_size` katına snap edilir. Averaging GTC fiyatı `first_best_leg` orderbook'tan geldiği için doğal olarak geçerlidir.
 >
-> **`cooldown_threshold`** (averaging GTC'leri arasındaki minimum bekleme) tüm stratejilerin paylaştığı sabit `30_000 ms`'dir; bkz. [bot-platform-mimari.md §15](bot-platform-mimari.md#15).
+> **`cooldown_threshold`** (averaging GTC'leri arasındaki minimum bekleme + GTD süresi kaynağı) tüm stratejiler için **`BotConfig` alanıdır**; API varsayılanı `30_000 ms` (`POST /api/bots` `cooldown_threshold`). bkz. [bot-platform-mimari.md §15](bot-platform-mimari.md#15).
 
 ### Tanımlar
 
@@ -163,7 +165,7 @@ Emir boyutu `order_usdc` ile kontrol edilir — platform geneli kuralı bkz. yuk
 ### Giriş — OpenDual (sinyal güdümlü, simetrik fiyat)
 
 - **Tetik:** `Pending` durumunda her tick. **Önkoşul:** `yes_best_bid > 0 && no_best_bid > 0` (market book quote'u gelmiş olmalı, DryRun passive-fill simulator best_ask isteyecek). Quote yoksa `Pending` korunur, log basılmaz.
-- **Endpoint:** `POST /orders` (batch) — YES ve NO emirleri tek request'te.
+- **Endpoint:** İki ayrı **`POST /order`** — `Decision::PlaceOrders` iki `PlannedOrder` döner; `engine::executor::place_batch` bunları **sırayla** yürütür (CLOB batch `/orders` kullanılmaz).
 - **Fiyatlama** (`s = effective_score ∈ [0, 10]`, nötr 5):
 
   ```
@@ -193,10 +195,7 @@ Emir boyutu `order_usdc` ile kontrol edilir — platform geneli kuralı bkz. yuk
 
 **`dual_timeout` sayacı:** Emirler gönderildiği tick'te `deadline_ms = now_ms + dual_timeout` saklanır. Sonraki her tick'te fill durumu ve `now_ms ≥ deadline_ms` kontrolü yapılır (yukarıdaki *Durum Makinesi* dallarına bakın).
 
-**`POST /orders` kısmi başarısızlık:** Batch yanıtında bir emir `success: false` dönerse:
-- Başarılı olan GTC defterde bırakılır, iptal edilmez.
-- Başarısız emrin `errorMsg`'i logu yazılır.
-- Başarılı emir fill olduğunda + timeout dolduğunda bot **[SingleLeg]**'e geçer.
+**Kısmi başarısızlık (ilk emir OK, ikinci `POST /order` hata):** İkinci çağrı `AppError::Clob` ile döngüyü kesebilir; ilk bacakta oluşan açık GTC defterde kalır. Operasyonel olarak log + User WS `order` ile durum izlenir; bir sonraki tick'te FSM yeniden değerlendirilir.
 
 ### Averaging (SingleLeg döngüsü)
 
@@ -257,11 +256,11 @@ Sinyal iki yerde etkilidir:
 
 | Bölge | `zone_pct` aralığı | `binance_signal` aktif |
 |---|---|:---:|
-| `DeepTrade` | 0 – 10 % | TBD |
-| `NormalTrade` | 10 – 50 % | TBD |
-| `AggTrade` | 50 – 90 % | TBD |
-| `FakTrade` | 90 – 97 % | TBD |
-| `StopTrade` | 97 – 100 % | — |
+| `DeepTrade` | 0 – 10 % | Evet (`ZoneSignalMap::HARVEST.0[0]`) |
+| `NormalTrade` | 10 – 50 % | Evet |
+| `AggTrade` | 50 – 90 % | Evet |
+| `FakTrade` | 90 – 97 % | Evet |
+| `StopTrade` | 97 – 100 % | Hayır (`src/strategy.rs`) |
 
 ### Bölge Bazlı Emir Kısıtları
 
@@ -323,6 +322,8 @@ T+1s   [Fill×2]      avg_YES=0.58, avg_NO=0.45 → AVG_SUM=1.03 > 0.98 ✗
 
 ## 3. `prism`
 
+> **Kod durumu:** `src/strategy/prism.rs` yer tutucu; bot başlatmada yalnız `harvest` seçilebilir (`src/bot/ctx.rs`).
+
 ### Binance Sinyali Etkisi
 
 `prism`'de sinyal **giriş zamanlamasını ve eşiğini** etkiler; pozisyon boyutunu doğrudan ölçeklemez.
@@ -342,7 +343,7 @@ T+1s   [Fill×2]      avg_YES=0.58, avg_NO=0.45 → AVG_SUM=1.03 > 0.98 ✗
 
 | Bölge | `zone_pct` aralığı | `binance_signal` aktif |
 |---|---|:---:|
-| `DeepTrade` | 0 – 10 % | TBD |
+| `DeepTrade` | 0 – 10 % | TBD (strateji yok) |
 | `NormalTrade` | 10 – 50 % | TBD |
 | `AggTrade` | 50 – 90 % | TBD |
 | `FakTrade` | 90 – 97 % | TBD |
@@ -352,4 +353,4 @@ T+1s   [Fill×2]      avg_YES=0.58, avg_NO=0.45 → AVG_SUM=1.03 > 0.98 ✗
 
 ---
 
-*Strateji parametreleri (`scale_up`, eşik değerleri, `signal_weight` varsayılanları), bölge haritası `true`/`false` değerleri ve tam formüller implementasyon sırasında netleştirilir.*
+*Strateji parametreleri (`scale_up`, eşik değerleri, `signal_weight` varsayılanları) ve `dutch_book` / `prism` bölge haritaları uygulama ilerledikçe netleştirilir. `harvest` için bölge→sinyal matrisi kodda sabittir: `ZoneSignalMap::HARVEST` (`src/strategy.rs`).*

@@ -20,19 +20,11 @@ pub struct PnlSnapshot {
     pub ts_ms: i64,
 }
 
-#[allow(clippy::too_many_arguments)]
 pub async fn insert_pnl_snapshot(
     pool: &SqlitePool,
     bot_id: i64,
     market_session_id: i64,
-    cost_basis: f64,
-    fee_total: f64,
-    shares_yes: f64,
-    shares_no: f64,
-    pnl_if_up: f64,
-    pnl_if_down: f64,
-    mtm_pnl: f64,
-    pair_count: f64,
+    snap: &PnlSnapshot,
 ) -> Result<(), AppError> {
     sqlx::query(
         "INSERT INTO pnl_snapshots (bot_id, market_session_id, cost_basis, fee_total, \
@@ -41,14 +33,14 @@ pub async fn insert_pnl_snapshot(
     )
     .bind(bot_id)
     .bind(market_session_id)
-    .bind(cost_basis)
-    .bind(fee_total)
-    .bind(shares_yes)
-    .bind(shares_no)
-    .bind(pnl_if_up)
-    .bind(pnl_if_down)
-    .bind(mtm_pnl)
-    .bind(pair_count)
+    .bind(snap.cost_basis)
+    .bind(snap.fee_total)
+    .bind(snap.shares_yes)
+    .bind(snap.shares_no)
+    .bind(snap.pnl_if_up)
+    .bind(snap.pnl_if_down)
+    .bind(snap.mtm_pnl)
+    .bind(snap.pair_count)
     .bind(now_ms() as i64)
     .execute(pool)
     .await?;

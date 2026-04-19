@@ -31,7 +31,7 @@ User WebSocket **`order`** ve **`trade`** ile **`POST /order`** / **`DELETE /ord
 ### Tahmin ve API dışı ikame yok
 
 - Polymarket’tan gelmeyen bir sonucu **tahmin eden**, **Gamma ile “tamamlayan”** veya **uydurma alanlarla ikame eden** akışlar tanımlanmaz (REST/WS **alternatifi üretmez**).
-- **Kimlik çözümleme (ürün):** Önce bot ayarı, yoksa `.env` — yalnızca **kimlik** içindir; **API yanıtına** ikinci bir kaynak gibi davranmaz.
+- **Kimlik çözümleme (ürün):** **Live** modda yalnızca SQLite `bot_credentials` (bot oluştururken veya API ile yazılan satır); `.env` içindeki `POLY_*` değerleri bot süreci tarafından okunmaz. **DryRun** kimlik istemez. Bu yalnızca **kimlik** içindir; **API yanıtına** ikinci bir kaynak gibi davranmaz.
 
 ### `market_resolved` gecikmesi ve yeniden deneme (5+5+10)
 
@@ -139,8 +139,7 @@ tokio::spawn(async move {
     logger.write_order_line(&resp).await;
 });
 
-// Frontend push: hemen
-frontend_tx.send(FrontendEvent::OrderPlaced(resp));
+// Frontend push: ayrı coroutine / ipc::emit (stdout [[EVENT]]) — tick ve WS yollarında
 ```
 
 ### Kural 5 — Frontend'e Anlık Push
@@ -164,7 +163,7 @@ Frontend 1 sn polling ile özet verileri okur (§2); ancak **kritik olaylar (emi
 
 - Prefix (`[[EVENT]] `) regular log satırlarından ayırmak için zorunlu.
 - JSON tek satır (newline-delimited); büyük payload yok.
-- Bot bu satırı `tokio::spawn` ile arka plan işi değil, **inline `println!` ile emir yanıtından hemen sonra** yazar.
+- Bot bu satırı `tokio::spawn` ile arka plan işi değil, **`ipc::emit` (stdout'a `[[EVENT]]` + `serde_json`) ile kritik olaydan hemen sonra** yazar (`src/ipc.rs`).
 
 **Supervisor tarafı (parse + broadcast):**
 
@@ -174,7 +173,7 @@ Frontend 1 sn polling ile özet verileri okur (§2); ancak **kritik olaylar (emi
 │    strategy decision → POST /order → yanıt alındı               │
 │         │                                                       │
 │         ├── tokio::spawn(db.upsert_order(...))       (Kural 4)  │
-│         └── println!("[[EVENT]] {\"kind\":\"OrderPlaced\",...")  │
+│         └── ipc::emit(&FrontendEvent::…)  // stdout [[EVENT]] JSON │
 │                             │                                   │
 └─────────────────────────────┼───────────────────────────────────┘
                               │ stdout pipe (ChildStdout)
@@ -198,23 +197,30 @@ Frontend 1 sn polling ile özet verileri okur (§2); ancak **kritik olaylar (emi
                           frontend useSSE hook
 ```
 
-**Toplam gecikme hedefi:** < 5 ms (bot println → frontend EventSource onmessage).
+**Toplam gecikme hedefi:** < 5 ms (bot stdout `[[EVENT]]` → supervisor parse → SSE → tarayıcı `EventSource`).
 
 #### 5.2 `FrontendEvent` Varyantları
 
-Supervisor'un `broadcast` kanalında taşıdığı ve SSE ile frontend'e ilettiği event türleri:
+Kaynak: `src/ipc.rs`. Supervisor `broadcast` kanalına parse edilen event'i koyar; `GET /api/events` SSE ile iletir. TypeScript aynası: `frontend/lib/types.ts`.
 
-| Varyant | Tetiklenme | Alanlar |
+| Varyant | Tetiklenme (özet) | Alanlar (özet) |
 |---|---|---|
-| `OrderPlaced` | POST /order yanıtı alındıktan hemen sonra | `bot_id, order_id, order_type, side, price, size, ts_ms` |
-| `Fill` | User WS `trade` event'i (MATCHED + sonraki status güncellemeleri) | `bot_id, trade_id, size, price, outcome, status, ts_ms` |
-| `PnLUpdate` | Yalnız MATCHED trade sonrası (cost_basis/shares değişince) | `bot_id, session_id, pnl_if_up, pnl_if_down, ts_ms` |
-| `BotStateChanged` | Supervisor spawn/crash/stop | `bot_id, state (RUNNING/STOPPED/FAILED)` |
-| `BestBidAsk` | Market WS `best_bid_ask` (opsiyonel, chart için) | `bot_id, side (YES/NO), best_bid, best_ask, spread, ts_ms` |
+| `BotStarted` | Bot süreci ayakta; pencere döngüsü başlarken | `bot_id, name, slug, ts_ms` |
+| `BotStopped` | SIGTERM/SIGINT sonrası graceful çıkış | `bot_id, ts_ms, reason` |
+| `SessionOpened` | Yeni Gamma penceresi bağlandı | `bot_id, slug, start_ts, end_ts, yes_token_id, no_token_id` |
+| `SessionResolved` | Market WS `market_resolved` işlendi | `bot_id, slug, winning_outcome, ts_ms` |
+| `OrderPlaced` | **Yalnızca** `POST /order` yanıtı anında **tam eşleşme** (`status=matched`) olduğunda (`src/bot/tick.rs`) | `bot_id, order_id, outcome, side, price, size, order_type, ts_ms` |
+| `OrderCanceled` | Şema için tanımlı; şu an emit yok | `bot_id, order_id, ts_ms` |
+| `Fill` | User WS `trade` (MATCHED ve sonraki statuslar) | `bot_id, trade_id, outcome, price, size, status, ts_ms` |
+| `BestBidAsk` | Herhangi bir token için `best_bid_ask` geldikten sonra oturumun **birleşik** kotasyonu | `bot_id, yes_best_bid/ask, no_best_bid/ask, ts_ms` |
+| `ZoneChanged` | ~5 sn zone görevinde bölge değişimi | `bot_id, zone, zone_pct, ts_ms` |
+| `SignalUpdate` | Aynı cadencede Binance türev skor | `bot_id, symbol, signal_score, bsi, ofi, cvd, ts_ms` |
+| `StateChanged` | Şema için tanımlı; şu an emit yok | `bot_id, state, ts_ms` |
+| `Error` | Bot hata yolu | `bot_id, message, ts_ms` |
 
-**Push edilmeyenler:**
-- `mtm_pnl` değişimleri → §17 kuralına göre 1 sn polling ile okunur (her `best_bid_ask` event'inde push frontend'i boğar).
-- Orderbook `book` snapshot'ları → frontend göstermediği için push edilmez; yalnız DB'ye yazılır.
+**Push edilmeyenler / polling:**
+- **`mtm_pnl` ve tam PnL özeti** → `GET /api/bots/{id}/pnl` (SQLite `pnl_snapshots` son satırı); anlık push yok. Snapshot bot tarafında periyodik yazılır (`src/bot/persist.rs`, `window.rs` ~5 sn).
+- Orderbook `book` ham snapshot'ı SSE ile gönderilmez; metin log + oturum state güncellemesi.
 
 ### Kural 6 — WS Okuyucu Önceliği
 
@@ -249,16 +255,16 @@ Kullanıcı yeni bot oluştururken **hangi event/metin (ör. “BTC 15dk”)** v
 
 ### Kimlik ve cüzdan
 
-- **Bot başına:** Kayıtta **Polymarket kimlik bilgisi** (API key seti, adres, private key vb.) **tanımlıysa** yalnızca **o bot** için bu değerler kullanılır; emir ve trade bu kimlikle yapılır.
-- **Tanımlı değilse** sunucu `.env` varsayılanı kullanılır.
-- **Tek `.env` ile çoklu bot:** Aynı ortam dosyasından beslenen birden fazla bot oluşturulabilir; kimlik çakışması olmaması için **bot başına ayrı key** tanımlamak üretimde tercih edilir. Ayarlarda key verilmiş botlar **yalnızca config’teki** değerlerle trade eder.
+- **Bot başına (Live):** Polymarket kimlik bilgisi **yalnızca** `bot_credentials` satırından okunur (`src/bot/ctx.rs::load_validated_creds`). Kayıt yoksa `AppError::MissingCredentials`.
+- **DryRun:** Credential gerekmez; CLOB çağrıları simülatöre gider.
+- **Çoklu bot:** Her bot için ayrı credential satırı üretimde zorunlu sayılır (aynı anahtarla çoklu süreç çakışması riski).
 
 #### Credential saklama politikası
 
 Per-bot kimlik bilgileri **SQLite `bot_credentials` tablosunda plaintext** olarak tutulur (şema için bkz. §9a):
 
-- Frontend bot oluşturma formundan girilen `poly_address`, `poly_api_key`, `poly_passphrase`, `poly_secret`, `polygon_private_key` bu tabloya yazılır.
-- Bot başlatılırken öncelik sırası: (1) `bot_credentials` tablosundaki bot-spesifik kayıt; (2) `.env` fallback (POLY_ADDRESS, POLY_API_KEY, POLY_PASSPHRASE, POLY_SECRET, POLYGON_PRIVATE_KEY).
+- `POST /api/bots` isteğindeki `credentials` veya UI formu bu tabloya yazılır (`src/db/credentials.rs`).
+- **Live** başlatmada yalnız bu tablo sorgulanır; `.env` **fallback yoktur** (`.env.example` içindeki `POLY_*` satırları gelecekte başka araçlar için not olabilir, bot binary bunları okumaz).
 - Bir bot silindiğinde `ON DELETE CASCADE` ile credential kaydı da silinir.
 
 **Güvenlik notu:** `polygon_private_key` **plaintext** saklanır — tehdit modeli lokal geliştirme / tek kullanıcılı sunucu senaryosudur. Üretimde ek önlemler gerekir:
@@ -286,7 +292,7 @@ Per-bot kimlik bilgileri **SQLite `bot_credentials` tablosunda plaintext** olara
 
 ### Süreç mimarisi (supervisor / denetleyici)
 
-**Yönetim:** Supervisor, **systemd servis birimi değildir** — Rust içinde çalışan **ana süreçtir** (`main.rs`). Bot işlemleri `std::process::Command` (veya `tokio::process::Command`) ile alt süreç olarak başlatılır; supervisor `stdin`/`stdout` uçlarını veya Unix domain socket'ı tutmaz, yalnızca **PID** ve **çıkış kodunu** izler.
+**Yönetim:** Supervisor, **systemd servis birimi değildir** — Rust içinde çalışan **ana süreçtir** (`src/bin/supervisor.rs`). Bot işlemleri `tokio::process::Command` ile alt süreç olarak başlatılır; supervisor `stdin`/`stdout` uçlarını veya Unix domain socket'ı tutmaz, **stdout pipe** üzerinden log + `[[EVENT]]` okur.
 
 **Genel topoloji:**
 ```
@@ -306,23 +312,23 @@ Supervisor süreci  ←─── SQLite (bot durumu, log, trade)
 
 | Durum | Kural |
 |-------|-------|
-| Bot beklenmedik çıkış (exit code ≠ 0) | Supervisor **exponential backoff** ile yeniden başlatır: `1s → 2s → 4s → 8s → …` |
-| Maksimum deneme | Ürün sabitler (ör. **5 deneme** ya da **toplam 60 s backoff**); aşılırsa bot `FAILED` olarak işaretlenir, log satırı yazılır, el ile `başlat` komutu gerekir |
-| Temiz durdurma (kullanıcı `durdur`) | Supervisor `SIGTERM` gönderir; bot açık emirleri temizler / heartbeat döngüsünü durdurur ve normal çıkar — crash loop sayacına **eklemez** |
+| Bot beklenmedik çıkış (exit code ≠ 0) | Supervisor **exponential backoff** ile yeniden başlatır: `1s → 2s → 4s → 8s → …` (üst sınır **60 sn** bekleme) — `src/supervisor.rs::run_bot_with_backoff` |
+| Maksimum deneme | **Sabitlenmemiştir**; backoff tavanına ulaşınca süre 60 sn'de kalır ve denemeler sürer. `FAILED` state yok; kullanıcı `stop` ile keser. |
+| Temiz durdurma (kullanıcı `durdur`) | Supervisor shutdown kanalı + `stop_bot`; bot tarafında SIGTERM ile graceful çıkış — crash backoff ile karışmaz |
 | Market penceresi bitti, normal geçiş | Bot **çıkmaz** — iç döngü sonraki markete geçer; supervisor bu durumu izlemez (PID hâlâ aktif) |
 
-**Sağlık (health) mekanizması:**
+**Sağlık (health) mekanizması (mevcut kod):**
 
-- **Heartbeat dosyası:** Her bot belirli aralıkta (ör. 5 s) **paylaşımlı dizindeki** `bots/<id>.heartbeat` dosyasını günceller (`mtime` yeterlidir). Supervisor `mtime` değerini okur; **belirli eşiği** (ör. 15 s) aşan bot sağlıksız kabul edilir ve crash loop kuralı tetiklenir.
-- **Alternatif (SQLite):** Bot son aktif zamanını `bots` tablosuna yazar; supervisor periyodik sorgu ile kontrol eder. Bu mimari ek IPC gerektirmez.
-- **HTTP health endpoint:** Bot kendi HTTP ucu açmaz — supervisor `/api/bots/{id}/status` ile bot'un `RUNNING / FAILED / STOPPED` durumunu SQLite'tan okur ve frontend'e döner.
+- **Heartbeat dosyası:** Bot `HEARTBEAT_DIR/{bot_id}.heartbeat` dosyasına ~5 sn'de bir unix-ms yazar (`src/bot/tasks.rs::heartbeat_task`). **Supervisor şu an bu dosyayı okuyarak watchdog uygulamaz** — tasarım notu olarak kalır.
+- **`bots.state`:** SQLite'ta `RUNNING` / `STOPPED` (`FAILED` kullanılmıyor). Temiz çıkışta `STOPPED` yazılır; crash döngüsünde süreç yeniden spawn edilirken state pratikte `RUNNING` kalabilir.
+- **HTTP:** `GET /api/health` → `"ok"`; bot ayrı port açmaz. Bot satırı `/api/bots` JSON'undaki `state` alanından izlenir (`/api/bots/{id}/status` ucu yok).
 
 **Komut → süreç akışı (frontend → bot):**
 
 | Frontend komutu | Supervisor davranışı |
 |-----------------|----------------------|
-| `POST /api/bots/{id}/start` | PID yoksa `Command::spawn`; PID varsa hata |
-| `POST /api/bots/{id}/stop` | PID'e `SIGTERM`; belirli süre sonra hâlâ çalışıyorsa `SIGKILL` |
+| `POST /api/bots/{id}/start` | Çocuk süreç yoksa spawn; zaten çalışıyorsa **no-op** (`202 Accepted`) |
+| `POST /api/bots/{id}/stop` | Shutdown sinyali; bot süreci SIGTERM ile graceful kapanır (`src/bot/shutdown.rs`) |
 | `DELETE /api/bots/{id}` | Önce `stop`, ardından kayıt ve log temizliği |
 
 **Loglama akışı:** Bot `stdout`'u supervisor'un `tokio::process::ChildStdout` akışına bağlıdır; supervisor satırları okuyup SQLite `logs` tablosuna (bot_id + timestamp + satır) yazar — frontend bu tablodan sayfalı veya SSE akışıyla okur. Bot kendi başına log dosyası **açmaz**.
@@ -463,7 +469,7 @@ Her bot için, hangi strateji kullanılırsa kullanılsın, **tüm planlanan emi
 | `min_price` | `0.05`  | `(0, max_price)`    | Bu fiyatın **altındaki** emir reject |
 | `max_price` | `0.95`  | `(min_price, 1)`    | Bu fiyatın **üstündeki** emir reject |
 
-**Engine guard** ([`src/engine.rs::execute()`](../src/engine.rs)) — her
+**Engine guard** ([`src/engine/executor.rs::execute()`](../src/engine/executor.rs)) — her
 `PlaceOrders`/`Batch.place` döngüsünde fiyat kontrolü:
 
 ```rust
@@ -950,7 +956,7 @@ Kalıcı emir izi **User WS `order`** ve **`POST /order`** / **`DELETE /order`**
 
 ## 9a. SQLite — `bot_credentials` (per-bot kimlik saklama)
 
-Frontend'den girilen Polymarket credential'ları bot başına bu tabloda tutulur. §1 "Kimlik ve cüzdan" altındaki öncelik sırası: bu tablodaki kayıt → `.env` fallback.
+Frontend / `POST /api/bots` ile girilen Polymarket credential'ları bot başına bu tabloda tutulur. **Live** başlatmada yalnız bu tablo okunur (`.env` fallback yok).
 
 ```sql
 CREATE TABLE bot_credentials (
@@ -985,7 +991,7 @@ CREATE TABLE bot_credentials (
 SELECT * FROM bot_credentials WHERE bot_id = ?;
 ```
 
-Bot başlatılırken bu sorgu çalıştırılır; sonuç boşsa `.env` okunur.
+Bot başlatılırken bu sorgu çalıştırılır; sonuç boşsa Live modda `MissingCredentials` ile başlatma reddedilir.
 
 **Güvenlik:** bkz. §1 "Credential saklama politikası" — plaintext saklama gerekçesi ve OS düzeyi koruma önerileri.
 
@@ -1557,14 +1563,12 @@ impl MarketPnL {
 }
 ```
 
-### Frontend API Uç Noktası
+### Frontend API Uç Noktası (PnL)
 
-`GET /api/bots/{id}/markets/{session_id}/pnl` — supervisor, bot'un in-memory `MarketPnL` durumunu SQLite'taki son fill ozeti ile birleştirerek döndürür:
+`GET /api/bots/{id}/pnl` — SQLite `pnl_snapshots` tablosundaki **en son** satırı döner (`src/api.rs::bot_pnl`). Bot süreci `src/bot/persist.rs::snapshot_pnl` ile ~5 sn aralıkla snapshot yazar (`window.rs` döngüsü).
 
 ```json
 {
-  "market_session_id": "...",
-  "slug": "btc-updown-5m-1776500700",
   "cost_basis":   4.72,
   "fee_total":    0.01,
   "shares_yes":   10.0,
@@ -1572,15 +1576,14 @@ impl MarketPnL {
   "pnl_if_up":    5.28,
   "pnl_if_down":  5.28,
   "mtm_pnl":      3.10,
-  "run_mode":     "live"
+  "pair_count":   10.0,
+  "ts_ms":        1766789469958
 }
 ```
 
-**Güncelleme kanalı (§⚡ Kural 5 uyumu):**
-- **MATCHED fill** (yani `pnl_if_up` / `pnl_if_down` değişimi) → SSE kanalı üzerinden frontend'e **anında push** edilir; polling beklenmez.
-- **`mtm_pnl`** (`best_bid_ask` event'lerinde sık güncellenir) → frontend §2'deki **1 sn polling** ile okur; her WS event'inde push gerekmez.
+**Güncelleme kanalı:** PnL snapshot için **SSE push yok**; frontend periyodik **polling** veya sayfa yenilemesi kullanır. **Fill** olayları ayrıca `Fill` SSE event'i ile gider (`src/bot/event.rs`).
 
-`run_mode = "dryrun"` ise tüm değerler simüle fill'lerden hesaplanır (gerçek likiditeyi yansıtmaz).
+`run_mode = "dryrun"` ise değerler simüle fill + kotasyonlardan hesaplanır.
 
 ### SQLite Kalıcılığı
 
@@ -1604,13 +1607,9 @@ Sistem davranışını değiştiren tüm ayar değerleri **çevre değişkenleri
 | `GAMMA_BASE_URL` | `https://gamma-api.polymarket.com` | Market keşif REST base URL |
 | `CLOB_BASE_URL` | `https://clob.polymarket.com` | CLOB REST base URL; staging için `https://clob-staging.polymarket.com` |
 | `POLYGON_CHAIN_ID` | `137` | EIP-712 domain chain ID (Polygon mainnet) |
-| `POLY_ADDRESS` | — | Fallback L1 address (bot-spesifik yoksa) |
-| `POLY_API_KEY` | — | Fallback L2 API key UUID |
-| `POLY_PASSPHRASE` | — | Fallback L2 passphrase |
-| `POLY_SECRET` | — | Fallback L2 secret (HMAC key) |
-| `POLYGON_PRIVATE_KEY` | — | Fallback L1 signing private key |
+| `POLY_ADDRESS` / `POLY_API_KEY` / … | — | **Bot süreci tarafından okunmaz** (`.env.example` notu / gelecek araçlar). Live kimlik yalnız `bot_credentials`. |
 
-**Kimlik çözümleme önceliği:** Bot başlatılırken önce SQLite `bot_credentials` tablosundan bot-spesifik kayıt okunur (§9a); yoksa yukarıdaki `POLY_*` / `POLYGON_PRIVATE_KEY` fallback değerleri kullanılır. Her iki kaynak da boşsa bot başlatılamaz (`AppError::MissingCredentials`).
+**Kimlik çözümleme:** `RunMode::Live` → `db::get_credentials` zorunlu; yoksa `AppError::MissingCredentials` (`src/bot/ctx.rs`).
 
 **Runtime path override:** Docker, systemd veya farklı deployment senaryolarında `DB_PATH`, `BOT_BINARY`, `HEARTBEAT_DIR` override edilebilir; kod bu path'leri varsayılan yerine environment'tan okur.
 

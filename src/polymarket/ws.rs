@@ -12,6 +12,7 @@ use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TrySendError;
 use tokio::time::{interval, sleep};
 use tokio_tungstenite::tungstenite::Message;
 
@@ -157,18 +158,19 @@ async fn run_ws_loop(url: &str, subscription: Value, tx: mpsc::Sender<Polymarket
             }
             Err(e) => {
                 tracing::error!(url, error=%e, "ws error, reconnect in {backoff_secs}s");
-                let _ = tx
-                    .send(PolymarketEvent::Disconnected {
+                forward_event(
+                    &tx,
+                    PolymarketEvent::Disconnected {
                         reason: e.to_string(),
-                    })
-                    .await;
+                    },
+                );
                 was_disconnected = true;
             }
         }
         sleep(Duration::from_secs(backoff_secs)).await;
         if was_disconnected {
             // Yalnızca gerçek disconnect sonrası "tekrar bağlandık" sinyali yayılır.
-            let _ = tx.send(PolymarketEvent::Reconnected).await;
+            forward_event(&tx, PolymarketEvent::Reconnected);
             was_disconnected = false;
         }
         backoff_secs = (backoff_secs * 2).min(60);
@@ -211,15 +213,19 @@ async fn connect_and_stream(
                 };
                 match msg {
                     Message::Text(t) => {
-                        parse_and_dispatch(&t, tx).await;
+                        parse_and_dispatch(&t, tx);
                     }
                     Message::Binary(b) => {
                         if let Ok(s) = String::from_utf8(b.to_vec()) {
-                            parse_and_dispatch(&s, tx).await;
+                            parse_and_dispatch(&s, tx);
                         }
                     }
                     Message::Ping(p) => {
-                        let _ = write.send(Message::Pong(p)).await;
+                        // Pong gönderilemezse bağlantı zaten bozulmuş — döngüden
+                        // çık ve dış reconnect'e yetki ver.
+                        if write.send(Message::Pong(p)).await.is_err() {
+                            return Err(AppError::WebSocket("pong send failed".to_string()));
+                        }
                     }
                     Message::Close(_) => return Ok(()),
                     _ => {}
@@ -229,7 +235,7 @@ async fn connect_and_stream(
     }
 }
 
-async fn parse_and_dispatch(text: &str, tx: &mpsc::Sender<PolymarketEvent>) {
+fn parse_and_dispatch(text: &str, tx: &mpsc::Sender<PolymarketEvent>) {
     let trimmed = text.trim();
     if trimmed.is_empty()
         || trimmed == "{}"
@@ -252,10 +258,43 @@ async fn parse_and_dispatch(text: &str, tx: &mpsc::Sender<PolymarketEvent>) {
     };
     for item in items {
         if let Some(ev) = map_event(&item) {
-            if tx.send(ev).await.is_err() {
+            if !forward_event(tx, ev) {
                 return; // receiver dropped
             }
         }
+    }
+}
+
+/// ⚡ Kural 6: WS okuyucu mpsc kanalda asla bloke olmaz. `try_send` kullanır;
+/// kanal doluysa event drop edilir ve `tracing::warn!` ile sayılır (consumer
+/// taraflı yavaşlama göstergesi). Receiver dropped ise `false` döner ve
+/// caller döngüden çıkar.
+fn forward_event(tx: &mpsc::Sender<PolymarketEvent>, ev: PolymarketEvent) -> bool {
+    match tx.try_send(ev) {
+        Ok(()) => true,
+        Err(TrySendError::Full(dropped)) => {
+            tracing::warn!(
+                event_kind = event_kind_label(&dropped),
+                "ws event channel full, dropping event"
+            );
+            true
+        }
+        Err(TrySendError::Closed(_)) => false,
+    }
+}
+
+fn event_kind_label(ev: &PolymarketEvent) -> &'static str {
+    match ev {
+        PolymarketEvent::Book { .. } => "book",
+        PolymarketEvent::PriceChange { .. } => "price_change",
+        PolymarketEvent::BestBidAsk { .. } => "best_bid_ask",
+        PolymarketEvent::LastTradePrice { .. } => "last_trade_price",
+        PolymarketEvent::TickSizeChange { .. } => "tick_size_change",
+        PolymarketEvent::MarketResolved { .. } => "market_resolved",
+        PolymarketEvent::Order { .. } => "order",
+        PolymarketEvent::Trade { .. } => "trade",
+        PolymarketEvent::Disconnected { .. } => "disconnected",
+        PolymarketEvent::Reconnected => "reconnected",
     }
 }
 

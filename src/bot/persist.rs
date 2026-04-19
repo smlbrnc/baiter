@@ -19,21 +19,18 @@ pub fn snapshot_pnl(pool: &SqlitePool, sess: &MarketSession) {
     let bot_id = sess.bot_id;
     let market_session_id = sess.market_session_id;
     let pnl = sess.pnl();
-    let pair_count = sess.metrics.pair_count();
+    let snap = db::pnl::PnlSnapshot {
+        cost_basis: pnl.cost_basis,
+        fee_total: pnl.fee_total,
+        shares_yes: pnl.shares_yes,
+        shares_no: pnl.shares_no,
+        pnl_if_up: pnl.pnl_if_up,
+        pnl_if_down: pnl.pnl_if_down,
+        mtm_pnl: pnl.mtm_pnl,
+        pair_count: sess.metrics.pair_count(),
+        ts_ms: 0, // DB tarafı now_ms() kullanır.
+    };
     db::spawn_db("pnl_snapshot insert", async move {
-        db::pnl::insert_pnl_snapshot(
-            &pool,
-            bot_id,
-            market_session_id,
-            pnl.cost_basis,
-            pnl.fee_total,
-            pnl.shares_yes,
-            pnl.shares_no,
-            pnl.pnl_if_up,
-            pnl.pnl_if_down,
-            pnl.mtm_pnl,
-            pair_count,
-        )
-        .await
+        db::pnl::insert_pnl_snapshot(&pool, bot_id, market_session_id, &snap).await
     });
 }

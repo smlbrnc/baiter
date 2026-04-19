@@ -1,4 +1,4 @@
-//! Strateji enum'u, MetricMask, MarketZone haritası ve Decision tipi.
+//! Strateji enum'u, MarketZone haritası ve Decision tipi.
 //!
 //! Alt modüller: `metrics` (PnL + agg), `harvest` (tam FSM), `order` (OpenOrder).
 //! `Strategy::DutchBook` ve `Strategy::Prism` API/DB sözleşmesini bozmamak için
@@ -10,7 +10,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::time::MarketZone;
-use crate::types::{OrderType, Outcome, Side, Strategy};
+use crate::types::{OrderType, Outcome, Side};
 
 pub mod dutch_book;
 pub mod harvest;
@@ -19,46 +19,6 @@ pub mod order;
 pub mod prism;
 
 pub use order::{planned_buy_gtc, OpenOrder};
-
-/// Strategy başına hangi metrikler hesaplanmalı (doc §11 sözleşmesi).
-///
-/// Şu anda yalnız `Harvest` varyantı aktif; diğer stratejiler dokümanda yer alsa
-/// bile çalışan kod yok. Maske API/log'da bot başına metric profilini taşımak için
-/// korunur.
-#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
-pub struct MetricMask {
-    pub imbalance: bool,
-    pub imbalance_cost: bool,
-    pub avgsum: bool,
-    pub profit: bool,
-    pub sum_volume: bool,
-    pub binance_signal: bool,
-}
-
-impl MetricMask {
-    /// Geçerlilik: `profit == true` ⇒ `avgsum == true`.
-    pub const fn is_valid(self) -> bool {
-        !self.profit || self.avgsum
-    }
-}
-
-/// Strateji metrik maskesi (doc §11). Yalnız `Harvest` aktif strateji; diğer
-/// varyantlar `bot/ctx.rs::load` sırasında reddedilir.
-pub fn required_metrics(strategy: Strategy) -> MetricMask {
-    match strategy {
-        Strategy::Harvest => MetricMask {
-            imbalance: true,
-            imbalance_cost: false,
-            avgsum: true,
-            profit: false,
-            sum_volume: true,
-            binance_signal: true,
-        },
-        // bot/ctx.rs aktif olmayan stratejileri start anında reddeder; gelir
-        // gelmez varsayılan boş maske dönüyoruz (defansif).
-        Strategy::DutchBook | Strategy::Prism => MetricMask::default(),
-    }
-}
 
 /// Bölge başına sinyal aktifliği (doc §15.3). Yalnızca aktif strateji `Harvest`.
 #[derive(Debug, Clone, Copy)]
@@ -132,31 +92,6 @@ pub const COOLDOWN_THRESHOLD_DEFAULT: u64 = 30_000;
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn mask_validity() {
-        assert!(MetricMask::default().is_valid());
-        assert!(!MetricMask {
-            profit: true,
-            avgsum: false,
-            ..Default::default()
-        }
-        .is_valid());
-        assert!(MetricMask {
-            profit: true,
-            avgsum: true,
-            ..Default::default()
-        }
-        .is_valid());
-    }
-
-    #[test]
-    fn harvest_mask() {
-        let m = required_metrics(Strategy::Harvest);
-        assert!(m.avgsum);
-        assert!(!m.profit);
-        assert!(m.imbalance);
-    }
 
     #[test]
     fn order_size_respects_min() {

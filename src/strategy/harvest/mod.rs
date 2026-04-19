@@ -46,8 +46,9 @@ pub(crate) fn cancel_ids(open_orders: &[OpenOrder]) -> Decision {
     }
 }
 
-/// Merkezi FSM fonksiyonu — her olay sonrası çağrılır.
-pub fn decide(state: HarvestState, ctx: &HarvestContext) -> (HarvestState, Decision) {
+/// Merkezi FSM fonksiyonu — her olay sonrası çağrılır. `HarvestEngine` üzerinden
+/// `DecisionEngine` trait kanalıyla erişilir; doğrudan crate dışından çağrılmaz.
+pub(crate) fn decide(state: HarvestState, ctx: &HarvestContext) -> (HarvestState, Decision) {
     match state {
         HarvestState::Pending => dual::open_dual(ctx),
         HarvestState::OpenDual { deadline_ms } => dual::evaluate_open_dual(ctx, deadline_ms),

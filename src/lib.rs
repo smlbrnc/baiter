@@ -5,7 +5,7 @@
 //! - [`db`]          — SQLite kalıcı katmanı (orders/trades/sessions/pnl/logs).
 //! - [`error`]       — `AppError` (axum `IntoResponse` impl'iyle birlikte).
 //! - [`ipc`]         — Frontend IPC (FrontendEvent + log_line).
-//! - [`slug`]        — `slug-yyyymmddhhmm` parse/format.
+//! - [`slug`]        — `{asset}-updown-{interval}-{unix_ts}` parse/format.
 //! - [`time`]        — `now_ms`, `now_secs`, `MarketZone`.
 //! - [`types`]       — `Outcome`, `Side`, `OrderType`, `Strategy`, `RunMode`.
 //! - [`polymarket`]  — Polymarket REST + WS facade

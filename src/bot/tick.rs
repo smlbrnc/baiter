@@ -1,8 +1,14 @@
 //! Strateji tick + state-transition logu + place/cancel logu.
+//!
+//! ⚡ Kural 1 (kritik yol sıfır blok): `decide → execute (POST/DELETE)`
+//! arasına **hiçbir** sync I/O (log flush, IPC emit) girmez. Tüm log ve
+//! frontend push'lar `execute` döndükten sonra `tokio::spawn` ile arkaplana
+//! atılır; ana task hemen yeni event'e döner.
 
 use crate::binance;
-use crate::engine::{execute, MarketSession};
+use crate::engine::{execute, ExecuteOutput, MarketSession};
 use crate::ipc::{self, FrontendEvent};
+use crate::polymarket::CancelResponse;
 use crate::strategy::harvest::HarvestState;
 use crate::strategy::Decision;
 use crate::time::now_ms;
@@ -10,63 +16,145 @@ use crate::types::Outcome;
 
 use super::ctx::Ctx;
 
+/// State-transition logu için `tick` sırasında alınan snapshot — `sess`'in
+/// log fonksiyonu çağrıldığı anki halini taşır, böylece logging arkaplan
+/// task'ında session'a referans tutmaz.
+struct StateLogSnapshot {
+    shares_yes: f64,
+    shares_no: f64,
+    avg_yes: f64,
+    avg_no: f64,
+    yes_best_ask: f64,
+    no_best_ask: f64,
+    avg_threshold: f64,
+}
+
+/// `tick` arkaplan log/emit task'ına aktarılan tüm bağlam. Tüm alanlar
+/// owned/Copy olduğundan `'static` task'a güvenle taşınır.
+struct TickLogCtx {
+    bot_id: i64,
+    label: String,
+    prev_state: HarvestState,
+    post_state: HarvestState,
+    decision: Decision,
+    signal_score: f64,
+    es: f64,
+    snap: StateLogSnapshot,
+}
+
 /// 500 ms cadence'inde strateji çağrısı + decision execute.
 pub async fn tick(ctx: &Ctx, sess: &mut MarketSession) {
-    let snap = ctx.signal_state.read().await;
-    let es = binance::effective_score(snap.signal_score, ctx.cfg.signal_weight);
+    let signal_score = ctx.signal_state.read().await.signal_score;
+    let es = binance::effective_score(signal_score, ctx.cfg.signal_weight);
     let prev_state = sess.harvest_state;
     let decision = sess.tick(&ctx.cfg, now_ms(), es);
-    let label = ctx.bot_id.to_string();
-
-    log_state_transition(
-        ctx,
-        sess,
-        prev_state,
-        &decision,
-        snap.signal_score,
-        es,
-        &label,
-    );
+    let bot_id = ctx.bot_id;
+    let post_state = sess.harvest_state;
+    let snap = StateLogSnapshot {
+        shares_yes: sess.metrics.shares_yes,
+        shares_no: sess.metrics.shares_no,
+        avg_yes: sess.metrics.avg_yes,
+        avg_no: sess.metrics.avg_no,
+        yes_best_ask: sess.yes_best_ask,
+        no_best_ask: sess.no_best_ask,
+        avg_threshold: ctx.cfg.strategy_params.harvest_avg_threshold(),
+    };
 
     if matches!(decision, Decision::NoOp) {
+        let log_ctx = TickLogCtx {
+            bot_id,
+            label: bot_id.to_string(),
+            prev_state,
+            post_state,
+            decision,
+            signal_score,
+            es,
+            snap,
+        };
+        tokio::spawn(async move {
+            log_state_transition(&log_ctx);
+        });
         return;
     }
 
-    log_cancel_request(&decision, &label);
-
-    let Ok(out) = execute(sess, &ctx.executor, decision).await else {
-        return;
+    let decision_for_log = decision.clone();
+    let out = match execute(sess, &ctx.executor, decision).await {
+        Ok(out) => out,
+        Err(e) => {
+            // Strateji state ileri taşındı (decide tamamlandı), POST/DELETE
+            // başarısız oldu. Hata yüzeye çıkmalı; bir sonraki tick'te FSM
+            // tutarsız yeniden değerlendirme yapabilir.
+            tracing::error!(bot_id, error = %e, "execute failed in tick");
+            ipc::log_line(
+                &bot_id.to_string(),
+                format!("❌ execute failed: {e}"),
+            );
+            return;
+        }
     };
 
-    log_cancel_responses(&out.canceled, &label);
-    log_placements(&out, snap.signal_score, es, &label);
+    let log_ctx = TickLogCtx {
+        bot_id,
+        label: bot_id.to_string(),
+        prev_state,
+        post_state,
+        decision: decision_for_log,
+        signal_score,
+        es,
+        snap,
+    };
+    tokio::spawn(async move {
+        log_state_transition(&log_ctx);
+        log_cancel_request(&log_ctx.decision, &log_ctx.label);
+        log_cancel_responses(&out.canceled, &log_ctx.label);
+        log_placements(&out, log_ctx.signal_score, log_ctx.es, &log_ctx.label);
+        emit_order_events(log_ctx.bot_id, &out);
+    });
+}
 
-    for ex in out.placed.into_iter().filter(|e| e.filled) {
+fn emit_order_events(bot_id: i64, out: &ExecuteOutput) {
+    for ex in &out.placed {
+        let status = if ex.filled { "matched" } else { "live" };
         ipc::emit(&FrontendEvent::OrderPlaced {
-            bot_id: ctx.bot_id,
-            order_id: ex.order_id,
+            bot_id,
+            order_id: ex.order_id.clone(),
             outcome: ex.planned.outcome,
             side: ex.planned.side,
             price: ex.planned.price,
             size: ex.planned.size,
-            order_type: format!("{:?}", ex.planned.order_type),
+            order_type: ex.planned.order_type.as_str().to_string(),
+            status: status.into(),
             ts_ms: now_ms(),
         });
+    }
+    for c in &out.canceled {
+        for id in &c.canceled {
+            ipc::emit(&FrontendEvent::OrderCanceled {
+                bot_id,
+                order_id: id.clone(),
+                ts_ms: now_ms(),
+            });
+        }
     }
 }
 
 /// §5.2: OpenDual giriş/çıkış + Averaging timeout + ProfitLock geçişlerini
 /// görselleştir. Sadece log etkisi vardır; akışı değiştirmez.
-fn log_state_transition(
-    ctx: &Ctx,
-    sess: &MarketSession,
-    prev: HarvestState,
-    decision: &Decision,
-    signal_score: f64,
-    es: f64,
-    label: &str,
-) {
-    match (prev, sess.harvest_state) {
+fn log_state_transition(c: &TickLogCtx) {
+    let TickLogCtx {
+        prev_state: prev,
+        post_state: post,
+        decision,
+        signal_score,
+        es,
+        label,
+        snap,
+        ..
+    } = c;
+    let signal_score = *signal_score;
+    let es = *es;
+    let label = label.as_str();
+    match (*prev, *post) {
         (HarvestState::Pending, HarvestState::OpenDual { deadline_ms }) => {
             if let Decision::PlaceOrders(orders) = decision {
                 let up = orders
@@ -89,8 +177,8 @@ fn log_state_transition(
             }
         }
         (HarvestState::OpenDual { .. }, HarvestState::SingleLeg { filled_side }) => {
-            let yes_filled = sess.metrics.shares_yes > 0.0;
-            let no_filled = sess.metrics.shares_no > 0.0;
+            let yes_filled = snap.shares_yes > 0.0;
+            let no_filled = snap.shares_no > 0.0;
             if yes_filled && no_filled {
                 ipc::log_line(
                     label,
@@ -129,14 +217,13 @@ fn log_state_transition(
         }
         (HarvestState::SingleLeg { filled_side }, HarvestState::ProfitLock) => {
             // §5.2: ProfitLock tetiklendi — first_leg + hedge_leg ≤ avg_threshold.
-            let avg_threshold = ctx.cfg.strategy_params.harvest_avg_threshold();
             let first_leg = match filled_side {
-                Outcome::Up => sess.metrics.avg_yes,
-                Outcome::Down => sess.metrics.avg_no,
+                Outcome::Up => snap.avg_yes,
+                Outcome::Down => snap.avg_no,
             };
             let hedge_leg = match filled_side {
-                Outcome::Up => sess.no_best_ask,
-                Outcome::Down => sess.yes_best_ask,
+                Outcome::Up => snap.no_best_ask,
+                Outcome::Down => snap.yes_best_ask,
             };
             ipc::log_line(
                 label,
@@ -147,7 +234,7 @@ fn log_state_transition(
                     filled_side.opposite().as_str().to_uppercase(),
                     hedge_leg,
                     first_leg + hedge_leg,
-                    avg_threshold,
+                    snap.avg_threshold,
                 ),
             );
         }
@@ -155,7 +242,8 @@ fn log_state_transition(
     }
 }
 
-/// §5.5: cancel önce log'lansın (DELETE /order ({n} ids) ids=[..]).
+/// §5.5: cancel logu (DELETE /order ({n} ids) ids=[..]) — POST/DELETE
+/// sonrası arka planda yazılır.
 fn log_cancel_request(decision: &Decision, label: &str) {
     let cancel_ids: &[String] = match decision {
         Decision::CancelOrders(ids) => ids,
@@ -175,7 +263,7 @@ fn log_cancel_request(decision: &Decision, label: &str) {
     );
 }
 
-fn log_cancel_responses(canceled: &[crate::polymarket::clob::CancelResponse], label: &str) {
+fn log_cancel_responses(canceled: &[CancelResponse], label: &str) {
     for c in canceled {
         ipc::log_line(
             label,
@@ -187,7 +275,7 @@ fn log_cancel_responses(canceled: &[crate::polymarket::clob::CancelResponse], la
     }
 }
 
-fn log_placements(out: &crate::engine::ExecuteOutput, signal_score: f64, es: f64, label: &str) {
+fn log_placements(out: &ExecuteOutput, signal_score: f64, es: f64, label: &str) {
     for ex in &out.placed {
         let status = if ex.filled { "matched" } else { "live" };
         ipc::log_line(

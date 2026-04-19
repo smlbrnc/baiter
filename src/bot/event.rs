@@ -7,12 +7,16 @@ use crate::engine::{
     absorb_trade_matched, outcome_from_asset_id, simulate_passive_fills, update_best, MarketSession,
 };
 use crate::ipc::{self, FrontendEvent};
-use crate::polymarket::ws::PolymarketEvent;
+use crate::polymarket::PolymarketEvent;
 use crate::time::now_ms;
 use crate::types::RunMode;
 
 /// WS event'ini ilgili sub-handler'a yönlendir.
-pub async fn handle_event(
+///
+/// Sync — kritik yol kuralı (Rule 1) gereği WS event işleme bloklamamalı; tüm
+/// alt handler'lar zaten sync ve DB yazımları `db::*::persist_*` üzerinden
+/// `spawn_db` ile arka plana atılır.
+pub fn handle_event(
     sess: &mut MarketSession,
     pool: &SqlitePool,
     bot_id: i64,
@@ -99,18 +103,15 @@ pub async fn handle_event(
             winning_outcome,
             winning_asset_id,
             timestamp_ms,
-        } => {
-            on_market_resolved(
-                pool,
-                sess,
-                bot_id,
-                market,
-                winning_outcome,
-                winning_asset_id,
-                timestamp_ms,
-            )
-            .await
-        }
+        } => on_market_resolved(
+            pool,
+            sess,
+            bot_id,
+            market,
+            winning_outcome,
+            winning_asset_id,
+            timestamp_ms,
+        ),
         _ => {}
     }
 }
@@ -183,22 +184,22 @@ fn on_trade(
     let fee = fee_rate_bps
         .map(|bps| price * size * bps / 10_000.0)
         .unwrap_or(0.0);
-    persist_trade(
-        pool,
+    let trade_record = db::trades::TradeRecord::from_user_ws(db::trades::WsTradeInput {
         bot_id,
-        sess.market_session_id,
-        &trade_id,
-        &market,
-        asset_id,
-        side.as_deref(),
-        outcome_str.as_deref(),
+        market_session_id: sess.market_session_id,
+        trade_id: trade_id.clone(),
+        market: market.clone(),
+        asset_id: asset_id.to_string(),
+        side: side.clone(),
+        outcome: outcome_str.clone(),
         size,
         price,
-        &status_upper,
+        status: status_upper.clone(),
         fee,
-        timestamp_ms as i64,
-        &raw,
-    );
+        ts_ms: timestamp_ms as i64,
+        raw: &raw,
+    });
+    db::trades::persist_trade(pool, trade_record, "user_ws upsert_trade");
 
     if status_upper != "MATCHED" {
         return;
@@ -329,131 +330,27 @@ fn on_order(
         _ => {}
     }
 
-    persist_order_ws(
-        pool,
+    let record = db::orders::OrderRecord::from_user_ws(db::orders::WsOrderInput {
         bot_id,
-        sess.market_session_id,
+        market_session_id: sess.market_session_id,
         order_id,
         market,
         asset_id,
         side,
-        outcome_str,
+        outcome: outcome_str,
         original_size,
         size_matched,
         price,
         order_type,
         status,
         lifecycle_type,
-        timestamp_ms as i64,
-        raw,
-    );
-}
-
-/// Fire-and-forget DB yazımı — `orders` tablosuna user_ws kaynaklı satır.
-#[allow(clippy::too_many_arguments)]
-fn persist_order_ws(
-    pool: &SqlitePool,
-    bot_id: i64,
-    market_session_id: i64,
-    order_id: String,
-    market: String,
-    asset_id: String,
-    side: String,
-    outcome_str: Option<String>,
-    original_size: Option<f64>,
-    size_matched: Option<f64>,
-    price: Option<f64>,
-    order_type: Option<String>,
-    status: String,
-    lifecycle_type: String,
-    ts_ms: i64,
-    raw: serde_json::Value,
-) {
-    let pool = pool.clone();
-    let associate_trades = raw
-        .get("associate_trades")
-        .map(|v| v.to_string());
-    let raw_payload = raw.to_string();
-    let record = db::orders::OrderRecord {
-        order_id,
-        bot_id,
-        market_session_id: Some(market_session_id),
-        source: "user_ws".into(),
-        lifecycle_type: Some(lifecycle_type),
-        market: Some(market),
-        asset_id: Some(asset_id),
-        side: Some(side),
-        price,
-        outcome: outcome_str,
-        order_type,
-        original_size,
-        size_matched,
-        expiration: None,
-        associate_trades,
-        post_status: None,
-        order_status: Some(status),
-        ts_ms,
-        raw_payload: Some(raw_payload),
-        delete_canceled: None,
-        delete_not_canceled: None,
-    };
-    db::spawn_db("user_ws upsert_order", async move {
-        db::orders::upsert_order(&pool, &record).await
+        ts_ms: timestamp_ms as i64,
+        raw: &raw,
     });
+    db::orders::persist_order(pool, record, "user_ws upsert_order");
 }
 
-/// Fire-and-forget DB yazımı — `trades` tablosuna user_ws kaynaklı satır.
-#[allow(clippy::too_many_arguments)]
-fn persist_trade(
-    pool: &SqlitePool,
-    bot_id: i64,
-    market_session_id: i64,
-    trade_id: &str,
-    market: &str,
-    asset_id: &str,
-    side: Option<&str>,
-    outcome_str: Option<&str>,
-    size: f64,
-    price: f64,
-    status: &str,
-    fee: f64,
-    ts_ms: i64,
-    raw: &serde_json::Value,
-) {
-    let pool = pool.clone();
-    let taker_order_id = raw
-        .get("taker_order_id")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let maker_orders = raw.get("maker_orders").map(|v| v.to_string());
-    let trader_side = raw
-        .get("trader_side")
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_string());
-    let record = db::trades::TradeRecord {
-        trade_id: trade_id.to_string(),
-        bot_id,
-        market_session_id: Some(market_session_id),
-        market: Some(market.to_string()),
-        asset_id: Some(asset_id.to_string()),
-        taker_order_id,
-        maker_orders,
-        trader_side,
-        side: side.map(|s| s.to_string()),
-        outcome: outcome_str.map(|s| s.to_string()),
-        size,
-        price,
-        status: status.to_string(),
-        fee,
-        ts_ms,
-        raw_payload: Some(raw.to_string()),
-    };
-    db::spawn_db("user_ws upsert_trade", async move {
-        db::trades::upsert_trade(&pool, &record).await
-    });
-}
-
-async fn on_market_resolved(
+fn on_market_resolved(
     pool: &SqlitePool,
     sess: &MarketSession,
     bot_id: i64,
@@ -463,15 +360,22 @@ async fn on_market_resolved(
     timestamp_ms: u64,
 ) {
     let slug = sess.slug.clone();
-    let _ = db::markets::upsert_market_resolved(
-        pool,
-        &market,
-        &winning_outcome,
-        winning_asset_id.as_deref(),
-        now_ms() as i64,
-        None,
-    )
-    .await;
+    // Kural 4: WS event consumer DB I/O bekleyemez — fire-and-forget.
+    let pool = pool.clone();
+    let market_for_db = market.clone();
+    let winning_outcome_for_db = winning_outcome.clone();
+    let winning_asset_for_db = winning_asset_id.clone();
+    db::spawn_db("market_resolved upsert", async move {
+        db::markets::upsert_market_resolved(
+            &pool,
+            &market_for_db,
+            &winning_outcome_for_db,
+            winning_asset_for_db.as_deref(),
+            now_ms() as i64,
+            None,
+        )
+        .await
+    });
 
     let label = bot_id.to_string();
     let mut parts = vec![
@@ -518,8 +422,10 @@ fn run_passive_fills_if_dryrun(sess: &mut MarketSession, bot_id: i64, run_mode: 
     let label = bot_id.to_string();
     for ex in simulate_passive_fills(sess) {
         let p = &ex.planned;
-        let fp = ex.fill_price.unwrap_or(p.price);
-        let fs = ex.fill_size.unwrap_or(p.size);
+        // simulate_passive_fills her zaman `fill_price`/`fill_size`'ı doldurur;
+        // None gelmesi yapısal hatadır (panic ile yüzeye çıkar).
+        let fp = ex.fill_price.expect("dryrun fill_price always set");
+        let fs = ex.fill_size.expect("dryrun fill_size always set");
         ipc::log_line(
             &label,
             format!(

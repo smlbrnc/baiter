@@ -8,10 +8,10 @@ use uuid::Uuid;
 use crate::config::Credentials;
 use crate::db;
 use crate::error::AppError;
-use crate::polymarket::clob::{CancelResponse, ClobClient};
 use crate::polymarket::order::{
     build_order, expiration_for, order_to_json, sign_order, BuildArgs,
 };
+use crate::polymarket::{CancelResponse, ClobClient};
 use crate::strategy::{Decision, OpenOrder, PlannedOrder};
 use crate::time::now_ms;
 use crate::types::{Outcome, Side};
@@ -182,64 +182,36 @@ impl LiveExecutor {
         executed: &ExecutedOrder,
         post_status: &str,
     ) {
-        let pool = self.pool.clone();
-        let record = db::orders::OrderRecord {
-            order_id: executed.order_id.clone(),
+        let record = db::orders::OrderRecord::rest_placement(db::orders::RestPlacementInput {
             bot_id: session.bot_id,
-            market_session_id: Some(session.market_session_id),
-            source: "rest_post".into(),
-            lifecycle_type: Some("PLACEMENT".into()),
-            market: Some(session.condition_id.clone()),
-            asset_id: Some(executed.planned.token_id.clone()),
-            side: Some(executed.planned.side.as_str().into()),
-            price: Some(executed.planned.price),
-            outcome: Some(executed.planned.outcome.as_str().into()),
-            order_type: Some(executed.planned.order_type.as_str().into()),
-            original_size: Some(executed.planned.size),
+            market_session_id: session.market_session_id,
+            market: session.condition_id.clone(),
+            order_id: executed.order_id.clone(),
+            asset_id: executed.planned.token_id.clone(),
+            side: executed.planned.side.as_str(),
+            outcome: executed.planned.outcome.as_str(),
+            order_type: executed.planned.order_type.as_str(),
+            price: executed.planned.price,
+            original_size: executed.planned.size,
             size_matched: executed.fill_size,
-            expiration: None,
-            associate_trades: None,
-            post_status: Some(post_status.to_string()),
-            order_status: None,
+            post_status: post_status.to_string(),
             ts_ms: now_ms() as i64,
-            raw_payload: None,
-            delete_canceled: None,
-            delete_not_canceled: None,
-        };
-        db::spawn_db("rest_post upsert_order", async move {
-            db::orders::upsert_order(&pool, &record).await
         });
+        db::orders::persist_order(&self.pool, record, "rest_post upsert_order");
     }
 
     /// CLOB DELETE /order sonucunu fire-and-forget olarak DB'ye yazar.
     fn persist_cancel(&self, session: &MarketSession, order_id: &str, resp: &CancelResponse) {
-        let pool = self.pool.clone();
-        let record = db::orders::OrderRecord {
-            order_id: order_id.to_string(),
-            bot_id: session.bot_id,
-            market_session_id: Some(session.market_session_id),
-            source: "rest_delete".into(),
-            lifecycle_type: Some("CANCELLATION".into()),
-            market: Some(session.condition_id.clone()),
-            asset_id: None,
-            side: None,
-            price: None,
-            outcome: None,
-            order_type: None,
-            original_size: None,
-            size_matched: None,
-            expiration: None,
-            associate_trades: None,
-            post_status: None,
-            order_status: Some("CANCELED".into()),
-            ts_ms: now_ms() as i64,
-            raw_payload: None,
-            delete_canceled: Some(serde_json::to_string(&resp.canceled).unwrap_or_default()),
-            delete_not_canceled: Some(resp.not_canceled.to_string()),
-        };
-        db::spawn_db("rest_delete upsert_order", async move {
-            db::orders::upsert_order(&pool, &record).await
-        });
+        let record = db::orders::OrderRecord::rest_cancellation(
+            session.bot_id,
+            session.market_session_id,
+            session.condition_id.clone(),
+            order_id.to_string(),
+            &resp.canceled,
+            &resp.not_canceled,
+            now_ms() as i64,
+        );
+        db::orders::persist_order(&self.pool, record, "rest_delete upsert_order");
     }
 }
 

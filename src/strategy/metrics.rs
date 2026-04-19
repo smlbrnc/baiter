@@ -32,8 +32,6 @@ pub struct StrategyMetrics {
     /// `imbalance_cost` (YES - NO maliyet farkı).
     pub imb_cost_up: f64,
     pub imb_cost_down: f64,
-    /// `effective_score` (Binance sinyal × signal_weight).
-    pub effective_score: f64,
 }
 
 impl StrategyMetrics {
@@ -75,6 +73,9 @@ impl StrategyMetrics {
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct MarketPnL {
     pub cost_basis: f64,
+    /// Şu an her zaman 0.0 — komisyon `imb_cost_*` üzerinden zaten cost_basis'e
+    /// dahil edilmiş olduğundan ayrı satıra eklenmez. Kolon UI/PnL şemasıyla
+    /// uyumluluk için saklanır.
     pub fee_total: f64,
     pub shares_yes: f64,
     pub shares_no: f64,

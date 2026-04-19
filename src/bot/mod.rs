@@ -1,6 +1,7 @@
 //! Bot binary çekirdeği — alt modüllere dağıtılmış.
 //!
-//! Eski monolit `src/bin/bot.rs` (\~960 satır) burada parçalandı:
+//! `src/bin/bot.rs` artık sadece `bot::run()` çağıran ince entry point;
+//! sorumluluklar bu modüller arasında bölünmüştür:
 //! - [`ctx`]      — `Ctx` (paylaşılan state), CLI parse, env/DB load.
 //! - [`window`]   — `run_window`, T-15 ön hazırlığı, build_session, next_window.
 //! - [`tick`]     — strateji tick + state transition logu + place/cancel logu.

@@ -11,8 +11,7 @@ use crate::config::{BotConfig, Credentials, RuntimeEnv};
 use crate::db;
 use crate::engine::{Executor, LiveExecutor, Simulator};
 use crate::error::AppError;
-use crate::polymarket::clob::{shared_http_client, ClobClient};
-use crate::polymarket::gamma::GammaClient;
+use crate::polymarket::{shared_http_client, ClobClient, GammaClient};
 use crate::slug::{parse_slug_or_prefix, SlugInfo};
 use crate::types::{RunMode, Strategy};
 

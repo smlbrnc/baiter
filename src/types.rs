@@ -74,48 +74,6 @@ impl OrderType {
     }
 }
 
-/// `POST /order` yanıtındaki `status` değerleri.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum PostOrderStatus {
-    Live,
-    Matched,
-    Delayed,
-    Unmatched,
-}
-
-/// User WS `order` event'indeki `status` değerleri.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "UPPERCASE")]
-pub enum OrderStatus {
-    Live,
-    Matched,
-    Canceled,
-    Unmatched,
-    Delayed,
-}
-
-/// User WS `order` event'indeki `type` alanı (emir yaşam döngüsü).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "UPPERCASE")]
-pub enum OrderLifecycle {
-    Placement,
-    Update,
-    Cancellation,
-}
-
-/// User WS `trade` event'indeki `status` değerleri — zincir durum makinesi.
-/// Kaynak: [User Channel](https://docs.polymarket.com/market-data/websocket/user-channel).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "UPPERCASE")]
-pub enum TradeStatus {
-    Matched,
-    Mined,
-    Confirmed,
-    Retrying,
-    Failed,
-}
-
 /// Bot işlem modu — `BotConfig.run_mode`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -153,11 +111,5 @@ mod tests {
     fn order_type_serde() {
         let s = serde_json::to_string(&OrderType::Gtc).unwrap();
         assert_eq!(s, "\"GTC\"");
-    }
-
-    #[test]
-    fn trade_status_serde() {
-        let s = serde_json::to_string(&TradeStatus::Matched).unwrap();
-        assert_eq!(s, "\"MATCHED\"");
     }
 }

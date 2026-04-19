@@ -31,7 +31,7 @@ use tower_http::cors::{Any, CorsLayer};
 use crate::config::{BotConfig, Credentials, StrategyParams};
 use crate::db;
 use crate::error::AppError;
-use crate::polymarket::gamma::GammaClient;
+use crate::polymarket::GammaClient;
 use crate::supervisor::{self, AppState};
 use crate::types::{RunMode, Strategy};
 
@@ -158,7 +158,12 @@ async fn delete_bot(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, AppError> {
-    let _ = supervisor::stop_bot(state.clone(), id).await;
+    // Silme operasyonunun semantiği: koşan child varsa önce durdurmaya çalış,
+    // ancak DB satırını her durumda sil ("force delete"). Stop hatası
+    // operatörün görmesi için warn olarak loglanır.
+    if let Err(e) = supervisor::stop_bot(state.clone(), id).await {
+        tracing::warn!(bot_id = id, error = %e, "stop_bot failed during delete; proceeding with DB delete");
+    }
     db::delete_bot(&state.pool, id).await?;
     Ok(StatusCode::NO_CONTENT)
 }

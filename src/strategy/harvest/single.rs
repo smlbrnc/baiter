@@ -55,11 +55,12 @@ fn handle_open_averaging(ctx: &HarvestContext, filled_side: Outcome) -> Option<D
     if open_avg.is_empty() {
         return None;
     }
+    // open_avg.is_empty() yukarıda False — `max()` daima `Some`.
     let max_age = open_avg
         .iter()
         .map(|o| ctx.now_ms.saturating_sub(o.placed_at_ms))
         .max()
-        .unwrap_or(0);
+        .expect("open_avg non-empty after early return");
     if max_age >= ctx.cooldown_threshold {
         let cancel_ids: Vec<String> = open_avg.iter().map(|o| o.id.clone()).collect();
         return Some(Decision::CancelOrders(cancel_ids));

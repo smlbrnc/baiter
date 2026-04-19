@@ -112,11 +112,6 @@ impl MarketSession {
         }
     }
 
-    /// Açık emir id'leri (cancel için).
-    pub fn open_ids(&self) -> Vec<String> {
-        self.open_orders.iter().map(|o| o.id.clone()).collect()
-    }
-
     /// Güncel market bölgesi (`zone_pct` eşikleri).
     pub fn current_zone(&self, now_secs: u64) -> MarketZone {
         MarketZone::from_pct(zone_pct(self.start_ts, self.end_ts, now_secs))
