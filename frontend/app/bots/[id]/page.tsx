@@ -14,7 +14,6 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { LogStream } from "@/components/bots/log-stream";
-import { PnLWidget } from "@/components/bots/pnl-widget";
 import { SessionsTable } from "@/components/bots/sessions-table";
 import { api } from "@/lib/api";
 import { useBot } from "@/lib/hooks";
@@ -24,7 +23,7 @@ export default function BotSummaryPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const botId = Number(id);
-  const { bot, pnl } = useBot(Number.isFinite(botId) ? botId : null);
+  const { bot } = useBot(Number.isFinite(botId) ? botId : null);
 
   const [sessions, setSessions] = useState<SessionListItem[]>([]);
 
@@ -186,8 +185,6 @@ export default function BotSummaryPage() {
           </Card>
         </Link>
       )}
-
-      <PnLWidget pnl={pnl ?? null} />
 
       <SessionsTable botId={botId} sessions={sessions} />
 

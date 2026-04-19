@@ -12,10 +12,10 @@ use tokio::sync::mpsc;
 use tokio::time::{interval as tokio_interval, sleep};
 
 use crate::db;
-use crate::engine::{Executor, MarketSession};
+use crate::engine::MarketSession;
 use crate::error::AppError;
 use crate::ipc::{self, FrontendEvent};
-use crate::polymarket::{run_market_ws, run_user_ws, GammaMarket, PolymarketEvent};
+use crate::polymarket::{run_market_ws, run_user_ws, PolymarketEvent};
 use crate::slug::SlugInfo;
 use crate::time::{now_secs, t_minus_15};
 
@@ -106,19 +106,18 @@ async fn prepare_window(
         no_token_id: no_id.clone(),
     });
 
-    Ok(build_session(
-        ctx,
-        slug,
-        &market,
-        yes_id,
-        no_id,
+    Ok(MarketSession {
+        yes_token_id: yes_id,
+        no_token_id: no_id,
         condition_id,
-        SessionWindow {
-            start_ts,
-            end_ts,
-            market_session_id: session_id,
-        },
-    ))
+        tick_size: market.tick_size.unwrap_or(0.01),
+        api_min_order_size: market.minimum_order_size.unwrap_or(5.0),
+        neg_risk: market.neg_risk.unwrap_or(false),
+        start_ts,
+        end_ts,
+        market_session_id: session_id,
+        ..MarketSession::new(ctx.bot_id, slug.to_slug(), &ctx.cfg)
+    })
 }
 
 /// Aktif WS bağlantıları + event channel.
@@ -199,7 +198,7 @@ async fn run_trading_loop(
             _ = sigterm.recv() => return Some("sigterm"),
             _ = sigint.recv()  => return Some("sigint"),
             Some(ev) = ev_rx.recv() => {
-                event::handle_event(&mut sess, &ctx.pool, ctx.bot_id, ctx.cfg.run_mode, ev);
+                event::handle_event(&mut sess, &ctx.pool, ctx.cfg.run_mode, ev);
                 tick::tick(ctx, &mut sess).await;
             }
             _ = tick_timer.tick() => tick::tick(ctx, &mut sess).await,
@@ -227,9 +226,7 @@ async fn cleanup_window(
     if let Some(h) = user_ws {
         h.abort();
     }
-    if matches!(ctx.executor, Executor::Live(_)) {
-        shutdown::cancel_all_open(ctx, "window boundary").await;
-    }
+    shutdown::cancel_all_open(ctx, "window boundary").await;
     if result.is_none() {
         ipc::log_line(
             label,
@@ -277,35 +274,6 @@ async fn wait_for_t_minus_15(
         _ = sleep(wait) => None,
         _ = sigterm.recv() => Some("sigterm"),
         _ = sigint.recv()  => Some("sigint"),
-    }
-}
-
-struct SessionWindow {
-    start_ts: u64,
-    end_ts: u64,
-    market_session_id: i64,
-}
-
-fn build_session(
-    ctx: &Ctx,
-    slug: SlugInfo,
-    market: &GammaMarket,
-    yes_id: String,
-    no_id: String,
-    condition_id: String,
-    window: SessionWindow,
-) -> MarketSession {
-    MarketSession {
-        yes_token_id: yes_id,
-        no_token_id: no_id,
-        condition_id,
-        tick_size: market.tick_size.unwrap_or(0.01),
-        api_min_order_size: market.minimum_order_size.unwrap_or(5.0),
-        neg_risk: market.neg_risk.unwrap_or(false),
-        start_ts: window.start_ts,
-        end_ts: window.end_ts,
-        market_session_id: window.market_session_id,
-        ..MarketSession::new(ctx.bot_id, slug.to_slug(), &ctx.cfg)
     }
 }
 

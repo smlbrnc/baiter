@@ -7,9 +7,7 @@ use std::time::Duration;
 use tokio::fs;
 use tokio::time::interval;
 
-use crate::binance::{self, SharedSignalState};
 use crate::polymarket::ClobClient;
-use crate::slug::Interval;
 use crate::time::now_ms;
 
 /// `<heartbeat_dir>/<bot_id>.heartbeat` yolu.
@@ -42,12 +40,3 @@ pub async fn clob_heartbeat_task(clob: Arc<ClobClient>) {
     }
 }
 
-/// Binance signal stream'ini başlat.
-pub async fn binance_task(
-    symbol: String,
-    interval: Interval,
-    state: SharedSignalState,
-    bot_id: i64,
-) {
-    binance::run_binance_signal(&symbol, interval, state, bot_id).await;
-}

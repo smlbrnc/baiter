@@ -16,6 +16,8 @@ import {
   MetricsPanel,
   type LiveMetrics,
 } from "@/components/bots/metrics-panel";
+import { PnLWidget } from "@/components/bots/pnl-widget";
+import { TradesTable } from "@/components/bots/trades-table";
 import { PriceChart } from "@/components/charts/price-chart";
 import { PnLChart } from "@/components/charts/pnl-chart";
 import { SpreadSignalChart } from "@/components/charts/spread-signal-chart";
@@ -198,9 +200,13 @@ export default function MarketDetailPage() {
 
       {isLive && <MetricsPanel m={metrics} />}
 
+      <PnLWidget pnl={pnlHistory[pnlHistory.length - 1] ?? null} />
+
       <PriceChart data={ticks} session={sessionRange} />
       <SpreadSignalChart data={ticks} session={sessionRange} />
       <PnLChart data={pnlHistory} session={sessionRange} />
+
+      <TradesTable botId={botId} slug={slug} isLive={isLive} />
     </div>
   );
 }

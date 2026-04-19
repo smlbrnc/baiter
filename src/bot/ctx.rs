@@ -6,7 +6,7 @@ use std::sync::Arc;
 use sqlx::SqlitePool;
 use tokio::signal::unix::{signal, Signal, SignalKind};
 
-use crate::binance::{new_shared_state, SharedSignalState};
+use crate::binance::{self, new_shared_state, SharedSignalState};
 use crate::config::{BotConfig, Credentials, RuntimeEnv};
 use crate::db;
 use crate::engine::{Executor, LiveExecutor, Simulator};
@@ -183,12 +183,10 @@ fn spawn_background_tasks(
     signal_state: SharedSignalState,
     clob: Option<&Arc<ClobClient>>,
 ) {
-    tokio::spawn(tasks::binance_task(
-        slug.asset.binance_symbol().to_string(),
-        slug.interval,
-        signal_state,
-        bot_id,
-    ));
+    let symbol = slug.asset.binance_symbol().to_string();
+    tokio::spawn(async move {
+        binance::run_binance_signal(&symbol, slug.interval, signal_state, bot_id).await;
+    });
     tokio::spawn(tasks::heartbeat_task(tasks::heartbeat_path(
         &heartbeat_dir,
         bot_id,

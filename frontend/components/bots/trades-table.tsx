@@ -1,0 +1,184 @@
+"use client";
+
+import { useCallback, useMemo } from "react";
+import { TrendingDown, TrendingUp } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { api } from "@/lib/api";
+import { useHistoryStream } from "@/lib/hooks";
+import type { TradeRow } from "@/lib/types";
+import { cn } from "@/lib/utils";
+
+type Direction = "UP" | "DOWN";
+
+function normalizeOutcome(o: string | null): Direction | null {
+  if (!o) return null;
+  const s = o.toUpperCase();
+  if (s === "UP" || s === "YES") return "UP";
+  if (s === "DOWN" || s === "NO") return "DOWN";
+  return null;
+}
+
+function fmtTime(ms: number): string {
+  return new Date(ms).toLocaleTimeString([], { hour12: false });
+}
+
+export function TradesTable({
+  botId,
+  slug,
+  isLive,
+}: {
+  botId: number;
+  slug: string;
+  isLive: boolean;
+}) {
+  const fetchTrades = useCallback(
+    (sinceMs: number) => api.sessionTrades(botId, slug, sinceMs),
+    [botId, slug],
+  );
+
+  const trades = useHistoryStream<TradeRow>({
+    fetchInitial: fetchTrades,
+    isLive,
+    pollMs: 1500,
+  });
+
+  const { up, down } = useMemo(() => {
+    const u: TradeRow[] = [];
+    const d: TradeRow[] = [];
+    for (const t of trades) {
+      const dir = normalizeOutcome(t.outcome);
+      if (dir === "UP") u.push(t);
+      else if (dir === "DOWN") d.push(t);
+    }
+    u.sort((a, b) => a.ts_ms - b.ts_ms);
+    d.sort((a, b) => a.ts_ms - b.ts_ms);
+    return { up: u, down: d };
+  }, [trades]);
+
+  return (
+    <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+      <SideTable direction="UP" rows={up} />
+      <SideTable direction="DOWN" rows={down} />
+    </div>
+  );
+}
+
+function SideTable({ direction, rows }: { direction: Direction; rows: TradeRow[] }) {
+  const notional = rows.reduce((acc, r) => acc + r.size * r.price, 0);
+  const isUp = direction === "UP";
+  const Icon = isUp ? TrendingUp : TrendingDown;
+  const color = isUp ? "text-emerald-500" : "text-destructive";
+
+  return (
+    <Card>
+      <CardHeader className="flex flex-row items-center justify-between gap-3">
+        <CardTitle className="flex items-center gap-2">
+          <Icon className={cn("h-4 w-4", color)} />
+          <span className={cn("text-sm font-semibold tracking-wide", color)}>
+            {direction} TRADES
+          </span>
+        </CardTitle>
+        <div className="text-muted-foreground flex items-center gap-3 text-xs">
+          <span>{rows.length} işlem</span>
+          <span className="text-foreground font-mono">
+            ${notional.toFixed(2)}
+          </span>
+        </div>
+      </CardHeader>
+      <CardContent className="px-0 pb-0">
+        <div className="border-border/40 grid grid-cols-[68px_56px_64px_56px_1fr_72px] gap-3 border-y px-4 py-2 text-[10px] font-medium tracking-wider text-muted-foreground uppercase">
+          <span>Zaman</span>
+          <span>Yön</span>
+          <span className="text-right">Fiyat</span>
+          <span className="text-right">Adet</span>
+          <span>Durum</span>
+          <span>Tip</span>
+        </div>
+        {rows.length === 0 ? (
+          <p className="text-muted-foreground px-4 py-6 text-center text-xs">
+            —
+          </p>
+        ) : (
+          <div className="divide-border/30 max-h-80 divide-y overflow-y-auto">
+            {rows
+              .slice()
+              .reverse()
+              .map((t) => (
+                <Row key={t.trade_id} t={t} direction={direction} />
+              ))}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+function Row({ t, direction }: { t: TradeRow; direction: Direction }) {
+  return (
+    <div className="grid grid-cols-[68px_56px_64px_56px_1fr_72px] items-center gap-3 px-4 py-2 text-xs">
+      <span className="text-muted-foreground font-mono">{fmtTime(t.ts_ms)}</span>
+      <span
+        className={cn(
+          "font-mono font-semibold",
+          direction === "UP" ? "text-emerald-500" : "text-destructive",
+        )}
+      >
+        {direction}
+      </span>
+      <span className="text-foreground text-right font-mono">
+        {t.price.toFixed(4)}
+      </span>
+      <span className="text-foreground text-right font-mono">
+        {t.size.toFixed(2)}
+      </span>
+      <StatusBadge status={t.status} />
+      <TraderTag side={t.trader_side} />
+    </div>
+  );
+}
+
+function StatusBadge({ status }: { status: string }) {
+  const s = (status ?? "").toUpperCase();
+  const cls = statusClass(s);
+  return (
+    <Badge className={cn("rounded-sm border-transparent text-[10px]", cls)}>
+      {s || "—"}
+    </Badge>
+  );
+}
+
+function statusClass(s: string): string {
+  switch (s) {
+    case "MATCHED":
+    case "MINED":
+    case "CONFIRMED":
+      return "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400";
+    case "RETRYING":
+      return "bg-amber-500/15 text-amber-700 dark:text-amber-400";
+    case "FAILED":
+      return "bg-destructive/15 text-destructive";
+    case "CANCELED":
+    case "CANCELLED":
+      return "bg-muted text-muted-foreground";
+    case "LIVE":
+      return "bg-sky-500/15 text-sky-600 dark:text-sky-400";
+    default:
+      return "bg-secondary text-secondary-foreground";
+  }
+}
+
+function TraderTag({ side }: { side: string | null }) {
+  if (!side) return <span className="text-muted-foreground">—</span>;
+  const s = side.toLowerCase();
+  return (
+    <span className="text-muted-foreground rounded-sm bg-muted/60 px-1.5 py-0.5 text-[10px] font-medium tracking-wide uppercase">
+      {s === "maker" ? "maker" : s === "taker" ? "taker" : s}
+    </span>
+  );
+}

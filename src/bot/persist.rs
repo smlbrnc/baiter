@@ -1,26 +1,22 @@
-//! DB persistence helper'ları — orders/trades fire-and-forget yazımları
-//! `event.rs` ve `engine::executor` içinde, periyodik PnL/tick snapshot ise burada.
+//! DB persistence helper'ları — fire-and-forget yazımlar (§⚡ Kural 4).
 //!
-//! Tüm yazımlar `tokio::spawn` ile non-blocking çalışır (§⚡ Kural 4).
+//! Periyodik PnL/tick snapshot'ları + DryRun fill yazımı buradan; user-WS
+//! kaynaklı orders/trades yazımları `event.rs` içinden tetiklenir.
 
 use sqlx::SqlitePool;
 
 use crate::db;
-use crate::engine::MarketSession;
+use crate::engine::{ExecutedOrder, MarketSession, DRYRUN_FEE_RATE};
 use crate::time::now_ms;
 
 use super::ctx::Ctx;
 
-/// `pnl_snapshots` tablosuna tek satır yazar — fire-and-forget (§⚡ Kural 4).
-///
-/// `window.rs` içinde 1 sn aralıkla çağrılır (frontend_timer ile aynı cadence).
+/// `pnl_snapshots` tablosuna tek satır yazar — `window.rs` 1 sn cadence'inden.
 pub fn snapshot_pnl(pool: &SqlitePool, sess: &MarketSession) {
     if sess.market_session_id == 0 {
         return;
     }
     let pool = pool.clone();
-    let bot_id = sess.bot_id;
-    let market_session_id = sess.market_session_id;
     let pnl = sess.pnl();
     let snap = db::pnl::PnlSnapshot {
         cost_basis: pnl.cost_basis,
@@ -33,16 +29,14 @@ pub fn snapshot_pnl(pool: &SqlitePool, sess: &MarketSession) {
         pair_count: sess.metrics.pair_count(),
         ts_ms: 0, // DB tarafı now_ms() kullanır.
     };
+    let bot_id = sess.bot_id;
+    let market_session_id = sess.market_session_id;
     db::spawn_db("pnl_snapshot insert", async move {
         db::pnl::insert_pnl_snapshot(&pool, bot_id, market_session_id, &snap).await
     });
 }
 
 /// `market_ticks` tablosuna 1 sn cadence BBA + Binance signal snapshot'ı yazar.
-///
-/// `window.rs::frontend_timer` arm'ından çağrılır. `signal_state` lock'unu
-/// kısa süreliğine alır (read), scalar'ları kopyalar; insert `spawn_db` ile
-/// fire-and-forget gider — kritik path'i bloke etmez (§⚡ Kural 1+4).
 pub async fn snapshot_tick(ctx: &Ctx, sess: &MarketSession) {
     if sess.market_session_id == 0 {
         return;
@@ -69,4 +63,51 @@ pub async fn snapshot_tick(ctx: &Ctx, sess: &MarketSession) {
         tick,
         "market_tick insert",
     );
+}
+
+/// DryRun fill → `trades` tablosuna fire-and-forget yazım.
+///
+/// `trader_side`: `"TAKER"` (Simulator immediate match) | `"MAKER"`
+/// (passive `simulate_passive_fills`). `raw_payload.source` debug için saklanır.
+pub fn persist_dryrun_fill(
+    pool: &SqlitePool,
+    sess: &MarketSession,
+    ex: &ExecutedOrder,
+    fill_price: f64,
+    fill_size: f64,
+    trader_side: &'static str,
+) {
+    if sess.market_session_id == 0 {
+        return;
+    }
+    let p = &ex.planned;
+    let fee = fill_price * fill_size * DRYRUN_FEE_RATE;
+    let source = match trader_side {
+        "MAKER" => "dryrun_passive",
+        _ => "dryrun_taker",
+    };
+    let raw = serde_json::json!({
+        "source": source,
+        "reason": p.reason,
+        "order_type": p.order_type.as_str(),
+    });
+    let record = db::trades::TradeRecord {
+        trade_id: format!("dryrun:{}", ex.order_id),
+        bot_id: sess.bot_id,
+        market_session_id: Some(sess.market_session_id),
+        market: Some(sess.condition_id.clone()),
+        asset_id: Some(p.token_id.clone()),
+        taker_order_id: None,
+        maker_orders: None,
+        trader_side: Some(trader_side.to_string()),
+        side: Some(p.side.as_str().to_string()),
+        outcome: Some(p.outcome.as_str().to_string()),
+        size: fill_size,
+        price: fill_price,
+        status: "MATCHED".to_string(),
+        fee,
+        ts_ms: now_ms() as i64,
+        raw_payload: Some(raw.to_string()),
+    };
+    db::trades::persist_trade(pool, record, "dryrun fill upsert_trade");
 }

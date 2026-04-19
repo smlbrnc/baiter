@@ -1,5 +1,7 @@
 //! Graceful shutdown + ortak `cancel_all` yardımcısı.
 
+use std::io::Write;
+
 use crate::db;
 use crate::engine::Executor;
 use crate::ipc::{self, FrontendEvent};
@@ -16,7 +18,6 @@ pub async fn graceful_shutdown(ctx: &Ctx, reason: &str) {
         ts_ms: now_ms(),
         reason: reason.into(),
     });
-    use std::io::Write;
     let _ = std::io::stdout().flush();
 }
 

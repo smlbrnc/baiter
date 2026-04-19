@@ -1,14 +1,6 @@
-//! Bot binary çekirdeği — alt modüllere dağıtılmış.
-//!
-//! `src/bin/bot.rs` artık sadece `bot::run()` çağıran ince entry point;
-//! sorumluluklar bu modüller arasında bölünmüştür:
-//! - [`ctx`]      — `Ctx` (paylaşılan state), CLI parse, env/DB load.
-//! - [`window`]   — `run_window`, T-15 ön hazırlığı, build_session, next_window.
-//! - [`tick`]     — strateji tick + state transition logu + place/cancel logu.
-//! - [`event`]    — Polymarket WS event handler dispatch.
-//! - [`zone`]     — periyodik zone + signal + book snapshot logu/IPC.
-//! - [`tasks`]    — heartbeat, CLOB heartbeat, Binance signal arka plan task'ları.
-//! - [`shutdown`] — graceful shutdown + ortak `cancel_all_open` yardımcısı.
+//! Bot binary çekirdeği — `src/bin/bot.rs` ince bir `bot::run()` entry point'tir;
+//! sorumluluklar alt modüller (`ctx`, `window`, `tick`, `event`, `persist`,
+//! `zone`, `tasks`, `shutdown`) arasında bölünmüştür.
 //!
 //! Referans: [docs/bot-platform-mimari.md §4 §5 §13](../../../docs/bot-platform-mimari.md).
 
