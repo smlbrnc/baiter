@@ -2,9 +2,9 @@
 
 use crate::strategy::{OpenOrder, PlannedOrder};
 use crate::time::now_ms;
-use crate::types::{OrderType, Outcome, Side};
+use crate::types::{Outcome, OrderType};
 
-use super::executor::{counter_price_for, DRYRUN_FEE_RATE};
+use super::executor::{apply_dryrun_fill, dryrun_cross};
 use super::{ExecutedOrder, MarketSession};
 
 /// **DryRun passive-fill simülatörü.**
@@ -23,23 +23,12 @@ pub fn simulate_passive_fills(session: &mut MarketSession) -> Vec<ExecutedOrder>
     let snapshot = std::mem::take(&mut session.open_orders);
 
     for o in snapshot {
-        let counter_price = counter_price_for(session, o.outcome, o.side);
-        let crosses = counter_price > 0.0
-            && match o.side {
-                Side::Buy => o.price >= counter_price,
-                Side::Sell => o.price <= counter_price,
-            };
-        if !crosses {
+        let Some(fill_price) = dryrun_cross(session, o.outcome, o.side, o.price) else {
             keep.push(o);
             continue;
-        }
-        let fill_price = counter_price;
+        };
         let fill_size = o.size;
-        let fee = fill_price * fill_size * DRYRUN_FEE_RATE;
-        session
-            .metrics
-            .ingest_fill(o.outcome, fill_price, fill_size, fee);
-        session.last_fill_price = fill_price;
+        apply_dryrun_fill(session, o.outcome, fill_price, fill_size);
         if o.reason.starts_with("harvest:averaging") {
             session.last_averaging_ms = now_ms();
         }

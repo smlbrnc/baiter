@@ -293,7 +293,7 @@ fn stop_trade_zone_blocks_averaging() {
             filled_side: Outcome::Up
         }
     );
-    matches!(dec, Decision::NoOp);
+    assert!(matches!(dec, Decision::NoOp));
 }
 
 #[test]

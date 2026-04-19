@@ -9,16 +9,20 @@
 use serde::{Deserialize, Serialize};
 
 use crate::config::BotConfig;
-use crate::strategy::harvest::{decide as harvest_decide, HarvestContext, HarvestState};
+use crate::strategy::harvest::{
+    HarvestContext, HarvestEngine, HarvestState, MAX_POSITION_SIZE,
+};
 use crate::strategy::metrics::{MarketPnL, StrategyMetrics};
-use crate::strategy::{Decision, OpenOrder, PlannedOrder};
+use crate::strategy::{Decision, DecisionEngine, OpenOrder, PlannedOrder};
 use crate::time::{zone_pct, MarketZone};
 use crate::types::{Outcome, RunMode, Strategy};
 
 pub mod executor;
 pub mod passive;
 
-pub use executor::{execute, ExecuteOutput, Executor, LiveExecutor, Simulator, DRYRUN_FEE_RATE};
+pub use executor::{
+    execute, ExecuteOutput, Executor, LiveExecutor, OrderSink, Simulator, DRYRUN_FEE_RATE,
+};
 pub use passive::simulate_passive_fills;
 
 /// Yürütülen emir sonucu.
@@ -153,12 +157,13 @@ impl MarketSession {
                     dual_timeout,
                     open_orders: &self.open_orders,
                     avg_threshold,
-                    max_position_size: 100.0,
+                    max_position_size: MAX_POSITION_SIZE,
                     min_price: self.min_price,
                     max_price: self.max_price,
                     cooldown_threshold: self.cooldown_threshold,
                 };
-                let (new_state, decision) = harvest_decide(self.harvest_state, &ctx);
+                let (new_state, decision) =
+                    <HarvestEngine as DecisionEngine>::decide(self.harvest_state, &ctx);
                 self.harvest_state = new_state;
                 if matches!(self.current_zone(now_ms_v / 1000), MarketZone::StopTrade) {
                     filter_stop_trade(decision)

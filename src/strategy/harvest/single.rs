@@ -1,15 +1,15 @@
 //! SingleLeg averaging — Harvest FSM'in en uzun fazı.
 
-use crate::strategy::{order_size, Decision, OpenOrder, PlannedOrder};
+use crate::strategy::{order_size, planned_buy_gtc, Decision, OpenOrder, PlannedOrder};
 use crate::time::MarketZone;
-use crate::types::{OrderType, Outcome, Side};
+use crate::types::{Outcome, Side};
 
 use super::profit_lock::profit_lock_fak;
 use super::state::{HarvestContext, HarvestState};
 
 pub fn single_leg(filled_side: Outcome, ctx: &HarvestContext) -> (HarvestState, Decision) {
     let first_leg = first_leg_avg(ctx, filled_side);
-    let hedge_leg = hedge_best_ask(ctx, filled_side);
+    let hedge_leg = ctx.best_ask(filled_side.opposite());
 
     // 1) ProfitLock öncelikli kontrol (averaging fazında korunur).
     if hedge_leg > 0.0 && first_leg + hedge_leg <= ctx.avg_threshold {
@@ -44,27 +44,6 @@ fn first_leg_avg(ctx: &HarvestContext, side: Outcome) -> f64 {
     }
 }
 
-fn hedge_best_ask(ctx: &HarvestContext, side: Outcome) -> f64 {
-    match side {
-        Outcome::Up => ctx.no_best_ask,
-        Outcome::Down => ctx.yes_best_ask,
-    }
-}
-
-fn first_best_bid(ctx: &HarvestContext, side: Outcome) -> f64 {
-    match side {
-        Outcome::Up => ctx.yes_best_bid,
-        Outcome::Down => ctx.no_best_bid,
-    }
-}
-
-fn token_id_for<'a>(ctx: &'a HarvestContext<'a>, side: Outcome) -> &'a str {
-    match side {
-        Outcome::Up => ctx.yes_token_id,
-        Outcome::Down => ctx.no_token_id,
-    }
-}
-
 /// Açık averaging GTC işlemleri (cancel veya bekle). `Some(decision)` döndürürse
 /// caller bu kararı pas geçirmeli; `None` ise yeni averaging değerlendirmesi yapılır.
 fn handle_open_averaging(ctx: &HarvestContext, filled_side: Outcome) -> Option<Decision> {
@@ -89,7 +68,7 @@ fn handle_open_averaging(ctx: &HarvestContext, filled_side: Outcome) -> Option<D
 }
 
 fn try_new_averaging(ctx: &HarvestContext, filled_side: Outcome) -> Option<PlannedOrder> {
-    let first_best_leg = first_best_bid(ctx, filled_side);
+    let first_best_leg = ctx.best_bid(filled_side);
     let pos_held = position_held_with_open(ctx, filled_side);
 
     let cooldown_ok = ctx.now_ms.saturating_sub(ctx.last_averaging_ms) >= ctx.cooldown_threshold;
@@ -107,15 +86,13 @@ fn try_new_averaging(ctx: &HarvestContext, filled_side: Outcome) -> Option<Plann
     let mult = ctx.signal_multiplier(filled_side);
     let effective = (base * mult).round().max(ctx.api_min_order_size);
 
-    Some(PlannedOrder {
-        outcome: filled_side,
-        token_id: token_id_for(ctx, filled_side).to_string(),
-        side: Side::Buy,
-        price: first_best_leg,
-        size: effective,
-        order_type: OrderType::Gtc,
-        reason: format!("harvest:averaging:{:?}", filled_side),
-    })
+    Some(planned_buy_gtc(
+        filled_side,
+        ctx.token_id(filled_side),
+        first_best_leg,
+        effective,
+        format!("harvest:averaging:{:?}", filled_side),
+    ))
 }
 
 /// `pos_held` = filled shares + aynı taraftaki açık BUY emirlerin notional size'ı.

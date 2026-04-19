@@ -20,7 +20,6 @@ use std::time::Duration;
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::sse::{Event, KeepAlive, Sse};
-use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use futures_util::stream::{Stream, StreamExt};
@@ -31,6 +30,7 @@ use tower_http::cors::{Any, CorsLayer};
 
 use crate::config::{BotConfig, Credentials, StrategyParams};
 use crate::db;
+use crate::error::AppError;
 use crate::polymarket::gamma::GammaClient;
 use crate::supervisor::{self, AppState};
 use crate::types::{RunMode, Strategy};
@@ -101,15 +101,15 @@ struct CreateBotResp {
 async fn create_bot(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateBotReq>,
-) -> Result<Json<CreateBotResp>, ApiError> {
+) -> Result<Json<CreateBotResp>, AppError> {
     if !(req.min_price > 0.0 && req.min_price < req.max_price && req.max_price < 1.0) {
-        return Err(ApiError::Internal(format!(
+        return Err(AppError::Config(format!(
             "invalid price bounds: 0 < min_price ({}) < max_price ({}) < 1 olmalı",
             req.min_price, req.max_price
         )));
     }
     if req.cooldown_threshold == 0 {
-        return Err(ApiError::Internal(
+        return Err(AppError::Config(
             "invalid cooldown_threshold: > 0 ms olmalı".to_string(),
         ));
     }
@@ -131,14 +131,12 @@ async fn create_bot(
         db::upsert_credentials(&state.pool, id, &creds).await?;
     }
     if req.auto_start {
-        supervisor::start_bot(state.clone(), id)
-            .await
-            .map_err(ApiError::from)?;
+        supervisor::start_bot(state.clone(), id).await?;
     }
     Ok(Json(CreateBotResp { id }))
 }
 
-async fn list_bots(State(state): State<Arc<AppState>>) -> Result<Json<Vec<Value>>, ApiError> {
+async fn list_bots(State(state): State<Arc<AppState>>) -> Result<Json<Vec<Value>>, AppError> {
     let rows = db::list_bots(&state.pool).await?;
     rows.into_iter()
         .map(bot_row_to_json)
@@ -149,17 +147,17 @@ async fn list_bots(State(state): State<Arc<AppState>>) -> Result<Json<Vec<Value>
 async fn get_bot(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<Value>, AppError> {
     let row = db::get_bot(&state.pool, id)
         .await?
-        .ok_or(ApiError::NotFound)?;
+        .ok_or(AppError::BotNotFound { bot_id: id })?;
     bot_row_to_json(row).map(Json)
 }
 
 async fn delete_bot(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
-) -> Result<StatusCode, ApiError> {
+) -> Result<StatusCode, AppError> {
     let _ = supervisor::stop_bot(state.clone(), id).await;
     db::delete_bot(&state.pool, id).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -168,20 +166,16 @@ async fn delete_bot(
 async fn start_bot(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
-) -> Result<StatusCode, ApiError> {
-    supervisor::start_bot(state.clone(), id)
-        .await
-        .map_err(ApiError::from)?;
+) -> Result<StatusCode, AppError> {
+    supervisor::start_bot(state.clone(), id).await?;
     Ok(StatusCode::ACCEPTED)
 }
 
 async fn stop_bot(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
-) -> Result<StatusCode, ApiError> {
-    supervisor::stop_bot(state.clone(), id)
-        .await
-        .map_err(ApiError::from)?;
+) -> Result<StatusCode, AppError> {
+    supervisor::stop_bot(state.clone(), id).await?;
     Ok(StatusCode::ACCEPTED)
 }
 
@@ -199,7 +193,7 @@ async fn bot_logs(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
     Query(q): Query<LogQuery>,
-) -> Result<Json<Vec<Value>>, ApiError> {
+) -> Result<Json<Vec<Value>>, AppError> {
     let logs = db::recent_logs(&state.pool, Some(id), q.limit).await?;
     Ok(Json(
         logs.into_iter()
@@ -219,7 +213,7 @@ async fn bot_logs(
 async fn bot_pnl(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<Value>, AppError> {
     let snap = db::pnl::latest_pnl_for_bot(&state.pool, id).await?;
     match snap {
         Some(s) => Ok(Json(serde_json::json!({
@@ -240,15 +234,12 @@ async fn bot_pnl(
 async fn bot_session(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
-) -> Result<Json<Value>, ApiError> {
+) -> Result<Json<Value>, AppError> {
     let summary = db::sessions::latest_session_for_bot(&state.pool, id).await?;
     match summary {
         Some(s) => {
             let gamma = GammaClient::new(reqwest::Client::new(), state.env.gamma_base_url.clone());
-            let m = gamma
-                .get_market_by_slug(&s.slug)
-                .await
-                .map_err(ApiError::from)?;
+            let m = gamma.get_market_by_slug(&s.slug).await?;
             Ok(Json(serde_json::json!({
                 "slug":     s.slug,
                 "start_ts": s.start_ts,
@@ -282,9 +273,9 @@ async fn events_sse(
     )
 }
 
-fn bot_row_to_json(r: db::BotRow) -> Result<Value, ApiError> {
+fn bot_row_to_json(r: db::BotRow) -> Result<Value, AppError> {
     let strategy_params: Value = serde_json::from_str(&r.strategy_params).map_err(|e| {
-        ApiError::Internal(format!(
+        AppError::Config(format!(
             "bot {id} strategy_params JSON bozuk: {e}",
             id = r.id
         ))
@@ -308,31 +299,5 @@ fn bot_row_to_json(r: db::BotRow) -> Result<Value, ApiError> {
     }))
 }
 
-// ----- errors --------------------------------------------------------------
-
-#[derive(Debug)]
-enum ApiError {
-    NotFound,
-    Internal(String),
-}
-
-impl From<crate::error::AppError> for ApiError {
-    fn from(e: crate::error::AppError) -> Self {
-        Self::Internal(e.to_string())
-    }
-}
-
-impl From<String> for ApiError {
-    fn from(e: String) -> Self {
-        Self::Internal(e)
-    }
-}
-
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
-        match self {
-            Self::NotFound => (StatusCode::NOT_FOUND, "not found").into_response(),
-            Self::Internal(e) => (StatusCode::INTERNAL_SERVER_ERROR, e).into_response(),
-        }
-    }
-}
+// HTTP yanıt → `AppError::IntoResponse` ([crate::error]) tek noktadan yönetir;
+// ayrı bir `ApiError` katmanı tutmuyoruz.

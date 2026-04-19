@@ -21,6 +21,7 @@ use tokio::time::sleep;
 
 use crate::config::RuntimeEnv;
 use crate::db;
+use crate::error::AppError;
 use crate::ipc::{parse_event_line, FrontendEvent, EVENT_PREFIX};
 
 /// Supervisor'un paylaşılan state'i.
@@ -48,7 +49,7 @@ impl AppState {
 }
 
 /// Bir bot'u başlat — zaten çalışıyorsa no-op.
-pub async fn start_bot(state: Arc<AppState>, bot_id: i64) -> Result<(), String> {
+pub async fn start_bot(state: Arc<AppState>, bot_id: i64) -> Result<(), AppError> {
     {
         let children = state.children.lock().await;
         if children.contains_key(&bot_id) {
@@ -76,7 +77,7 @@ pub async fn start_bot(state: Arc<AppState>, bot_id: i64) -> Result<(), String> 
 }
 
 /// Bot'u durdur (SIGTERM → 10sn → SIGKILL).
-pub async fn stop_bot(state: Arc<AppState>, bot_id: i64) -> Result<(), String> {
+pub async fn stop_bot(state: Arc<AppState>, bot_id: i64) -> Result<(), AppError> {
     let handle = {
         let mut children = state.children.lock().await;
         children.remove(&bot_id)
@@ -136,7 +137,7 @@ async fn run_bot_with_backoff(
 }
 
 /// Tek bir bot process'i spawn eder; exit code döner.
-async fn spawn_once(state: Arc<AppState>, bot_id: i64) -> Result<i32, String> {
+async fn spawn_once(state: Arc<AppState>, bot_id: i64) -> Result<i32, AppError> {
     let mut cmd = Command::new(&state.env.bot_binary);
     cmd.arg("--bot-id")
         .arg(bot_id.to_string())
@@ -145,18 +146,18 @@ async fn spawn_once(state: Arc<AppState>, bot_id: i64) -> Result<i32, String> {
         .stderr(Stdio::piped())
         .kill_on_drop(true);
 
-    let mut child: Child = cmd.spawn().map_err(|e| format!("spawn: {e}"))?;
+    let mut child: Child = cmd.spawn()?;
     tracing::info!(bot_id, pid = child.id(), "bot spawned");
     let _ = db::set_bot_state(&state.pool, bot_id, "RUNNING").await;
 
     let stdout = child
         .stdout
         .take()
-        .ok_or_else(|| "stdout pipe missing".to_string())?;
+        .ok_or_else(|| AppError::Config("stdout pipe missing".into()))?;
     let stderr = child
         .stderr
         .take()
-        .ok_or_else(|| "stderr pipe missing".to_string())?;
+        .ok_or_else(|| AppError::Config("stderr pipe missing".into()))?;
 
     let s_out = state.clone();
     tokio::spawn(async move {
@@ -176,7 +177,7 @@ async fn spawn_once(state: Arc<AppState>, bot_id: i64) -> Result<i32, String> {
         }
     });
 
-    let status = child.wait().await.map_err(|e| format!("wait: {e}"))?;
+    let status = child.wait().await?;
     let code = status.code().unwrap_or(-1);
     Ok(code)
 }

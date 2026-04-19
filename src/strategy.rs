@@ -18,7 +18,7 @@ pub mod metrics;
 pub mod order;
 pub mod prism;
 
-pub use order::OpenOrder;
+pub use order::{planned_buy_gtc, OpenOrder};
 
 /// Strategy başına hangi metrikler hesaplanmalı (doc §11 sözleşmesi).
 ///
@@ -77,6 +77,19 @@ impl ZoneSignalMap {
         };
         self.0[idx]
     }
+}
+
+/// Strateji "decide step" sözleşmesi — her FSM strateji
+/// `(State, &Context) → (State, Decision)` imzasını sağlamalıdır.
+///
+/// `MarketSession::tick` `cfg.strategy` üzerinden uygun marker'ı seçer ve
+/// karşılığında bu trait'i çağırır. Mevcut `harvest::HarvestEngine` tek aktif
+/// implementor; `dutch_book`/`prism` gerçek FSM doldurulduğunda kendi
+/// marker'larını ekleyip aynı trait'i sağlayacaklardır.
+pub trait DecisionEngine {
+    type State;
+    type Ctx<'a>;
+    fn decide(state: Self::State, ctx: &Self::Ctx<'_>) -> (Self::State, Decision);
 }
 
 /// Decide() döndüğü aksiyon — engine tarafından yürütülür.

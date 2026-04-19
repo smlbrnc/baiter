@@ -60,3 +60,21 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), AppError> {
     sqlx::migrate!("./migrations").run(pool).await?;
     Ok(())
 }
+
+/// Fire-and-forget DB yazımı için tek noktadan helper (§⚡ Kural 4).
+///
+/// Verilen futureı `tokio::spawn` ile arkaplana atar; hata olursa `label`
+/// etiketiyle `tracing::warn` basar. WS/event yolunda bloklamadan kalmak
+/// için kullanılır.
+pub fn spawn_db<F, T, E>(label: &'static str, fut: F)
+where
+    F: std::future::Future<Output = Result<T, E>> + Send + 'static,
+    T: Send + 'static,
+    E: std::fmt::Display + Send + 'static,
+{
+    tokio::spawn(async move {
+        if let Err(e) = fut.await {
+            tracing::warn!(error=%e, "{label} failed");
+        }
+    });
+}

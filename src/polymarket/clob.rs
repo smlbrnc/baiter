@@ -8,7 +8,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use reqwest::Client;
+use reqwest::{Client, Method};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -53,49 +53,33 @@ impl ClobClient {
 
     // ---------------------------- Authenticated (L2) ----------------------------
 
-    /// Generic authenticated POST — imza + 5 header ekler.
-    async fn auth_post(&self, path: &str, body: Value) -> Result<Value, AppError> {
+    /// Generic authenticated request — L2 imza + 5 header ekler.
+    ///
+    /// Hem POST hem DELETE çağrıları aynı: ts → body → headers → send → json.
+    async fn auth_request(
+        &self,
+        method: Method,
+        path: &str,
+        body: Value,
+    ) -> Result<Value, AppError> {
         let creds = self.creds()?;
         let ts = now_secs().to_string();
         let body_str = body_to_string(&body);
-        let headers = make_l2_headers(creds, &ts, "POST", path, &body_str)?;
+        let headers = make_l2_headers(creds, &ts, method.as_str(), path, &body_str)?;
 
         let url = format!("{}{}", self.base, path);
         let req = self
             .http
-            .post(&url)
+            .request(method, &url)
             .header("Content-Type", "application/json")
             .body(body_str);
-        let resp = headers
+        Ok(headers
             .apply(req)
             .send()
             .await?
             .error_for_status()?
             .json::<Value>()
-            .await?;
-        Ok(resp)
-    }
-
-    async fn auth_delete(&self, path: &str, body: Value) -> Result<Value, AppError> {
-        let creds = self.creds()?;
-        let ts = now_secs().to_string();
-        let body_str = body_to_string(&body);
-        let headers = make_l2_headers(creds, &ts, "DELETE", path, &body_str)?;
-
-        let url = format!("{}{}", self.base, path);
-        let req = self
-            .http
-            .delete(&url)
-            .header("Content-Type", "application/json")
-            .body(body_str);
-        let resp = headers
-            .apply(req)
-            .send()
-            .await?
-            .error_for_status()?
-            .json::<Value>()
-            .await?;
-        Ok(resp)
+            .await?)
     }
 
     /// `POST /order` — tek emir.
@@ -111,27 +95,31 @@ impl ClobClient {
             "owner": owner,
             "deferExec": false,
         });
-        let resp = self.auth_post("/order", body).await?;
+        let resp = self.auth_request(Method::POST, "/order", body).await?;
         Ok(serde_json::from_value(resp)?)
     }
 
     /// `DELETE /order` — tek iptal.
     pub async fn cancel_order(&self, order_id: &str) -> Result<CancelResponse, AppError> {
         let body = serde_json::json!({"orderID": order_id});
-        let resp = self.auth_delete("/order", body).await?;
+        let resp = self.auth_request(Method::DELETE, "/order", body).await?;
         Ok(serde_json::from_value(resp)?)
     }
 
     /// `DELETE /cancel-all` — tüm açık emirleri iptal et.
     pub async fn cancel_all(&self) -> Result<CancelResponse, AppError> {
-        let resp = self.auth_delete("/cancel-all", Value::Null).await?;
+        let resp = self
+            .auth_request(Method::DELETE, "/cancel-all", Value::Null)
+            .await?;
         Ok(serde_json::from_value(resp)?)
     }
 
     /// `GET /heartbeat` veya `POST /postHeartbeat` — 5 sn aralıkla.
     /// Resmi örnek POST olarak tanımlar.
     pub async fn heartbeat_once(&self) -> Result<(), AppError> {
-        let _ = self.auth_post("/postHeartbeat", Value::Null).await?;
+        let _ = self
+            .auth_request(Method::POST, "/postHeartbeat", Value::Null)
+            .await?;
         Ok(())
     }
 }

@@ -1,5 +1,7 @@
 //! Uygulama hata enum'u — `thiserror` tabanlı.
 
+use axum::http::StatusCode;
+use axum::response::{IntoResponse, Response};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -48,4 +50,24 @@ pub enum AppError {
 
     #[error("other: {0}")]
     Other(#[from] anyhow::Error),
+}
+
+impl AppError {
+    /// HTTP status mapping — `IntoResponse` ve API katmanı tarafından kullanılır.
+    /// Domain hataları (4xx) ile beklenmeyen sistem hataları (5xx) ayrılır.
+    pub fn status_code(&self) -> StatusCode {
+        match self {
+            Self::BotNotFound { .. } => StatusCode::NOT_FOUND,
+            Self::InvalidSlug { .. } | Self::Config(_) => StatusCode::BAD_REQUEST,
+            Self::MissingCredentials { .. } | Self::Auth(_) => StatusCode::UNAUTHORIZED,
+            _ => StatusCode::INTERNAL_SERVER_ERROR,
+        }
+    }
+}
+
+impl IntoResponse for AppError {
+    fn into_response(self) -> Response {
+        let status = self.status_code();
+        (status, self.to_string()).into_response()
+    }
 }

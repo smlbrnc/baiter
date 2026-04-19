@@ -21,6 +21,25 @@ use super::{ExecutedOrder, MarketSession};
 /// Fee sabiti — DryRun simülasyonu için.
 pub const DRYRUN_FEE_RATE: f64 = 0.0002; // %0.02
 
+/// Emir yürütme sözleşmesi — `Executor` enum'u bu trait'i sağlayan
+/// implementor'lar üzerinde çalışır. Şu an `Simulator` (dryrun) ve
+/// `LiveExecutor` (CLOB) implementasyonu var; ileride backtest/replay
+/// `OrderSink` ekleneceği zaman trait'i kullanır.
+#[async_trait::async_trait]
+pub trait OrderSink: Send + Sync {
+    async fn place(
+        &self,
+        session: &mut MarketSession,
+        planned: &PlannedOrder,
+    ) -> Result<ExecutedOrder, AppError>;
+
+    async fn cancel(
+        &self,
+        session: &mut MarketSession,
+        order_id: &str,
+    ) -> Result<CancelResponse, AppError>;
+}
+
 /// Emir yürütücü — DryRun Simulator veya Live CLOB.
 pub enum Executor {
     DryRun(Simulator),
@@ -38,34 +57,54 @@ pub struct LiveExecutor {
     pub pool: SqlitePool,
 }
 
-impl Executor {
-    pub async fn place(
+#[async_trait::async_trait]
+impl OrderSink for Executor {
+    async fn place(
         &self,
         session: &mut MarketSession,
         planned: &PlannedOrder,
     ) -> Result<ExecutedOrder, AppError> {
         match self {
-            Self::DryRun(sim) => Ok(sim.fill(session, planned)),
+            Self::DryRun(sim) => sim.place(session, planned).await,
             Self::Live(live) => live.place(session, planned).await,
         }
     }
 
-    pub async fn cancel(
+    async fn cancel(
         &self,
         session: &mut MarketSession,
         order_id: &str,
     ) -> Result<CancelResponse, AppError> {
         match self {
-            Self::DryRun(_) => Ok(CancelResponse {
-                canceled: vec![order_id.to_string()],
-                not_canceled: serde_json::json!({}),
-            }),
+            Self::DryRun(sim) => sim.cancel(session, order_id).await,
             Self::Live(live) => {
                 let resp = live.client.cancel_order(order_id).await?;
                 live.persist_cancel(session, order_id, &resp);
                 Ok(resp)
             }
         }
+    }
+}
+
+#[async_trait::async_trait]
+impl OrderSink for Simulator {
+    async fn place(
+        &self,
+        session: &mut MarketSession,
+        planned: &PlannedOrder,
+    ) -> Result<ExecutedOrder, AppError> {
+        Ok(self.fill(session, planned))
+    }
+
+    async fn cancel(
+        &self,
+        _session: &mut MarketSession,
+        order_id: &str,
+    ) -> Result<CancelResponse, AppError> {
+        Ok(CancelResponse {
+            canceled: vec![order_id.to_string()],
+            not_canceled: serde_json::json!({}),
+        })
     }
 }
 
@@ -167,10 +206,8 @@ impl LiveExecutor {
             delete_canceled: None,
             delete_not_canceled: None,
         };
-        tokio::spawn(async move {
-            if let Err(e) = db::orders::upsert_order(&pool, &record).await {
-                tracing::warn!(error=%e, "rest_post upsert_order failed");
-            }
+        db::spawn_db("rest_post upsert_order", async move {
+            db::orders::upsert_order(&pool, &record).await
         });
     }
 
@@ -200,10 +237,8 @@ impl LiveExecutor {
             delete_canceled: Some(serde_json::to_string(&resp.canceled).unwrap_or_default()),
             delete_not_canceled: Some(resp.not_canceled.to_string()),
         };
-        tokio::spawn(async move {
-            if let Err(e) = db::orders::upsert_order(&pool, &record).await {
-                tracing::warn!(error=%e, "rest_delete upsert_order failed");
-            }
+        db::spawn_db("rest_delete upsert_order", async move {
+            db::orders::upsert_order(&pool, &record).await
         });
     }
 }
@@ -219,15 +254,8 @@ impl Simulator {
     /// - Karşı fiyat 0.0 (henüz quote yok) veya emir geçmiyorsa → live (orderbook'a girer)
     pub fn fill(&self, session: &mut MarketSession, planned: &PlannedOrder) -> ExecutedOrder {
         let order_id = format!("dry-{}", Uuid::new_v4());
-        let counter_price = counter_price_for(session, planned.outcome, planned.side);
-
-        let crosses = counter_price > 0.0
-            && match planned.side {
-                Side::Buy => planned.price >= counter_price,
-                Side::Sell => planned.price <= counter_price,
-            };
-
-        if !crosses {
+        let Some(fill_price) = dryrun_cross(session, planned.outcome, planned.side, planned.price)
+        else {
             session.open_orders.push(OpenOrder {
                 id: order_id.clone(),
                 outcome: planned.outcome,
@@ -244,16 +272,13 @@ impl Simulator {
                 fill_price: None,
                 fill_size: None,
             };
-        }
+        };
 
-        let fill_price = counter_price;
         let fill_size = planned.size;
-        let fee = fill_price * fill_size * DRYRUN_FEE_RATE;
-
-        session
-            .metrics
-            .ingest_fill(planned.outcome, fill_price, fill_size, fee);
-        session.last_fill_price = fill_price;
+        apply_dryrun_fill(session, planned.outcome, fill_price, fill_size);
+        // Taker fill: planned bir averaging emri olabilir; place_batch zaten
+        // averaging tespit edince last_averaging_ms'i set ediyor, ama burada da
+        // koruyoruz (önceki davranışı muhafaza için).
         session.last_averaging_ms = now_ms();
 
         ExecutedOrder {
@@ -280,6 +305,41 @@ pub(crate) fn counter_price_for(session: &MarketSession, outcome: Outcome, side:
     }
 }
 
+/// DryRun çapraz testi: emrin verilen fiyatla karşı taraf en iyi fiyatı geçip
+/// geçmediğini ve geçtiyse fill fiyatını döndürür.
+///
+/// `Simulator::fill` (taker) ve `simulate_passive_fills` (resting) için ortak.
+pub(crate) fn dryrun_cross(
+    session: &MarketSession,
+    outcome: Outcome,
+    side: Side,
+    price: f64,
+) -> Option<f64> {
+    let counter = counter_price_for(session, outcome, side);
+    if counter <= 0.0 {
+        return None;
+    }
+    let crosses = match side {
+        Side::Buy => price >= counter,
+        Side::Sell => price <= counter,
+    };
+    crosses.then_some(counter)
+}
+
+/// DryRun fill ortak kuyruğu: fee hesaplar, metrics ve `last_fill_price`'ı
+/// günceller. `last_averaging_ms` güncellemesi caller'a bırakılır (taker vs
+/// passive farklı politikalar uygular).
+pub(crate) fn apply_dryrun_fill(
+    session: &mut MarketSession,
+    outcome: Outcome,
+    fill_price: f64,
+    fill_size: f64,
+) {
+    let fee = fill_price * fill_size * DRYRUN_FEE_RATE;
+    session.metrics.ingest_fill(outcome, fill_price, fill_size, fee);
+    session.last_fill_price = fill_price;
+}
+
 /// `execute()` çıktısı — placed + canceled (gerçek `CancelResponse`'lar).
 #[derive(Debug, Default)]
 pub struct ExecuteOutput {
@@ -303,9 +363,9 @@ fn within_price_bounds(session: &MarketSession, planned: &PlannedOrder) -> bool 
 }
 
 /// Decision sonucu batch'i yürüt.
-pub async fn execute(
+pub async fn execute<S: OrderSink + ?Sized>(
     session: &mut MarketSession,
-    exec: &Executor,
+    exec: &S,
     decision: Decision,
 ) -> Result<ExecuteOutput, AppError> {
     let mut out = ExecuteOutput::default();
@@ -321,9 +381,9 @@ pub async fn execute(
     Ok(out)
 }
 
-async fn place_batch(
+async fn place_batch<S: OrderSink + ?Sized>(
     session: &mut MarketSession,
-    exec: &Executor,
+    exec: &S,
     orders: Vec<PlannedOrder>,
     out: &mut ExecuteOutput,
 ) -> Result<(), AppError> {
@@ -340,9 +400,9 @@ async fn place_batch(
     Ok(())
 }
 
-async fn cancel_batch(
+async fn cancel_batch<S: OrderSink + ?Sized>(
     session: &mut MarketSession,
-    exec: &Executor,
+    exec: &S,
     ids: &[String],
     out: &mut ExecuteOutput,
 ) -> Result<(), AppError> {

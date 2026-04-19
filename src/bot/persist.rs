@@ -20,8 +20,8 @@ pub fn snapshot_pnl(pool: &SqlitePool, sess: &MarketSession) {
     let market_session_id = sess.market_session_id;
     let pnl = sess.pnl();
     let pair_count = sess.metrics.pair_count();
-    tokio::spawn(async move {
-        if let Err(e) = db::pnl::insert_pnl_snapshot(
+    db::spawn_db("pnl_snapshot insert", async move {
+        db::pnl::insert_pnl_snapshot(
             &pool,
             bot_id,
             market_session_id,
@@ -35,8 +35,5 @@ pub fn snapshot_pnl(pool: &SqlitePool, sess: &MarketSession) {
             pair_count,
         )
         .await
-        {
-            tracing::warn!(error=%e, "pnl_snapshot insert failed");
-        }
     });
 }

@@ -14,7 +14,7 @@
 //!
 //! Referans: [docs/strategies.md §2](../../../docs/strategies.md).
 
-use crate::strategy::Decision;
+use crate::strategy::{Decision, DecisionEngine, OpenOrder};
 
 pub mod dual;
 pub mod profit_lock;
@@ -23,6 +23,28 @@ pub mod state;
 
 pub use dual::dual_prices;
 pub use state::{HarvestContext, HarvestState, MAX_POSITION_SIZE};
+
+/// `DecisionEngine` marker — `MarketSession::tick` `Strategy::Harvest` kolunda
+/// kullanılır. Free `decide` fonksiyonu trait üzerinden de çağrılabilir.
+pub struct HarvestEngine;
+
+impl DecisionEngine for HarvestEngine {
+    type State = HarvestState;
+    type Ctx<'a> = HarvestContext<'a>;
+
+    fn decide(state: Self::State, ctx: &Self::Ctx<'_>) -> (Self::State, Decision) {
+        decide(state, ctx)
+    }
+}
+
+/// Verilen açık emir slice'ından `CancelOrders` kararı üretir; boşsa `NoOp`.
+pub(crate) fn cancel_ids(open_orders: &[OpenOrder]) -> Decision {
+    if open_orders.is_empty() {
+        Decision::NoOp
+    } else {
+        Decision::CancelOrders(open_orders.iter().map(|o| o.id.clone()).collect())
+    }
+}
 
 /// Merkezi FSM fonksiyonu — her olay sonrası çağrılır.
 pub fn decide(state: HarvestState, ctx: &HarvestContext) -> (HarvestState, Decision) {

@@ -42,26 +42,55 @@ pub async fn run_window(
         return Ok(Some(reason));
     }
 
-    ipc::log_line(&label, format!("📡 Fetching market: {slug_str}"));
-    let market = ctx.gamma.get_market_by_slug(&slug_str).await?;
+    let prepared = prepare_window(ctx, slug, &slug_str, &label).await?;
+    let streams = connect_streams(ctx, &prepared, &label);
+
+    wait_for_t_zero(prepared.start_ts).await;
+    log_loop_start(ctx, &label);
+
+    let result = run_trading_loop(ctx, slug, prepared.session, streams.ev_rx, sigterm, sigint).await;
+
+    cleanup_window(ctx, streams.market_ws, streams.user_ws, &label, result).await;
+    Ok(result)
+}
+
+/// Hazırlanmış pencere context'i — Gamma fetch + DB upsert sonrası state.
+struct PreparedWindow {
+    session: MarketSession,
+    yes_id: String,
+    no_id: String,
+    condition_id: String,
+    start_ts: u64,
+}
+
+/// T-15 ön hazırlığı: Gamma fetch → DB session upsert → MarketSession build →
+/// SessionOpened IPC. WS bağlantısı [`connect_streams`] içinde kurulur.
+async fn prepare_window(
+    ctx: &Ctx,
+    slug: SlugInfo,
+    slug_str: &str,
+    label: &str,
+) -> Result<PreparedWindow, AppError> {
+    ipc::log_line(label, format!("📡 Fetching market: {slug_str}"));
+    let market = ctx.gamma.get_market_by_slug(slug_str).await?;
     let (yes_id, no_id) = market.parse_token_ids()?;
     let condition_id = market.condition_id.clone().unwrap_or_default();
     let (start_ts, end_ts) = (slug.ts, slug.end_ts());
 
     if let Some(q) = market.question.as_deref() {
-        ipc::log_line(&label, format!("✅ Found market: {q}"));
+        ipc::log_line(label, format!("✅ Found market: {q}"));
     }
     ipc::log_line(
-        &label,
+        label,
         format!("Window: {} UTC - {} UTC", fmt_utc(start_ts), fmt_utc(end_ts)),
     );
-    ipc::log_line(&label, format!("    UP:   {yes_id}"));
-    ipc::log_line(&label, format!("    DOWN: {no_id}"));
+    ipc::log_line(label, format!("    UP:   {yes_id}"));
+    ipc::log_line(label, format!("    DOWN: {no_id}"));
 
     let session_id = db::sessions::upsert_market_session(
         &ctx.pool,
         ctx.bot_id,
-        &slug_str,
+        slug_str,
         start_ts as i64,
         end_ts as i64,
     )
@@ -78,7 +107,7 @@ pub async fn run_window(
     )
     .await?;
 
-    let mut sess = build_session(
+    let session = build_session(
         ctx,
         slug,
         &market,
@@ -92,55 +121,95 @@ pub async fn run_window(
 
     ipc::emit(&FrontendEvent::SessionOpened {
         bot_id: ctx.bot_id,
-        slug: slug_str.clone(),
+        slug: slug_str.to_string(),
         start_ts,
         end_ts,
         yes_token_id: yes_id.clone(),
         no_token_id: no_id.clone(),
     });
 
-    ipc::log_line(&label, "🔌 Connecting to Market WebSocket...");
-    let (ev_tx, mut ev_rx) = mpsc::channel::<PolymarketEvent>(512);
+    Ok(PreparedWindow {
+        session,
+        yes_id,
+        no_id,
+        condition_id,
+        start_ts,
+    })
+}
+
+/// Aktif WS bağlantıları + event channel.
+struct WindowStreams {
+    ev_rx: mpsc::Receiver<PolymarketEvent>,
+    market_ws: tokio::task::JoinHandle<()>,
+    user_ws: Option<tokio::task::JoinHandle<()>>,
+}
+
+/// Market WS + (varsa) User WS task'larını başlatır, mpsc channel kurar.
+fn connect_streams(ctx: &Ctx, prepared: &PreparedWindow, label: &str) -> WindowStreams {
+    ipc::log_line(label, "🔌 Connecting to Market WebSocket...");
+    let (ev_tx, ev_rx) = mpsc::channel::<PolymarketEvent>(512);
     let market_ws = tokio::spawn(run_market_ws(
         ctx.env_.clob_ws_base.clone(),
-        vec![yes_id, no_id],
+        vec![prepared.yes_id.clone(), prepared.no_id.clone()],
         ev_tx.clone(),
     ));
     let user_ws = ctx.creds.as_ref().map(|c| {
-        ipc::log_line(&label, "🔌 Connecting to User WebSocket...");
+        ipc::log_line(label, "🔌 Connecting to User WebSocket...");
         tokio::spawn(run_user_ws(
             ctx.env_.clob_ws_base.clone(),
             c.clone(),
-            vec![condition_id],
+            vec![prepared.condition_id.clone()],
             ev_tx,
         ))
     });
+    WindowStreams {
+        ev_rx,
+        market_ws,
+        user_ws,
+    }
+}
 
-    // T=0'a kadar bekle (T-15 ön hazırlığında biriken WS event'leri loop
-    // başladığında işlenir).
+/// T=0'a kadar bekle. T-15 hazırlığında biriken WS event'leri trading loop
+/// başladığında işlenir.
+async fn wait_for_t_zero(start_ts: u64) {
     let now = now_secs();
     if now < start_ts {
         sleep(Duration::from_secs(start_ts - now)).await;
     }
+}
 
+fn log_loop_start(ctx: &Ctx, label: &str) {
     ipc::log_line(
-        &label,
+        label,
         format!(
             "🚀 Starting trading loop (strategy: {:?}, mode: {:?})",
             ctx.cfg.strategy, ctx.cfg.run_mode
         ),
     );
+}
 
+/// Asıl trading döngüsü — `select!` ile WS event / tick / zone / pnl / sinyal.
+///
+/// Dönüş: `None` ⇒ pencere doğal sonu (sonraki window'a geç),
+/// `Some(reason)` ⇒ sigterm/sigint (graceful shutdown).
+async fn run_trading_loop(
+    ctx: &Ctx,
+    slug: SlugInfo,
+    mut sess: MarketSession,
+    mut ev_rx: mpsc::Receiver<PolymarketEvent>,
+    sigterm: &mut Signal,
+    sigint: &mut Signal,
+) -> Option<&'static str> {
     let mut tick_timer = tokio_interval(Duration::from_millis(500));
     let mut zone_timer = tokio_interval(Duration::from_secs(5));
     let mut pnl_timer = tokio_interval(Duration::from_secs(5));
     let mut last_zone: Option<String> = None;
     let mut last_book_snapshot: Option<(f64, f64, f64, f64)> = None;
 
-    let result: Option<&'static str> = loop {
+    loop {
         tokio::select! {
-            _ = sigterm.recv() => break Some("sigterm"),
-            _ = sigint.recv()  => break Some("sigint"),
+            _ = sigterm.recv() => return Some("sigterm"),
+            _ = sigint.recv()  => return Some("sigint"),
             Some(ev) = ev_rx.recv() => {
                 event::handle_event(&mut sess, &ctx.pool, ctx.bot_id, ctx.cfg.run_mode, ev).await;
             }
@@ -148,13 +217,22 @@ pub async fn run_window(
             _ = zone_timer.tick() => {
                 zone::emit_zone_signal(ctx, &sess, slug, &mut last_zone, &mut last_book_snapshot).await;
                 if now_secs() >= sess.end_ts {
-                    break None;
+                    return None;
                 }
             }
             _ = pnl_timer.tick() => persist::snapshot_pnl(&ctx.pool, &sess),
         }
-    };
+    }
+}
 
+/// Pencere bitiminde WS task'larını abort + (Live ise) açık emirleri iptal et.
+async fn cleanup_window(
+    ctx: &Ctx,
+    market_ws: tokio::task::JoinHandle<()>,
+    user_ws: Option<tokio::task::JoinHandle<()>>,
+    label: &str,
+    result: Option<&'static str>,
+) {
     market_ws.abort();
     if let Some(h) = user_ws {
         h.abort();
@@ -164,11 +242,10 @@ pub async fn run_window(
     }
     if result.is_none() {
         ipc::log_line(
-            &label,
+            label,
             "🏁 Market window complete, transitioning to next market...",
         );
     }
-    Ok(result)
 }
 
 /// Pencereyi bir interval ileri kaydır; şimdi geride kalmışsak güncel sınıra snap.

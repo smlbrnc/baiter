@@ -146,10 +146,14 @@ pub async fn run_user_ws(
 
 async fn run_ws_loop(url: &str, subscription: Value, tx: mpsc::Sender<PolymarketEvent>) {
     let mut backoff_secs: u64 = 1;
+    let mut was_disconnected = false;
     loop {
         match connect_and_stream(url, &subscription, &tx).await {
             Ok(()) => {
                 tracing::warn!(url, "ws closed cleanly, reconnect in {backoff_secs}s");
+                // Temiz kapanışta backoff sıfırlanır (uzun süreli sağlıklı sessionun
+                // ardından bir sonraki bağlanma denemesi gecikmesin).
+                backoff_secs = 1;
             }
             Err(e) => {
                 tracing::error!(url, error=%e, "ws error, reconnect in {backoff_secs}s");
@@ -158,12 +162,16 @@ async fn run_ws_loop(url: &str, subscription: Value, tx: mpsc::Sender<Polymarket
                         reason: e.to_string(),
                     })
                     .await;
+                was_disconnected = true;
             }
         }
         sleep(Duration::from_secs(backoff_secs)).await;
+        if was_disconnected {
+            // Yalnızca gerçek disconnect sonrası "tekrar bağlandık" sinyali yayılır.
+            let _ = tx.send(PolymarketEvent::Reconnected).await;
+            was_disconnected = false;
+        }
         backoff_secs = (backoff_secs * 2).min(60);
-        let _ = tx.send(PolymarketEvent::Reconnected).await;
-        // Reset after successful connect (inside connect_and_stream)
     }
 }
 

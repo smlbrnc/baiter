@@ -59,13 +59,10 @@ pub async fn get_credentials(
     let Some(r) = row else { return Ok(None) };
 
     let need = |field: &'static str, v: Option<String>| -> Result<String, AppError> {
-        v.filter(|s| !s.is_empty())
-            .ok_or(AppError::MissingCredentials { bot_id })
-            .map_err(|_| {
-                AppError::Config(format!(
-                    "bot {bot_id} credentials missing field '{field}'"
-                ))
-            })
+        v.filter(|s| !s.is_empty()).ok_or_else(|| {
+            tracing::warn!(bot_id, field, "credentials missing required field");
+            AppError::MissingCredentials { bot_id }
+        })
     };
 
     let poly_address = need("poly_address", r.try_get("poly_address")?)?;

@@ -66,6 +66,31 @@ pub struct HarvestContext<'a> {
 }
 
 impl<'a> HarvestContext<'a> {
+    /// Outcome → token_id (book sözlüğü).
+    pub(super) fn token_id(&self, side: Outcome) -> &'a str {
+        match side {
+            Outcome::Up => self.yes_token_id,
+            Outcome::Down => self.no_token_id,
+        }
+    }
+
+    /// Outcome → en iyi alış (kendi tarafı).
+    pub(super) fn best_bid(&self, side: Outcome) -> f64 {
+        match side {
+            Outcome::Up => self.yes_best_bid,
+            Outcome::Down => self.no_best_bid,
+        }
+    }
+
+    /// Outcome → en iyi satış (kendi tarafı). Hedge fiyatı için karşı tarafın
+    /// `best_ask`'ı istenirse `ctx.best_ask(side.opposite())` çağrılır.
+    pub(super) fn best_ask(&self, side: Outcome) -> f64 {
+        match side {
+            Outcome::Up => self.yes_best_ask,
+            Outcome::Down => self.no_best_ask,
+        }
+    }
+
     /// `signal_multiplier` (§14.4 harvest tablosu) — averaging size çarpanı.
     pub(super) fn signal_multiplier(&self, averaging_side: Outcome) -> f64 {
         if !ZoneSignalMap::HARVEST.is_active(self.zone) || self.signal_weight <= 0.0 {

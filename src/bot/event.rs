@@ -132,8 +132,7 @@ fn on_best_bid_ask(
         no_best_ask: sess.no_best_ask,
         ts_ms: now_ms(),
     });
-    maybe_log_book_ready(sess, bot_id);
-    run_passive_fills_if_dryrun(sess, bot_id, run_mode);
+    after_book_update(sess, bot_id, run_mode);
 }
 
 fn on_book_snapshot(
@@ -149,9 +148,14 @@ fn on_book_snapshot(
         asks.first().and_then(|a| a.0.parse::<f64>().ok()),
     ) {
         update_best(sess, asset_id, bid, ask);
-        maybe_log_book_ready(sess, bot_id);
-        run_passive_fills_if_dryrun(sess, bot_id, run_mode);
+        after_book_update(sess, bot_id, run_mode);
     }
+}
+
+/// Book güncellendikten sonra ortak kuyruk: book-ready logu + dryrun passive fill.
+fn after_book_update(sess: &mut MarketSession, bot_id: i64, run_mode: RunMode) {
+    maybe_log_book_ready(sess, bot_id);
+    run_passive_fills_if_dryrun(sess, bot_id, run_mode);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -174,23 +178,7 @@ fn on_trade(
     let status_upper = status.to_ascii_uppercase();
     let label = bot_id.to_string();
 
-    // §5.3: WS trade — tüm statuslar için tek satır.
-    let mut parts = vec![
-        format!("id={trade_id}"),
-        format!("status={status_upper}"),
-    ];
-    if let Some(o) = outcome_str.as_deref() {
-        parts.push(format!("outcome={o}"));
-    }
-    parts.push(format!("size={size}"));
-    parts.push(format!("price={price}"));
-    if let Some(s) = raw.get("taker_order_id").and_then(|v| v.as_str()) {
-        parts.push(format!("taker_order_id={s}"));
-    }
-    if let Some(s) = raw.get("trader_side").and_then(|v| v.as_str()) {
-        parts.push(format!("trader_side={s}"));
-    }
-    ipc::log_line(&label, format!("📬 WS trade | {}", parts.join(" ")));
+    log_ws_trade_line(&label, &trade_id, &status_upper, outcome_str.as_deref(), size, price, &raw);
 
     let fee = fee_rate_bps
         .map(|bps| price * size * bps / 10_000.0)
@@ -219,9 +207,57 @@ fn on_trade(
         return;
     };
     absorb_trade_matched(sess, outcome, price, size, fee);
+    log_fill_and_position(&label, sess, outcome, size, price);
 
+    ipc::emit(&FrontendEvent::Fill {
+        bot_id,
+        trade_id,
+        outcome,
+        price,
+        size,
+        status: status_upper,
+        ts_ms: now_ms(),
+    });
+}
+
+/// §5.3 satır formatı — tüm statuslar için tek WS trade logu.
+fn log_ws_trade_line(
+    label: &str,
+    trade_id: &str,
+    status_upper: &str,
+    outcome_str: Option<&str>,
+    size: f64,
+    price: f64,
+    raw: &serde_json::Value,
+) {
+    let mut parts = vec![
+        format!("id={trade_id}"),
+        format!("status={status_upper}"),
+    ];
+    if let Some(o) = outcome_str {
+        parts.push(format!("outcome={o}"));
+    }
+    parts.push(format!("size={size}"));
+    parts.push(format!("price={price}"));
+    if let Some(s) = raw.get("taker_order_id").and_then(|v| v.as_str()) {
+        parts.push(format!("taker_order_id={s}"));
+    }
+    if let Some(s) = raw.get("trader_side").and_then(|v| v.as_str()) {
+        parts.push(format!("trader_side={s}"));
+    }
+    ipc::log_line(label, format!("📬 WS trade | {}", parts.join(" ")));
+}
+
+/// MATCHED sonrası: fill summary + pozisyon/imbalance log satırları.
+fn log_fill_and_position(
+    label: &str,
+    sess: &MarketSession,
+    outcome: crate::types::Outcome,
+    size: f64,
+    price: f64,
+) {
     ipc::log_line(
-        &label,
+        label,
         format!(
             "✅ fill_summary outcome={} size={size} price={price}",
             outcome.as_str()
@@ -234,22 +270,12 @@ fn on_trade(
         imb.to_string()
     };
     ipc::log_line(
-        &label,
+        label,
         format!(
             "📊 [{:?}] Position: UP={}, DOWN={} (imbalance: {})",
             sess.strategy, sess.metrics.shares_yes, sess.metrics.shares_no, imb_sign
         ),
     );
-
-    ipc::emit(&FrontendEvent::Fill {
-        bot_id,
-        trade_id,
-        outcome,
-        price,
-        size,
-        status: status_upper,
-        ts_ms: now_ms(),
-    });
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -371,10 +397,8 @@ fn persist_order_ws(
         delete_canceled: None,
         delete_not_canceled: None,
     };
-    tokio::spawn(async move {
-        if let Err(e) = db::orders::upsert_order(&pool, &record).await {
-            tracing::warn!(error=%e, "user_ws upsert_order failed");
-        }
+    db::spawn_db("user_ws upsert_order", async move {
+        db::orders::upsert_order(&pool, &record).await
     });
 }
 
@@ -424,10 +448,8 @@ fn persist_trade(
         ts_ms,
         raw_payload: Some(raw.to_string()),
     };
-    tokio::spawn(async move {
-        if let Err(e) = db::trades::upsert_trade(&pool, &record).await {
-            tracing::warn!(error=%e, "user_ws upsert_trade failed");
-        }
+    db::spawn_db("user_ws upsert_trade", async move {
+        db::trades::upsert_trade(&pool, &record).await
     });
 }
 
