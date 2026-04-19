@@ -18,13 +18,12 @@ use super::ctx::Ctx;
 /// task'a güvenle taşınır (tüm alanlar `Copy`).
 #[derive(Clone, Copy)]
 struct StateLogSnapshot {
-    shares_yes: f64,
-    shares_no: f64,
     avg_yes: f64,
     avg_no: f64,
     yes_best_ask: f64,
     no_best_ask: f64,
     avg_threshold: f64,
+    imbalance: f64,
 }
 
 struct TickLogCtx {
@@ -48,13 +47,12 @@ pub async fn tick(ctx: &Ctx, sess: &mut MarketSession) {
     let bot_id = ctx.bot_id;
     let post_state = sess.harvest_state;
     let snap = StateLogSnapshot {
-        shares_yes: sess.metrics.shares_yes,
-        shares_no: sess.metrics.shares_no,
         avg_yes: sess.metrics.avg_yes,
         avg_no: sess.metrics.avg_no,
         yes_best_ask: sess.yes_best_ask,
         no_best_ask: sess.no_best_ask,
         avg_threshold: ctx.cfg.strategy_params.harvest_avg_threshold(),
+        imbalance: sess.metrics.imbalance,
     };
 
     let make_log_ctx = |decision: Decision| TickLogCtx {
@@ -171,31 +169,50 @@ fn log_state_transition(c: &TickLogCtx) {
                 );
             }
         }
-        (HarvestState::OpenDual { .. }, HarvestState::SingleLeg { filled_side }) => {
-            let yes_filled = snap.shares_yes > 0.0;
-            let no_filled = snap.shares_no > 0.0;
-            if yes_filled && no_filled {
+        (HarvestState::OpenDual { .. }, HarvestState::SingleLeg { filled_side, .. }) => {
+            ipc::log_line(
+                label,
+                format!(
+                    "⏰ OpenDual timeout (one_fill={}) → cancelling counter side → SingleLeg",
+                    filled_side.as_str()
+                ),
+            );
+        }
+        (HarvestState::OpenDual { .. }, HarvestState::DoubleLeg) => {
+            ipc::log_line(
+                label,
+                format!(
+                    "🔀 OpenDual both filled → DoubleLeg (avg_yes={:.4} avg_no={:.4})",
+                    snap.avg_yes, snap.avg_no
+                ),
+            );
+        }
+        (HarvestState::DoubleLeg, HarvestState::DoubleLeg) => {
+            if let Decision::CancelOrders(ids) = decision {
                 ipc::log_line(
                     label,
                     format!(
-                        "🔀 OpenDual both filled → SingleLeg{{by_signal={}}}",
-                        filled_side.as_str()
-                    ),
-                );
-            } else {
-                ipc::log_line(
-                    label,
-                    format!(
-                        "⏰ OpenDual timeout (one_fill={}) → cancelling counter side",
-                        filled_side.as_str()
+                        "🔁 DoubleLeg averaging timeout → cancelling {} order(s)",
+                        ids.len()
                     ),
                 );
             }
         }
+        (HarvestState::DoubleLeg, HarvestState::Done) => {
+            ipc::log_line(
+                label,
+                format!(
+                    "🔒 DoubleLeg ProfitLock: avg_sum={:.4} ≤ threshold({:.2}), imbalance={:+.2} → Done",
+                    snap.avg_yes + snap.avg_no,
+                    snap.avg_threshold,
+                    snap.imbalance,
+                ),
+            );
+        }
         (HarvestState::OpenDual { .. }, HarvestState::Pending) => {
             ipc::log_line(label, "⏰ OpenDual timeout (no_fill) → cancelling 2 orders, reopening");
         }
-        (HarvestState::SingleLeg { filled_side }, HarvestState::SingleLeg { .. }) => {
+        (HarvestState::SingleLeg { filled_side, .. }, HarvestState::SingleLeg { .. }) => {
             if let Decision::CancelOrders(ids) = decision {
                 ipc::log_line(
                     label,
@@ -207,7 +224,7 @@ fn log_state_transition(c: &TickLogCtx) {
                 );
             }
         }
-        (HarvestState::SingleLeg { filled_side }, HarvestState::ProfitLock) => {
+        (HarvestState::SingleLeg { filled_side, .. }, HarvestState::Done) => {
             let first_leg = match filled_side {
                 Outcome::Up => snap.avg_yes,
                 Outcome::Down => snap.avg_no,

@@ -1,15 +1,12 @@
 //! MarketSession + decision loop + DryRun simulator.
 //!
-//! Alt modüller:
-//! - [`executor`] — `Executor` enum (DryRun + Live), `execute()` batch yürütücü.
-//! - [`passive`]  — DryRun passive-fill simülatörü.
+//! Alt modüller: [`executor`] (DryRun + Live + batch yürütücü), [`passive`]
+//! (DryRun passive-fill).
 //!
-//! Referans: [docs/bot-platform-mimari.md §13 §16 §⚡ Kural 1-2](../../../docs/bot-platform-mimari.md).
+//! Referans: [docs/bot-platform-mimari.md §13 §16](../../../docs/bot-platform-mimari.md).
 
 use crate::config::BotConfig;
-use crate::strategy::harvest::{
-    HarvestContext, HarvestEngine, HarvestState, MAX_POSITION_SIZE,
-};
+use crate::strategy::harvest::{HarvestContext, HarvestEngine, HarvestState, MAX_POSITION_SIZE};
 use crate::strategy::metrics::{MarketPnL, StrategyMetrics};
 use crate::strategy::{Decision, DecisionEngine, OpenOrder, PlannedOrder};
 use crate::time::{zone_pct, MarketZone};
@@ -23,8 +20,7 @@ pub use executor::{
 };
 pub use passive::simulate_passive_fills;
 
-/// Yürütülen emir sonucu. In-memory engine pipeline'ında kullanılır;
-/// JSON serialize/deserialize edilmez (DB persist sub-field'lar üzerinden yapılır).
+/// Yürütülen emir sonucu — in-memory pipeline kaydı (DB persist sub-field'lar üzerinden).
 #[derive(Debug, Clone)]
 pub struct ExecutedOrder {
     pub order_id: String,
@@ -39,27 +35,23 @@ pub struct ExecutedOrder {
 pub struct MarketSession {
     pub bot_id: i64,
     pub slug: String,
-    /// `market_sessions.id` — DB persist için (orders/trades/pnl FK).
+    /// `market_sessions.id` — DB FK (orders/trades/pnl).
     pub market_session_id: i64,
     pub condition_id: String,
     pub yes_token_id: String,
     pub no_token_id: String,
     pub tick_size: f64,
     pub api_min_order_size: f64,
-    /// NegRisk Exchange'e mi yoksa standart Exchange'e mi yazılacak
-    /// (EIP-712 verifying_contract için belirleyici).
+    /// NegRisk Exchange mi? EIP-712 verifying_contract belirleyici.
     pub neg_risk: bool,
     pub start_ts: u64,
     pub end_ts: u64,
 
-    // Strateji durumu
     pub strategy: Strategy,
     pub harvest_state: HarvestState,
     pub metrics: StrategyMetrics,
     pub last_averaging_ms: u64,
-    pub last_fill_price: f64,
 
-    // Anlık best_bid_ask
     pub yes_best_bid: f64,
     pub yes_best_ask: f64,
     pub no_best_bid: f64,
@@ -68,13 +60,11 @@ pub struct MarketSession {
     pub run_mode: RunMode,
     pub open_orders: Vec<OpenOrder>,
 
-    /// Global emir taban fiyatı (bot config) — engine guard.
     pub min_price: f64,
-    /// Global emir tavan fiyatı (bot config) — engine guard.
     pub max_price: f64,
-    /// Averaging cooldown (ms) — strateji ctx'lerine geçirilir (bot config).
+    /// Averaging cooldown (ms) — strateji ctx'lerine geçirilir.
     pub cooldown_threshold: u64,
-    /// Bir kez `📚 Market book ready` logu basıldı mı?
+    /// `📚 Market book ready` logu basıldı mı?
     pub book_ready_logged: bool,
 }
 
@@ -96,8 +86,6 @@ impl MarketSession {
             harvest_state: HarvestState::Pending,
             metrics: StrategyMetrics::default(),
             last_averaging_ms: 0,
-            last_fill_price: 0.0,
-            // 0.0 = "henüz quote yok" sentineli; Simulator bu durumda emri live tutar.
             yes_best_bid: 0.0,
             yes_best_ask: 0.0,
             no_best_bid: 0.0,
@@ -111,26 +99,21 @@ impl MarketSession {
         }
     }
 
-    /// Güncel market bölgesi (`zone_pct` eşikleri).
+    /// Güncel market bölgesi.
     pub fn current_zone(&self, now_secs: u64) -> MarketZone {
         MarketZone::from_pct(zone_pct(self.start_ts, self.end_ts, now_secs))
     }
 
-    /// MTM PnL anında hesaplanır (§17).
+    /// MTM PnL (§17).
     pub fn pnl(&self) -> MarketPnL {
         MarketPnL::from_metrics(&self.metrics, self.yes_best_bid, self.no_best_bid)
     }
 
-    /// Strateji'ye karar ver — tek döngü tick.
-    ///
-    /// `effective_score` Binance sinyalinden türetilir (`5.0` = nötr).
+    /// Tek tick — strateji'ye karar ver. `effective_score` Binance sinyali (5.0 = nötr).
     pub fn tick(&mut self, cfg: &BotConfig, now_ms_v: u64, effective_score: f64) -> Decision {
         match cfg.strategy {
             Strategy::Harvest => {
-                let avg_threshold = cfg.strategy_params.harvest_avg_threshold();
-                let dual_timeout = cfg.strategy_params.harvest_dual_timeout();
                 let zone = self.current_zone(now_ms_v / 1000);
-
                 let ctx = HarvestContext {
                     params: &cfg.strategy_params,
                     metrics: &self.metrics,
@@ -147,11 +130,10 @@ impl MarketSession {
                     zone,
                     now_ms: now_ms_v,
                     last_averaging_ms: self.last_averaging_ms,
-                    last_fill_price: self.last_fill_price,
                     tick_size: self.tick_size,
-                    dual_timeout,
+                    dual_timeout: cfg.strategy_params.harvest_dual_timeout(),
                     open_orders: &self.open_orders,
-                    avg_threshold,
+                    avg_threshold: cfg.strategy_params.harvest_avg_threshold(),
                     max_position_size: MAX_POSITION_SIZE,
                     min_price: self.min_price,
                     max_price: self.max_price,
@@ -166,13 +148,12 @@ impl MarketSession {
                     decision
                 }
             }
-            // bot/ctx.rs aktif olmayan stratejileri start anında reddeder; defansif NoOp.
             _ => Decision::NoOp,
         }
     }
 }
 
-/// StopTrade kuralı: yeni emir üretilmez; yalnız cancel/no-op pass eder.
+/// StopTrade: yeni emir üretilmez; yalnız cancel/no-op pass eder.
 fn filter_stop_trade(d: Decision) -> Decision {
     match d {
         Decision::NoOp | Decision::Complete => d,
@@ -188,7 +169,7 @@ fn filter_stop_trade(d: Decision) -> Decision {
     }
 }
 
-/// User WS `trade MATCHED` event'inden gelen fill'i session'a absorbla.
+/// User WS `trade MATCHED` event'inden gelen fill'i absorbla.
 pub fn absorb_trade_matched(
     session: &mut MarketSession,
     outcome: Outcome,
@@ -198,11 +179,10 @@ pub fn absorb_trade_matched(
 ) {
     use crate::time::now_ms;
     session.metrics.ingest_fill(outcome, price, size, fee);
-    session.last_fill_price = price;
     session.last_averaging_ms = now_ms();
 }
 
-/// Bir WS event'in ardından `best_bid_ask`'ı güncelle.
+/// `best_bid_ask` güncelle.
 pub fn update_best(session: &mut MarketSession, asset_id: &str, best_bid: f64, best_ask: f64) {
     if asset_id == session.yes_token_id {
         session.yes_best_bid = best_bid;
@@ -213,7 +193,7 @@ pub fn update_best(session: &mut MarketSession, asset_id: &str, best_bid: f64, b
     }
 }
 
-/// Outcome çıkarım yardımcısı — asset_id ↔ Outcome.
+/// `asset_id → Outcome`.
 pub fn outcome_from_asset_id(session: &MarketSession, asset_id: &str) -> Option<Outcome> {
     if asset_id == session.yes_token_id {
         Some(Outcome::Up)

@@ -47,7 +47,7 @@ fn session(cfg: &BotConfig) -> MarketSession {
 }
 
 #[tokio::test]
-async fn open_dual_fills_both_legs_transitions_to_single_leg() {
+async fn open_dual_fills_both_legs_transitions_to_double_leg() {
     let cfg = dryrun_cfg();
     let mut sess = session(&cfg);
     let exec = Executor::DryRun(Simulator);
@@ -61,12 +61,7 @@ async fn open_dual_fills_both_legs_transitions_to_single_leg() {
 
     let dec = sess.tick(&cfg, now_ms(), 5.0);
     let _ = execute(&mut sess, &exec, dec).await.unwrap();
-    assert_eq!(
-        sess.harvest_state,
-        HarvestState::SingleLeg {
-            filled_side: Outcome::Up
-        }
-    );
+    assert_eq!(sess.harvest_state, HarvestState::DoubleLeg);
 
     let pnl = sess.pnl();
     let expected = 10.0 - (0.50 * 10.0 * 2.0 + 0.50 * 10.0 * 0.0002 * 2.0);
@@ -80,7 +75,8 @@ async fn open_dual_fills_both_legs_transitions_to_single_leg() {
 }
 
 #[tokio::test]
-async fn single_leg_no_averaging_until_price_falls() {
+async fn double_leg_no_averaging_until_price_falls() {
+    // Dual fill → DoubleLeg. Price aynı kaldığında averaging tetiklenmemeli.
     let cfg = dryrun_cfg();
     let mut sess = session(&cfg);
     let exec = Executor::DryRun(Simulator);
@@ -89,24 +85,14 @@ async fn single_leg_no_averaging_until_price_falls() {
     execute(&mut sess, &exec, dec).await.unwrap();
     let dec = sess.tick(&cfg, now_ms(), 5.0);
     execute(&mut sess, &exec, dec).await.unwrap();
-    assert_eq!(
-        sess.harvest_state,
-        HarvestState::SingleLeg {
-            filled_side: Outcome::Up
-        }
-    );
+    assert_eq!(sess.harvest_state, HarvestState::DoubleLeg);
 
     sess.no_best_ask = 0.55;
-    sess.yes_best_bid = 0.50;
+    sess.yes_best_bid = 0.50; // last_fill_price_yes = 0.50; best_bid = 0.50 → price_fell=false
     let dec = sess.tick(&cfg, now_ms(), 5.0);
     let filled = execute(&mut sess, &exec, dec).await.unwrap();
     assert!(filled.placed.is_empty(), "averaging tetiklememeli");
-    assert_eq!(
-        sess.harvest_state,
-        HarvestState::SingleLeg {
-            filled_side: Outcome::Up
-        }
-    );
+    assert_eq!(sess.harvest_state, HarvestState::DoubleLeg);
 }
 
 #[tokio::test]
@@ -256,11 +242,14 @@ async fn single_leg_branch_when_only_yes_fills_in_book() {
     });
 
     let dec = sess.tick(&cfg, t0 + 1, 5.0);
-    assert_eq!(
-        sess.harvest_state,
-        HarvestState::SingleLeg {
-            filled_side: Outcome::Up
-        },
+    assert!(
+        matches!(
+            sess.harvest_state,
+            HarvestState::SingleLeg {
+                filled_side: Outcome::Up,
+                ..
+            }
+        ),
         "yalnız YES dolmuş + timeout → SingleLeg{{Up}}"
     );
     matches!(dec, baiter_pro::strategy::Decision::CancelOrders(_));
@@ -270,11 +259,11 @@ async fn single_leg_branch_when_only_yes_fills_in_book() {
 async fn averaging_fires_when_price_falls_after_cooldown() {
     let cfg = dryrun_cfg();
     let mut sess = session(&cfg);
-    sess.metrics.ingest_fill(Outcome::Up, 0.50, 10.0, 0.0);
+    sess.metrics.ingest_fill(Outcome::Up, 0.50, 10.0, 0.0); // last_fill_price_yes=0.50
     sess.harvest_state = HarvestState::SingleLeg {
         filled_side: Outcome::Up,
+        entered_at_ms: 0,
     };
-    sess.last_fill_price = 0.50;
     sess.last_averaging_ms = 0;
     sess.yes_best_bid = 0.45;
     sess.no_best_ask = 0.55;
@@ -288,4 +277,75 @@ async fn averaging_fires_when_price_falls_after_cooldown() {
         }
         _ => panic!("expected averaging GTC"),
     }
+}
+
+#[tokio::test]
+async fn dryrun_dual_then_double_leg_to_done() {
+    // Senaryo:
+    // 1) Pending → OpenDual: dual fill (her iki taraf 0.50).
+    // 2) DoubleLeg: avg_yes=0.50, avg_no=0.50, avg_sum=1.00.
+    // 3) Manuel olarak avg değerlerini düşürmek için ek fill ingest et:
+    //    YES'e 0.45×10 ekle → avg_yes=0.475; NO'ya 0.45×10 ekle → avg_no=0.475.
+    //    avg_sum=0.95 ≤ 0.98 → Done + NoOp.
+    let cfg = dryrun_cfg();
+    let mut sess = session(&cfg);
+    let exec = Executor::DryRun(Simulator);
+
+    // 1) Pending → OpenDual + dual fill
+    let dec = sess.tick(&cfg, now_ms(), 5.0);
+    let _ = execute(&mut sess, &exec, dec).await.unwrap();
+    let dec = sess.tick(&cfg, now_ms(), 5.0);
+    let _ = execute(&mut sess, &exec, dec).await.unwrap();
+    assert_eq!(sess.harvest_state, HarvestState::DoubleLeg);
+
+    // 2) Avg'leri düşürmek için averaging fill simüle et.
+    sess.metrics.ingest_fill(Outcome::Up, 0.45, 10.0, 0.0);
+    sess.metrics.ingest_fill(Outcome::Down, 0.45, 10.0, 0.0);
+    let avg_sum = sess.metrics.avg_yes + sess.metrics.avg_no;
+    assert!(avg_sum < 0.98, "avg_sum={avg_sum} eşik altına inmiş olmalı");
+
+    // 3) DoubleLeg ProfitLock → Done.
+    let dec = sess.tick(&cfg, now_ms() + 10, 5.0);
+    assert!(matches!(dec, baiter_pro::strategy::Decision::NoOp));
+    assert_eq!(sess.harvest_state, HarvestState::Done);
+}
+
+#[tokio::test]
+async fn dryrun_double_leg_avg_sum_ok_with_imbalance_emits_close_gtc() {
+    // 1) Pending → OpenDual: dual fill 10/10 @ 0.50 → DoubleLeg.
+    // 2) YES'e ek 10 fill @ 0.45 (averaging simülasyonu) → shares_yes=20,
+    //    avg_yes=0.475, avg_no=0.50, avg_sum=0.975 ≤ 0.98, imbalance=+10.
+    // 3) Tick: avg_sum_ok + imbalance>api_min → eksik=Down GTC size=10.
+    let cfg = dryrun_cfg();
+    let mut sess = session(&cfg);
+    let exec = Executor::DryRun(Simulator);
+
+    let dec = sess.tick(&cfg, now_ms(), 5.0);
+    let _ = execute(&mut sess, &exec, dec).await.unwrap();
+    let dec = sess.tick(&cfg, now_ms(), 5.0);
+    let _ = execute(&mut sess, &exec, dec).await.unwrap();
+    assert_eq!(sess.harvest_state, HarvestState::DoubleLeg);
+
+    sess.metrics.ingest_fill(Outcome::Up, 0.45, 10.0, 0.0);
+    let avg_sum = sess.metrics.avg_yes + sess.metrics.avg_no;
+    assert!(avg_sum <= 0.98, "avg_sum={avg_sum}");
+    assert!((sess.metrics.imbalance - 10.0).abs() < 1e-9);
+
+    // last_averaging_ms cooldown bypass: ts'i ileri al.
+    let t = now_ms() + COOLDOWN_THRESHOLD + 1_000;
+    let dec = sess.tick(&cfg, t, 5.0);
+    match dec {
+        baiter_pro::strategy::Decision::PlaceOrders(orders) => {
+            assert_eq!(orders.len(), 1);
+            assert_eq!(orders[0].outcome, Outcome::Down);
+            assert!(
+                (orders[0].size - 10.0).abs() < 1e-9,
+                "size={}",
+                orders[0].size
+            );
+            assert!((orders[0].price - 0.50).abs() < 1e-9);
+        }
+        other => panic!("expected single Down PlaceOrders, got {:?}", other),
+    }
+    assert_eq!(sess.harvest_state, HarvestState::DoubleLeg);
 }

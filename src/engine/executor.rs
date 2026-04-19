@@ -18,13 +18,10 @@ use crate::types::{Outcome, Side};
 
 use super::{ExecutedOrder, MarketSession};
 
-/// Fee sabiti — DryRun simülasyonu için.
-pub const DRYRUN_FEE_RATE: f64 = 0.0002; // %0.02
+/// DryRun fee oranı (%0.02).
+pub const DRYRUN_FEE_RATE: f64 = 0.0002;
 
-/// Emir yürütme sözleşmesi — `Executor` enum'u bu trait'i sağlayan
-/// implementor'lar üzerinde çalışır. Şu an `Simulator` (dryrun) ve
-/// `LiveExecutor` (CLOB) implementasyonu var; ileride backtest/replay
-/// `OrderSink` ekleneceği zaman trait'i kullanır.
+/// Emir yürütme sözleşmesi — `Simulator` (dryrun) ve `LiveExecutor` (CLOB) sağlar.
 #[async_trait::async_trait]
 pub trait OrderSink: Send + Sync {
     async fn place(
@@ -40,7 +37,6 @@ pub trait OrderSink: Send + Sync {
     ) -> Result<CancelResponse, AppError>;
 }
 
-/// Emir yürütücü — DryRun Simulator veya Live CLOB.
 pub enum Executor {
     DryRun(Simulator),
     Live(LiveExecutor),
@@ -51,9 +47,9 @@ pub struct LiveExecutor {
     pub client: Arc<ClobClient>,
     pub creds: Credentials,
     pub chain_id: u64,
-    /// Açık emir GTD timeout (sn). `cooldown_threshold` (ms) → sn dönüşümü.
+    /// GTD timeout (sn). `cooldown_threshold` (ms) → sn dönüşümü.
     pub gtd_timeout_secs: u64,
-    /// Persistans için pool — fire-and-forget yazımlar (§⚡ Kural 4).
+    /// Fire-and-forget DB persist için (§⚡ Kural 4).
     pub pool: SqlitePool,
 }
 
@@ -109,11 +105,8 @@ impl OrderSink for Simulator {
 }
 
 impl LiveExecutor {
-    /// PlannedOrder → EIP-712 Order → imza → POST /order.
-    ///
-    /// Doc §13: GTC emirler `expiration=0`, GTD emirler `now + timeout` ile
-    /// imzalanır; FAK/FOK emirler de GTC eşdeğeri (CLOB tarafında matching
-    /// politikası ayrı parametreyle yönetilir).
+    /// PlannedOrder → EIP-712 → POST /order. GTC/FAK/FOK için `expiration=0`,
+    /// GTD için `now + timeout`.
     pub async fn place(
         &self,
         session: &mut MarketSession,
@@ -154,13 +147,9 @@ impl LiveExecutor {
                 placed_at_ms: now_ms(),
             });
         } else {
-            session.metrics.ingest_fill(
-                planned.outcome,
-                planned.price,
-                planned.size,
-                0.0, // fee CLOB feeRateBps=0 ile gönderildi
-            );
-            session.last_fill_price = planned.price;
+            session
+                .metrics
+                .ingest_fill(planned.outcome, planned.price, planned.size, 0.0);
             session.last_averaging_ms = now_ms();
         }
         let executed = ExecutedOrder {
@@ -174,8 +163,6 @@ impl LiveExecutor {
         Ok(executed)
     }
 
-    /// CLOB POST /order başarılı yanıtını fire-and-forget olarak DB'ye yazar
-    /// (§⚡ Kural 4: kritik yolu bloke etmez).
     fn persist_place(
         &self,
         session: &MarketSession,
@@ -200,7 +187,6 @@ impl LiveExecutor {
         db::orders::persist_order(&self.pool, record, "rest_post upsert_order");
     }
 
-    /// CLOB DELETE /order sonucunu fire-and-forget olarak DB'ye yazar.
     fn persist_cancel(&self, session: &MarketSession, order_id: &str, resp: &CancelResponse) {
         let record = db::orders::OrderRecord::rest_cancellation(
             session.bot_id,
@@ -215,15 +201,15 @@ impl LiveExecutor {
     }
 }
 
-/// DryRun simülatörü — slip yok, fee %0.02 sabit.
+/// DryRun simülatörü — slip yok, sabit fee.
 #[derive(Debug, Clone, Default)]
 pub struct Simulator;
 
 impl Simulator {
     /// Live davranışını yansıtır:
-    /// - BUY price >= karşı best_ask  → matched (taker), fill_price = best_ask
-    /// - SELL price <= karşı best_bid → matched (taker), fill_price = best_bid
-    /// - Karşı fiyat 0.0 (henüz quote yok) veya emir geçmiyorsa → live (orderbook'a girer)
+    /// - BUY `price >= karşı best_ask` → matched (taker), `fill_price = best_ask`
+    /// - SELL `price <= karşı best_bid` → matched (taker), `fill_price = best_bid`
+    /// - aksi halde live (orderbook'a girer)
     pub fn fill(&self, session: &mut MarketSession, planned: &PlannedOrder) -> ExecutedOrder {
         let order_id = format!("dry-{}", Uuid::new_v4());
         let Some(fill_price) = dryrun_cross(session, planned.outcome, planned.side, planned.price)
@@ -248,9 +234,6 @@ impl Simulator {
 
         let fill_size = planned.size;
         apply_dryrun_fill(session, planned.outcome, fill_price, fill_size);
-        // Taker fill: planned bir averaging emri olabilir; place_batch zaten
-        // averaging tespit edince last_averaging_ms'i set ediyor, ama burada da
-        // koruyoruz (önceki davranışı muhafaza için).
         session.last_averaging_ms = now_ms();
 
         ExecutedOrder {
@@ -277,9 +260,7 @@ pub(crate) fn counter_price_for(session: &MarketSession, outcome: Outcome, side:
     }
 }
 
-/// DryRun çapraz testi: emrin verilen fiyatla karşı taraf en iyi fiyatı geçip
-/// geçmediğini ve geçtiyse fill fiyatını döndürür.
-///
+/// Emir karşı taraf en iyi fiyatı geçtiyse fill fiyatını döndürür.
 /// `Simulator::fill` (taker) ve `simulate_passive_fills` (resting) için ortak.
 pub(crate) fn dryrun_cross(
     session: &MarketSession,
@@ -298,9 +279,8 @@ pub(crate) fn dryrun_cross(
     crosses.then_some(counter)
 }
 
-/// DryRun fill ortak kuyruğu: fee hesaplar, metrics ve `last_fill_price`'ı
-/// günceller. `last_averaging_ms` güncellemesi caller'a bırakılır (taker vs
-/// passive farklı politikalar uygular).
+/// DryRun fill ortak kuyruğu: fee hesaplar ve `metrics`'i günceller.
+/// `last_averaging_ms` caller'a aittir (taker vs passive farklı politika).
 pub(crate) fn apply_dryrun_fill(
     session: &mut MarketSession,
     outcome: Outcome,
@@ -309,17 +289,16 @@ pub(crate) fn apply_dryrun_fill(
 ) {
     let fee = fill_price * fill_size * DRYRUN_FEE_RATE;
     session.metrics.ingest_fill(outcome, fill_price, fill_size, fee);
-    session.last_fill_price = fill_price;
 }
 
-/// `execute()` çıktısı — placed + canceled (gerçek `CancelResponse`'lar).
+/// `execute()` çıktısı.
 #[derive(Debug, Default)]
 pub struct ExecuteOutput {
     pub placed: Vec<ExecutedOrder>,
     pub canceled: Vec<CancelResponse>,
 }
 
-/// Global price guard: emir fiyatı [min_price, max_price] dışındaysa reject.
+/// Global price guard: `[min_price, max_price]` dışındaysa reject.
 fn within_price_bounds(session: &MarketSession, planned: &PlannedOrder) -> bool {
     if planned.price < session.min_price || planned.price > session.max_price {
         tracing::info!(

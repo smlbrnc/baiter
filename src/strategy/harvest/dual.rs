@@ -88,18 +88,14 @@ pub fn evaluate_open_dual(ctx: &HarvestContext, deadline_ms: u64) -> (HarvestSta
     let timed_out = ctx.now_ms >= deadline_ms;
 
     let next = match (yes_filled, no_filled, timed_out) {
-        (true, true, _) => HarvestState::SingleLeg {
-            filled_side: if ctx.effective_score >= SCORE_NEUTRAL {
-                Outcome::Up
-            } else {
-                Outcome::Down
-            },
-        },
+        (true, true, _) => HarvestState::DoubleLeg,
         (true, false, true) => HarvestState::SingleLeg {
             filled_side: Outcome::Up,
+            entered_at_ms: ctx.now_ms,
         },
         (false, true, true) => HarvestState::SingleLeg {
             filled_side: Outcome::Down,
+            entered_at_ms: ctx.now_ms,
         },
         (false, false, true) => HarvestState::Pending,
         _ => return (HarvestState::OpenDual { deadline_ms }, Decision::NoOp),

@@ -443,9 +443,13 @@ pub enum StrategyConfig {
 pub struct HarvestParams {
     /// OpenDual fill bekleme süresi (ms). Dolmayan GTC'ler iptal edilir.
     pub dual_timeout: u64,        // varsayılan: 5_000
-    /// SingleLeg ProfitLock eşiği — `first_leg + hedge_leg ≤ avg_threshold`.
+    /// ProfitLock eşiği — SingleLeg: `first_leg + hedge_leg ≤ avg_threshold`,
+    /// DoubleLeg: `avg_yes + avg_no ≤ avg_threshold`. DoubleLeg'de eşik
+    /// sağlandığında imbalance varsa eksik tarafa `size=|imbalance|` GTC açılır
+    /// (price_fell BYPASS); shares dengelenince doğrudan Done.
     pub avg_threshold: f64,       // varsayılan: 0.98
     /// Tek tarafın toplam share limiti; aşılırsa yeni averaging yasak.
+    /// DoubleLeg'de bir tarafın doyması diğerini durdurmaz.
     pub max_position_size: f64,   // varsayılan: 100.0
 }
 
@@ -743,7 +747,9 @@ Aşağıdaki blok **örnek veridir**; zaman damgaları ve id’ler hayalidir.
 [10:19:56.664] [btc] ✅ Market #10 complete, moving to next...
 ```
 
-### 5.2.1 Örnek: Harvest dryrun pencere (OpenDual → SingleLeg → ProfitLock)
+### 5.2.1 Örnek: Harvest dryrun pencere (OpenDual → SingleLeg → Done)
+
+> **FSM:** `Pending → OpenDual{deadline} → {SingleLeg{filled_side, entered_at_ms} | DoubleLeg} → Done`. SingleLeg ProfitLock warmup (`cooldown_threshold`) sonrasında FAK + `Done`'a geçer; DoubleLeg ise `avg_sum ≤ avg_threshold` eşiğinde **imbalance kapatma** moduna geçer — eksik tarafa `size=|imbalance|` GTC açar (price_fell BYPASS), `|imbalance| < api_min_order_size` olunca FAK'sız `Done`. Eski `ProfitLock` enum varyantı yalnızca legacy persist okuma için tutulur.
 
 Harvest stratejisinin tek pencere boyunca ürettiği log şablonları (`run_mode=dryrun`):
 
@@ -768,7 +774,7 @@ Harvest stratejisinin tek pencere boyunca ürettiği log şablonları (`run_mode
 **Notlar:**
 - `📚 Market book ready` pencere boyunca **bir kez** basılır (her iki taraf için ilk geçerli `best_bid`).
 - `📚 Book snapshot` her **5 saniyede bir** ve sadece dört quote'tan en az biri değiştiyse loglanır (kitap statikken spam yapmaz). Spread'ler `max(ask − bid, 0)` ile gösterilir.
-- `🔒 ProfitLock triggered` `SingleLeg → ProfitLock` state geçişi anında basılır; `first_leg + hedge_leg ≤ avg_threshold` koşulunu açıkça gösterir (`avg_threshold = 1.0 − strategy_params.harvest_profit_lock_pct`, default `0.98`).
+- `🔒 ProfitLock triggered` `SingleLeg → Done` state geçişi anında basılır; `first_leg + hedge_leg ≤ avg_threshold` koşulunu açıkça gösterir. Warmup süresince (`cooldown_threshold`) bu kontrol pas geçilir; `entered_at_ms`'in üzerinden cooldown geçmemişse log basılmaz. DoubleLeg'de ise `avg_sum ≤ avg_threshold` sağlandığında dengeli ise `🔒 DoubleLeg ProfitLock: avg_sum=… ≤ threshold(…), imbalance≈0 → Done` satırı görülür; imbalance varsa eksik tarafa `harvest:averaging:{side}` GTC (`size=|imbalance|`) basılır ve fill ile dengelendiğinde `Done`'a geçilir.
 - `📥 passive_fill` sadece dryrun'da görülür; live'da User WS `trade` (status `MATCHED`) eşdeğer satırı üretir (§5.3).
 - Periyodik Binance signal log satırı **kaldırıldı**; sinyal context'i her `✅ orderType=…` satırının `signal=…(eff …)` parçasında taşınır.
 
@@ -1237,7 +1243,8 @@ OpenDual fiyatı her tick'te `harvest::dual_prices(effective_score, yes_bid, yes
 - **1−up simetrisi YOK**: iki taraf bağımsız hesaplanır; toplam ≈ 1.00 ama garanti değil.
 - **Spread = 0** (bid=ask) → signal effect 0; her taraf kendi ask'ında (= bid) durur.
 - Sadece global `[min_price, max_price]` (default `0.05–0.95`) sınırı uygulanır.
-- ProfitLock dual fazda **tetiklenebilir** hale gelir (book asimetri ya da iki taraflı taker fill sonrası).
+- **İki taraf da taker dolduğunda → `DoubleLeg`**: `avg_sum > avg_threshold` iken per-side bağımsız normal averaging GTC (price_fell zorunlu, multiplier=1.0). `avg_sum ≤ avg_threshold` sağlandığında **imbalance kapatma** koluna geçer: `|imbalance| ≥ api_min_order_size` ise eksik tarafa `size=|imbalance|` GTC (price_fell BYPASS, multiplier=1.0); `|imbalance| < api_min_order_size` ise doğrudan `Done`. DoubleLeg averaging'de `signal_multiplier` her iki kolda da uygulanmaz (1.0; sinyal etkisi açılış fiyatında zaten gömülü, double-count engellenir).
+- **Tek taraf dolup timeout olduğunda → `SingleLeg{filled_side, entered_at_ms}`**: warmup `cooldown_threshold` boyunca ProfitLock pas geçilir; sonrasında `first_leg + hedge_leg ≤ avg_threshold` sağlanırsa FAK + `Done`.
 
 **Önkoşul:** Her iki tarafın `best_bid > 0` olması (book WS quote'u gelmiş olmalı); aksi halde `Pending` korunur. Bu, DryRun passive-fill simulator'ının `best_ask` ile karşılaştırma yapabilmesi ve canlı market'te kitap aktif olmadan emir gönderilmesini engellemek için.
 

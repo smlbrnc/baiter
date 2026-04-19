@@ -44,7 +44,6 @@ fn default_ctx<'a>(
         zone: MarketZone::NormalTrade,
         now_ms: 1_000_000,
         last_averaging_ms: 0,
-        last_fill_price: 0.0,
         tick_size: 0.01,
         dual_timeout: 5_000,
         open_orders,
@@ -220,7 +219,7 @@ fn open_dual_low_signal_up_passive_down_aggressive() {
 }
 
 #[test]
-fn open_dual_both_filled_transitions_to_single_leg_by_signal() {
+fn open_dual_both_filled_transitions_to_double_leg() {
     let mut metrics = StrategyMetrics::default();
     metrics.ingest_fill(Outcome::Up, 0.55, 10.0, 0.0);
     metrics.ingest_fill(Outcome::Down, 0.50, 10.0, 0.0);
@@ -237,12 +236,7 @@ fn open_dual_both_filled_transitions_to_single_leg_by_signal() {
         },
         &ctx,
     );
-    assert_eq!(
-        state,
-        HarvestState::SingleLeg {
-            filled_side: Outcome::Up
-        }
-    );
+    assert_eq!(state, HarvestState::DoubleLeg);
     match dec {
         Decision::CancelOrders(c) => assert_eq!(c.len(), 2),
         _ => panic!("expected CancelOrders"),
@@ -290,12 +284,13 @@ fn open_dual_timeout_one_fill_cancels_other_to_single_leg() {
         },
         &ctx,
     );
-    assert_eq!(
+    assert!(matches!(
         state,
         HarvestState::SingleLeg {
-            filled_side: Outcome::Up
+            filled_side: Outcome::Up,
+            ..
         }
-    );
+    ));
     match dec {
         Decision::CancelOrders(c) => assert_eq!(c, vec!["no_open".to_string()]),
         _ => panic!("expected CancelOrders"),
@@ -310,13 +305,15 @@ fn single_leg_profit_lock_triggered_when_sum_under_threshold() {
     let opens: Vec<OpenOrder> = vec![];
     let mut ctx = default_ctx(&metrics, &params, &opens);
     ctx.no_best_ask = 0.49;
+    // entered_at_ms=0 → warmup uzun süre önce geçti (now_ms=1_000_000).
     let (state, dec) = decide(
         HarvestState::SingleLeg {
             filled_side: Outcome::Up,
+            entered_at_ms: 0,
         },
         &ctx,
     );
-    assert_eq!(state, HarvestState::ProfitLock);
+    assert_eq!(state, HarvestState::Done);
     match dec {
         Decision::PlaceOrders(orders) => {
             assert_eq!(orders.len(), 1);
@@ -325,6 +322,53 @@ fn single_leg_profit_lock_triggered_when_sum_under_threshold() {
         }
         _ => panic!("expected FAK order"),
     }
+}
+
+#[test]
+fn single_leg_profit_lock_warmup_blocks_first_tick() {
+    // entered_at_ms = now_ms → warmup henüz geçmedi → ProfitLock pas geçilir.
+    let mut metrics = StrategyMetrics::default();
+    metrics.ingest_fill(Outcome::Up, 0.48, 10.0, 0.0);
+    let params = StrategyParams::default();
+    let opens: Vec<OpenOrder> = vec![];
+    let mut ctx = default_ctx(&metrics, &params, &opens);
+    ctx.no_best_ask = 0.49;
+    let (state, dec) = decide(
+        HarvestState::SingleLeg {
+            filled_side: Outcome::Up,
+            entered_at_ms: ctx.now_ms,
+        },
+        &ctx,
+    );
+    assert!(matches!(
+        state,
+        HarvestState::SingleLeg {
+            filled_side: Outcome::Up,
+            ..
+        }
+    ));
+    assert!(matches!(dec, Decision::NoOp));
+}
+
+#[test]
+fn single_leg_profit_lock_after_warmup_triggers_fak() {
+    // entered_at_ms = now_ms - cooldown_threshold - 1 → warmup geçti → FAK + Done.
+    let mut metrics = StrategyMetrics::default();
+    metrics.ingest_fill(Outcome::Up, 0.48, 10.0, 0.0);
+    let params = StrategyParams::default();
+    let opens: Vec<OpenOrder> = vec![];
+    let mut ctx = default_ctx(&metrics, &params, &opens);
+    ctx.no_best_ask = 0.49;
+    let entered = ctx.now_ms - ctx.cooldown_threshold - 1;
+    let (state, dec) = decide(
+        HarvestState::SingleLeg {
+            filled_side: Outcome::Up,
+            entered_at_ms: entered,
+        },
+        &ctx,
+    );
+    assert_eq!(state, HarvestState::Done);
+    assert!(matches!(dec, Decision::PlaceOrders(ref o) if o.len() == 1 && o[0].order_type == OrderType::Fak));
 }
 
 #[test]
@@ -339,41 +383,44 @@ fn stop_trade_zone_blocks_averaging() {
     let (state, dec) = decide(
         HarvestState::SingleLeg {
             filled_side: Outcome::Up,
+            entered_at_ms: 0,
         },
         &ctx,
     );
-    assert_eq!(
+    assert!(matches!(
         state,
         HarvestState::SingleLeg {
-            filled_side: Outcome::Up
+            filled_side: Outcome::Up,
+            ..
         }
-    );
+    ));
     assert!(matches!(dec, Decision::NoOp));
 }
 
 #[test]
 fn averaging_when_price_falls_and_cooldown_passed() {
     let mut metrics = StrategyMetrics::default();
-    metrics.ingest_fill(Outcome::Up, 0.50, 10.0, 0.0);
+    metrics.ingest_fill(Outcome::Up, 0.50, 10.0, 0.0); // last_fill_price_yes=0.50
     let params = StrategyParams::default();
     let opens: Vec<OpenOrder> = vec![];
     let mut ctx = default_ctx(&metrics, &params, &opens);
-    ctx.last_fill_price = 0.50;
     ctx.yes_best_bid = 0.48;
     ctx.no_best_ask = 0.55;
     ctx.now_ms = COOLDOWN_THRESHOLD + 1;
     let (state, dec) = decide(
         HarvestState::SingleLeg {
             filled_side: Outcome::Up,
+            entered_at_ms: 0,
         },
         &ctx,
     );
-    assert_eq!(
+    assert!(matches!(
         state,
         HarvestState::SingleLeg {
-            filled_side: Outcome::Up
+            filled_side: Outcome::Up,
+            ..
         }
-    );
+    ));
     match dec {
         Decision::PlaceOrders(orders) => {
             assert_eq!(orders.len(), 1);
@@ -399,21 +446,22 @@ fn single_leg_skips_averaging_while_open_avg_within_cooldown() {
     )];
     let mut ctx = default_ctx(&metrics, &params, &opens);
     ctx.now_ms = now;
-    ctx.last_fill_price = 0.50;
     ctx.yes_best_bid = 0.48;
     ctx.no_best_ask = 0.55;
     let (state, dec) = decide(
         HarvestState::SingleLeg {
             filled_side: Outcome::Up,
+            entered_at_ms: 0,
         },
         &ctx,
     );
-    assert_eq!(
+    assert!(matches!(
         state,
         HarvestState::SingleLeg {
-            filled_side: Outcome::Up
+            filled_side: Outcome::Up,
+            ..
         }
-    );
+    ));
     assert!(matches!(dec, Decision::NoOp));
 }
 
@@ -432,12 +480,12 @@ fn single_leg_cancels_open_avg_after_cooldown_threshold() {
     )];
     let mut ctx = default_ctx(&metrics, &params, &opens);
     ctx.now_ms = now;
-    ctx.last_fill_price = 0.50;
     ctx.yes_best_bid = 0.48;
     ctx.no_best_ask = 0.55;
     let (_state, dec) = decide(
         HarvestState::SingleLeg {
             filled_side: Outcome::Up,
+            entered_at_ms: 0,
         },
         &ctx,
     );
@@ -456,12 +504,12 @@ fn single_leg_emits_new_averaging_after_cancel_in_next_tick() {
     let mut ctx = default_ctx(&metrics, &params, &opens);
     ctx.now_ms = COOLDOWN_THRESHOLD * 3;
     ctx.last_averaging_ms = ctx.now_ms - COOLDOWN_THRESHOLD - 1;
-    ctx.last_fill_price = 0.50;
     ctx.yes_best_bid = 0.48;
     ctx.no_best_ask = 0.55;
     let (_state, dec) = decide(
         HarvestState::SingleLeg {
             filled_side: Outcome::Up,
+            entered_at_ms: 0,
         },
         &ctx,
     );
@@ -490,4 +538,354 @@ fn pos_held_includes_open_averaging_size() {
     let ctx = default_ctx(&metrics, &params, &opens);
     let pos = position_held_with_open(&ctx, Outcome::Up);
     assert!((pos - 17.0).abs() < 1e-9);
+}
+
+// ───────── DoubleLeg birim testleri ─────────
+
+#[test]
+fn double_leg_profit_lock_when_avg_sum_under_threshold_and_balanced() {
+    // avg_yes=0.49 + avg_no=0.48 = 0.97 ≤ 0.98, shares_yes=shares_no=10 →
+    // |imbalance|=0 < api_min → Done + NoOp.
+    let mut metrics = StrategyMetrics::default();
+    metrics.ingest_fill(Outcome::Up, 0.49, 10.0, 0.0);
+    metrics.ingest_fill(Outcome::Down, 0.48, 10.0, 0.0);
+    let params = StrategyParams::default();
+    let opens: Vec<OpenOrder> = vec![];
+    let ctx = default_ctx(&metrics, &params, &opens);
+    let (state, dec) = decide(HarvestState::DoubleLeg, &ctx);
+    assert_eq!(state, HarvestState::Done);
+    assert!(matches!(dec, Decision::NoOp));
+}
+
+#[test]
+fn double_leg_avg_sum_ok_but_imbalance_routes_close_gtc() {
+    // avg_sum=0.90 ≤ 0.98, shares_yes=20, shares_no=10 → imbalance=+10 (NO eksik).
+    // last_averaging_ms=0, now_ms=COOLDOWN+1 → cooldown_ok.
+    // Eksik tarafa (Down) size=|imbalance|=10 GTC, price=no_best_bid.
+    let mut metrics = StrategyMetrics::default();
+    metrics.ingest_fill(Outcome::Up, 0.45, 20.0, 0.0);
+    metrics.ingest_fill(Outcome::Down, 0.45, 10.0, 0.0);
+    let params = StrategyParams::default();
+    let opens: Vec<OpenOrder> = vec![];
+    let mut ctx = default_ctx(&metrics, &params, &opens);
+    ctx.now_ms = COOLDOWN_THRESHOLD + 1;
+    let (state, dec) = decide(HarvestState::DoubleLeg, &ctx);
+    assert_eq!(state, HarvestState::DoubleLeg);
+    match dec {
+        Decision::PlaceOrders(orders) => {
+            assert_eq!(orders.len(), 1, "tek emir eksik tarafa");
+            assert_eq!(orders[0].outcome, Outcome::Down);
+            assert!((orders[0].size - 10.0).abs() < 1e-9, "size={}", orders[0].size);
+            assert!((orders[0].price - 0.46).abs() < 1e-9);
+            assert_eq!(orders[0].reason, "harvest:averaging:Down");
+        }
+        _ => panic!("expected single PlaceOrders, got {:?}", dec),
+    }
+}
+
+#[test]
+fn double_leg_avg_sum_ok_imbalance_negative_routes_yes_side() {
+    // imbalance=-10 → eksik=Up.
+    let mut metrics = StrategyMetrics::default();
+    metrics.ingest_fill(Outcome::Up, 0.45, 10.0, 0.0);
+    metrics.ingest_fill(Outcome::Down, 0.45, 20.0, 0.0);
+    let params = StrategyParams::default();
+    let opens: Vec<OpenOrder> = vec![];
+    let mut ctx = default_ctx(&metrics, &params, &opens);
+    ctx.now_ms = COOLDOWN_THRESHOLD + 1;
+    let (state, dec) = decide(HarvestState::DoubleLeg, &ctx);
+    assert_eq!(state, HarvestState::DoubleLeg);
+    match dec {
+        Decision::PlaceOrders(orders) => {
+            assert_eq!(orders.len(), 1);
+            assert_eq!(orders[0].outcome, Outcome::Up);
+            assert!((orders[0].size - 10.0).abs() < 1e-9);
+            assert!((orders[0].price - 0.50).abs() < 1e-9);
+        }
+        _ => panic!("expected YES PlaceOrders, got {:?}", dec),
+    }
+}
+
+#[test]
+fn double_leg_avg_sum_ok_imbalance_close_bypasses_price_fell() {
+    // last_fill_price_yes/no eşit best_bid'lere (price_fell=false). Normal
+    // averaging tetiklenmezdi; ama avg_sum ≤ threshold + imbalance>0 yolu
+    // BYPASS yaparak eksik tarafa GTC açar.
+    let mut metrics = StrategyMetrics::default();
+    metrics.ingest_fill(Outcome::Up, 0.50, 20.0, 0.0); // last_fill_yes=0.50
+    metrics.ingest_fill(Outcome::Down, 0.45, 10.0, 0.0); // last_fill_no=0.45
+    let params = StrategyParams::default();
+    let opens: Vec<OpenOrder> = vec![];
+    let mut ctx = default_ctx(&metrics, &params, &opens);
+    ctx.now_ms = COOLDOWN_THRESHOLD + 1;
+    ctx.no_best_bid = 0.45; // == last_fill_no → price_fell=false (normal yol atlardı)
+    // avg_sum = 0.50 + 0.45 = 0.95 ≤ 0.98, imbalance = +10
+    let (state, dec) = decide(HarvestState::DoubleLeg, &ctx);
+    assert_eq!(state, HarvestState::DoubleLeg);
+    match dec {
+        Decision::PlaceOrders(orders) => {
+            assert_eq!(orders.len(), 1);
+            assert_eq!(orders[0].outcome, Outcome::Down);
+            assert!((orders[0].size - 10.0).abs() < 1e-9);
+        }
+        _ => panic!("price_fell BYPASS başarısız, got {:?}", dec),
+    }
+}
+
+#[test]
+fn double_leg_avg_sum_ok_imbalance_close_clipped_by_max_position() {
+    // max=10, shares_yes=20 (avg=0.45), shares_no=5 (avg=0.45) → avg_sum=0.90,
+    // imbalance=+15. Eksik=Down, pos_held=5, cap=10-5=5, size=min(15,5)=5
+    // → kırpılmış GTC (not 15).
+    let mut metrics = StrategyMetrics::default();
+    metrics.ingest_fill(Outcome::Up, 0.45, 20.0, 0.0);
+    metrics.ingest_fill(Outcome::Down, 0.45, 5.0, 0.0);
+    let params = StrategyParams::default();
+    let opens: Vec<OpenOrder> = vec![];
+    let mut ctx = default_ctx(&metrics, &params, &opens);
+    ctx.now_ms = COOLDOWN_THRESHOLD + 1;
+    ctx.max_position_size = 10.0;
+    let (state, dec) = decide(HarvestState::DoubleLeg, &ctx);
+    assert_eq!(state, HarvestState::DoubleLeg);
+    match dec {
+        Decision::PlaceOrders(orders) => {
+            assert_eq!(orders.len(), 1);
+            assert_eq!(orders[0].outcome, Outcome::Down);
+            assert!(
+                (orders[0].size - 5.0).abs() < 1e-9,
+                "size={} (cap kirpmadi)",
+                orders[0].size
+            );
+        }
+        _ => panic!("expected clipped PlaceOrders, got {:?}", dec),
+    }
+}
+
+#[test]
+fn double_leg_avg_sum_ok_imbalance_close_no_cap_room_returns_noop() {
+    // max=10, shares_yes=20 (avg=0.45), shares_no=8 (avg=0.45) → imbalance=+12.
+    // Eksik=Down, pos_held=8, cap=10-8=2 < api_min=5 → NoOp.
+    let mut metrics = StrategyMetrics::default();
+    metrics.ingest_fill(Outcome::Up, 0.45, 20.0, 0.0);
+    metrics.ingest_fill(Outcome::Down, 0.45, 8.0, 0.0);
+    let params = StrategyParams::default();
+    let opens: Vec<OpenOrder> = vec![];
+    let mut ctx = default_ctx(&metrics, &params, &opens);
+    ctx.now_ms = COOLDOWN_THRESHOLD + 1;
+    ctx.max_position_size = 10.0;
+    let (state, dec) = decide(HarvestState::DoubleLeg, &ctx);
+    assert_eq!(state, HarvestState::DoubleLeg);
+    assert!(matches!(dec, Decision::NoOp));
+}
+
+#[test]
+fn double_leg_avg_sum_ok_imbalance_within_tolerance_transitions_done() {
+    // |imbalance|=3 < api_min=5 → balanced → Done.
+    let mut metrics = StrategyMetrics::default();
+    metrics.ingest_fill(Outcome::Up, 0.45, 13.0, 0.0);
+    metrics.ingest_fill(Outcome::Down, 0.45, 10.0, 0.0);
+    let params = StrategyParams::default();
+    let opens: Vec<OpenOrder> = vec![];
+    let ctx = default_ctx(&metrics, &params, &opens);
+    let (state, dec) = decide(HarvestState::DoubleLeg, &ctx);
+    assert_eq!(state, HarvestState::Done);
+    assert!(matches!(dec, Decision::NoOp));
+}
+
+#[test]
+fn double_leg_avg_sum_ok_imbalance_close_batches_with_stale_open_avg() {
+    // avg_sum=0.90, imbalance=+10. Eksik=Down. Kitapta stale Down averaging GTC →
+    // cancel + yeni size=10 GTC birlikte Batch.
+    let mut metrics = StrategyMetrics::default();
+    metrics.ingest_fill(Outcome::Up, 0.45, 20.0, 0.0);
+    metrics.ingest_fill(Outcome::Down, 0.45, 10.0, 0.0);
+    let params = StrategyParams::default();
+    let now = COOLDOWN_THRESHOLD * 3;
+    let opens = vec![mk_open(
+        "stale_down",
+        Outcome::Down,
+        "harvest:averaging:Down",
+        now - COOLDOWN_THRESHOLD - 1_000,
+        7.0,
+    )];
+    let mut ctx = default_ctx(&metrics, &params, &opens);
+    ctx.now_ms = now;
+    match decide(HarvestState::DoubleLeg, &ctx) {
+        (HarvestState::DoubleLeg, Decision::Batch { cancel, place }) => {
+            assert_eq!(cancel, vec!["stale_down".to_string()]);
+            assert_eq!(place.len(), 1);
+            assert_eq!(place[0].outcome, Outcome::Down);
+            // pos_held(Down) = filled(10) + open(7) = 17, cap = 100-17 = 83,
+            // size = min(10, 83) = 10
+            assert!((place[0].size - 10.0).abs() < 1e-9);
+        }
+        other => panic!("expected DoubleLeg + Batch, got {:?}", other),
+    }
+}
+
+#[test]
+fn double_leg_avg_sum_ok_imbalance_close_waits_for_fresh_open_avg() {
+    // Açık Down averaging fresh (cooldown içinde) → handle NoOp döner →
+    // imbalance_close_decision yeni emir basmaz, NoOp.
+    let mut metrics = StrategyMetrics::default();
+    metrics.ingest_fill(Outcome::Up, 0.45, 20.0, 0.0);
+    metrics.ingest_fill(Outcome::Down, 0.45, 10.0, 0.0);
+    let params = StrategyParams::default();
+    let now = COOLDOWN_THRESHOLD + 5_000;
+    let opens = vec![mk_open(
+        "fresh_down",
+        Outcome::Down,
+        "harvest:averaging:Down",
+        now - 1_000,
+        7.0,
+    )];
+    let mut ctx = default_ctx(&metrics, &params, &opens);
+    ctx.now_ms = now;
+    let (state, dec) = decide(HarvestState::DoubleLeg, &ctx);
+    assert_eq!(state, HarvestState::DoubleLeg);
+    assert!(matches!(dec, Decision::NoOp));
+}
+
+#[test]
+fn double_leg_independent_averaging_yes_only() {
+    // last_fill_price_yes=0.55, yes_best_bid düştü (0.48); NO tarafı sabit
+    // (no_best_bid=0.50 == last_fill_price_no=0.50 → price_fell=false).
+    // avg_sum=1.05 > 0.98 → ProfitLock tetiklenmez.
+    let mut metrics = StrategyMetrics::default();
+    metrics.ingest_fill(Outcome::Up, 0.55, 10.0, 0.0);
+    metrics.ingest_fill(Outcome::Down, 0.50, 10.0, 0.0);
+    let params = StrategyParams::default();
+    let opens: Vec<OpenOrder> = vec![];
+    let mut ctx = default_ctx(&metrics, &params, &opens);
+    ctx.now_ms = COOLDOWN_THRESHOLD + 1;
+    ctx.yes_best_bid = 0.48;
+    ctx.no_best_bid = 0.50;
+    let (state, dec) = decide(HarvestState::DoubleLeg, &ctx);
+    assert_eq!(state, HarvestState::DoubleLeg);
+    match dec {
+        Decision::PlaceOrders(orders) => {
+            assert_eq!(orders.len(), 1);
+            assert_eq!(orders[0].outcome, Outcome::Up);
+            assert!((orders[0].price - 0.48).abs() < 1e-9);
+        }
+        _ => panic!("expected PlaceOrders for YES only"),
+    }
+}
+
+#[test]
+fn double_leg_independent_averaging_both_sides_batched() {
+    // İki tarafta da bid düştü + YES tarafında açık avg cancel-eligible →
+    // Decision::Batch (cancel + place birlikte).
+    let mut metrics = StrategyMetrics::default();
+    metrics.ingest_fill(Outcome::Up, 0.55, 10.0, 0.0);
+    metrics.ingest_fill(Outcome::Down, 0.50, 10.0, 0.0);
+    let params = StrategyParams::default();
+    let now = COOLDOWN_THRESHOLD * 3;
+    let opens = vec![mk_open(
+        "stale_up",
+        Outcome::Up,
+        "harvest:averaging:Up",
+        now - COOLDOWN_THRESHOLD - 1_000,
+        10.0,
+    )];
+    let mut ctx = default_ctx(&metrics, &params, &opens);
+    ctx.now_ms = now;
+    ctx.yes_best_bid = 0.50;
+    ctx.no_best_bid = 0.48; // DOWN düşmüş → no avg place
+    match decide(HarvestState::DoubleLeg, &ctx) {
+        (HarvestState::DoubleLeg, Decision::Batch { cancel, place }) => {
+            assert_eq!(cancel, vec!["stale_up".to_string()]);
+            assert_eq!(place.len(), 1);
+            assert_eq!(place[0].outcome, Outcome::Down);
+            assert!((place[0].price - 0.48).abs() < 1e-9);
+        }
+        other => panic!("expected DoubleLeg + Batch, got {:?}", other),
+    }
+}
+
+#[test]
+fn double_leg_open_avg_within_cooldown_skips() {
+    // Açık YES avg yaşı < cooldown → wait. Yeni emir basılmaz.
+    let mut metrics = StrategyMetrics::default();
+    metrics.ingest_fill(Outcome::Up, 0.55, 10.0, 0.0);
+    metrics.ingest_fill(Outcome::Down, 0.50, 10.0, 0.0);
+    let params = StrategyParams::default();
+    let now = COOLDOWN_THRESHOLD + 5_000;
+    let opens = vec![mk_open(
+        "fresh_up",
+        Outcome::Up,
+        "harvest:averaging:Up",
+        now - 1_000,
+        10.0,
+    )];
+    let mut ctx = default_ctx(&metrics, &params, &opens);
+    ctx.now_ms = now;
+    ctx.yes_best_bid = 0.48;
+    ctx.no_best_bid = 0.50;
+    let (state, dec) = decide(HarvestState::DoubleLeg, &ctx);
+    assert_eq!(state, HarvestState::DoubleLeg);
+    assert!(matches!(dec, Decision::NoOp));
+}
+
+#[test]
+fn double_leg_one_side_at_max_position_freezes() {
+    // YES tarafı max_position_size'a ulaştı → YES'e avg basılmaz; DOWN normal.
+    let mut metrics = StrategyMetrics::default();
+    metrics.ingest_fill(Outcome::Up, 0.55, 100.0, 0.0); // pos_held = 100 = max
+    metrics.ingest_fill(Outcome::Down, 0.50, 10.0, 0.0);
+    let params = StrategyParams::default();
+    let opens: Vec<OpenOrder> = vec![];
+    let mut ctx = default_ctx(&metrics, &params, &opens);
+    ctx.now_ms = COOLDOWN_THRESHOLD + 1;
+    ctx.yes_best_bid = 0.48;
+    ctx.no_best_bid = 0.48;
+    let (state, dec) = decide(HarvestState::DoubleLeg, &ctx);
+    assert_eq!(state, HarvestState::DoubleLeg);
+    match dec {
+        Decision::PlaceOrders(orders) => {
+            assert_eq!(orders.len(), 1, "yalnız DOWN avg basılmalı");
+            assert_eq!(orders[0].outcome, Outcome::Down);
+        }
+        _ => panic!("expected DOWN-only PlaceOrders"),
+    }
+}
+
+#[test]
+fn double_leg_no_signal_multiplier() {
+    // effective_score=10, signal_weight>0 → SingleLeg'de DOWN avg multiplier
+    // 1.3× olurdu (UP=1.0). DoubleLeg'de iki taraf da 1.0 — sinyal etkisi
+    // double-count edilmez. DOWN size'ında fark teyit edilir.
+    let mut metrics = StrategyMetrics::default();
+    metrics.ingest_fill(Outcome::Up, 0.55, 10.0, 0.0);
+    metrics.ingest_fill(Outcome::Down, 0.50, 10.0, 0.0);
+    let params = StrategyParams::default();
+    let opens: Vec<OpenOrder> = vec![];
+    let mut ctx = default_ctx(&metrics, &params, &opens);
+    ctx.signal_weight = 10.0;
+    ctx.effective_score = 10.0;
+    ctx.now_ms = COOLDOWN_THRESHOLD + 1;
+    ctx.yes_best_bid = 0.48;
+    ctx.no_best_bid = 0.48;
+    let (_state, dec) = decide(HarvestState::DoubleLeg, &ctx);
+    let base_up = crate::strategy::order_size(5.0, 0.48, 5.0).round();
+    let base_down = crate::strategy::order_size(5.0, 0.48, 5.0).round();
+    match dec {
+        Decision::PlaceOrders(orders) => {
+            assert_eq!(orders.len(), 2);
+            for o in &orders {
+                let expected = match o.outcome {
+                    Outcome::Up => base_up,
+                    Outcome::Down => base_down,
+                };
+                assert!(
+                    (o.size - expected).abs() < 1e-9,
+                    "outcome={:?} size={} expected={} (DoubleLeg multiplier=1.0)",
+                    o.outcome,
+                    o.size,
+                    expected,
+                );
+            }
+        }
+        _ => panic!("expected PlaceOrders"),
+    }
 }

@@ -7,16 +7,10 @@ use crate::types::{Outcome, OrderType};
 use super::executor::{apply_dryrun_fill, dryrun_cross};
 use super::{ExecutedOrder, MarketSession};
 
-/// **DryRun passive-fill simülatörü.**
-///
-/// Market WS book güncellemesinden sonra çağrılır: `session.open_orders` içindeki
-/// her live emir mevcut book'la karşılaştırılır:
-/// - **BUY** (`outcome=Up` → karşı `yes_best_ask`, `outcome=Down` → `no_best_ask`):
-///   `best_ask > 0 && order.price >= best_ask` ise emir o anda dolar (`fill_price = best_ask`).
-/// - **SELL** sırasıyla karşı `best_bid` ile karşılaştırılır.
-///
-/// Filled emirler `open_orders`'tan silinir; `metrics`/`last_fill_price`/
-/// `last_averaging_ms` güncellenir. Live modda çağrılmaz (gerçek user WS yapar).
+/// Book güncellemesinden sonra `session.open_orders` içindeki her live emri
+/// karşı best fiyatla karşılaştırır; geçenleri doldurur, kalanları korur.
+/// Filled emirler `metrics`'i ve `last_averaging_ms`'yi günceller.
+/// Live modda çağrılmaz (gerçek user WS yapar).
 pub fn simulate_passive_fills(session: &mut MarketSession) -> Vec<ExecutedOrder> {
     let mut filled: Vec<ExecutedOrder> = Vec::new();
     let mut keep: Vec<OpenOrder> = Vec::with_capacity(session.open_orders.len());

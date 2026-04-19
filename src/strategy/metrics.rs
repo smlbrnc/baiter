@@ -9,33 +9,29 @@ use crate::types::Outcome;
 /// Anlık strateji durumu — `best_bid_ask` / `trade MATCHED` sonrası güncellenir.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct StrategyMetrics {
-    /// YES shares toplamı (ağırlıklı fill).
     pub shares_yes: f64,
-    /// NO shares toplamı.
     pub shares_no: f64,
-    /// `imbalance = shares_yes - shares_no`
+    /// `shares_yes - shares_no`.
     pub imbalance: f64,
     /// YES tarafı VWAP.
     pub avg_yes: f64,
     /// NO tarafı VWAP.
     pub avg_no: f64,
-    /// `avg_yes + avg_no` — yalnızca **SingleLeg ProfitLock** eşiği için kullanılır.
-    /// Harvest dual fazında simetrik fiyatlama nedeniyle her zaman `≈ 1.00`,
-    /// dolayısıyla dual fazında karar alınmaz.
+    /// `avg_yes + avg_no` — Harvest DoubleLeg ProfitLock eşiği.
     pub avg_sum: f64,
-    /// Pencerede en son MATCHED fill fiyatı.
+    /// Per-side son MATCHED fill fiyatı — Harvest averaging "price_fell" kaynağı.
     pub last_fill_price_yes: f64,
     pub last_fill_price_no: f64,
-    /// Tüm stratejilerde kullanılan brüt hacim.
+    /// Brüt hacim (tüm stratejilerde).
     pub sum_yes: f64,
     pub sum_no: f64,
-    /// `imbalance_cost` (YES - NO maliyet farkı).
+    /// `imbalance_cost` (per-side maliyet).
     pub imb_cost_up: f64,
     pub imb_cost_down: f64,
 }
 
 impl StrategyMetrics {
-    /// Bir MATCHED fill event'ini absorbla.
+    /// MATCHED fill event'ini absorbla.
     pub fn ingest_fill(&mut self, outcome: Outcome, price: f64, size: f64, fee: f64) {
         match outcome {
             Outcome::Up => {
@@ -63,7 +59,7 @@ impl StrategyMetrics {
         self.avg_sum = self.avg_yes + self.avg_no;
     }
 
-    /// `pair_count` — kâr formülünde kullanılır.
+    /// `min(shares_yes, shares_no)` — kâr formülünde kullanılır.
     pub fn pair_count(&self) -> f64 {
         self.shares_yes.min(self.shares_no)
     }
@@ -73,17 +69,16 @@ impl StrategyMetrics {
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct MarketPnL {
     pub cost_basis: f64,
-    /// Şu an her zaman 0.0 — komisyon `imb_cost_*` üzerinden zaten cost_basis'e
-    /// dahil edilmiş olduğundan ayrı satıra eklenmez. Kolon UI/PnL şemasıyla
-    /// uyumluluk için saklanır.
+    /// Daima 0.0 — komisyon `imb_cost_*` üzerinden cost_basis'e dahil. UI/PnL
+    /// şema uyumluluğu için saklanır.
     pub fee_total: f64,
     pub shares_yes: f64,
     pub shares_no: f64,
-    /// YES kazanırsa: `shares_yes * 1.0 - cost_basis - fee_total`
+    /// `shares_yes - cost_basis` (YES kazanırsa).
     pub pnl_if_up: f64,
-    /// NO kazanırsa.
+    /// `shares_no - cost_basis` (NO kazanırsa).
     pub pnl_if_down: f64,
-    /// Mark-to-market: shares_yes * best_bid_yes + shares_no * best_bid_no - cost_basis - fee_total
+    /// `shares_yes * best_bid_yes + shares_no * best_bid_no - cost_basis`.
     pub mtm_pnl: f64,
 }
 
@@ -137,7 +132,6 @@ mod tests {
         m.ingest_fill(Outcome::Up, 0.5, 10.0, 0.0);
         m.ingest_fill(Outcome::Down, 0.48, 10.0, 0.0);
         let pnl = MarketPnL::from_metrics(&m, 0.6, 0.4);
-        // cost = 0.5*10 + 0.48*10 = 9.80; shares_yes=10 → if UP: 10 - 9.8 = 0.2
         assert!((pnl.pnl_if_up - 0.2).abs() < 1e-9);
         assert!((pnl.pnl_if_down - 0.2).abs() < 1e-9);
     }

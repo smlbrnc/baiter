@@ -1,4 +1,5 @@
-//! ProfitLock FAK çıktısı.
+//! ProfitLock FAK — SingleLeg çıkışı: `imbalance` kadar tek taraflı hedge basıp
+//! `Done`'a geçer (transient state yok).
 
 use crate::strategy::{Decision, PlannedOrder};
 use crate::types::{OrderType, Outcome, Side};
@@ -8,11 +9,9 @@ use super::state::{HarvestContext, HarvestState};
 pub fn profit_lock_fak(ctx: &HarvestContext) -> (HarvestState, Decision) {
     let imb = ctx.metrics.imbalance;
     if imb.abs() < f64::EPSILON {
-        return (HarvestState::ProfitLock, Decision::NoOp);
+        return (HarvestState::Done, Decision::NoOp);
     }
-    // imb > 0 ⇒ YES tarafında fazla → karşı tarafa (NO) FAK; tersi simetrik.
-    let excess_side = if imb > 0.0 { Outcome::Up } else { Outcome::Down };
-    let hedge_side = excess_side.opposite();
+    let hedge_side = if imb > 0.0 { Outcome::Down } else { Outcome::Up };
     let fak = PlannedOrder {
         outcome: hedge_side,
         token_id: ctx.token_id(hedge_side).to_string(),
@@ -22,5 +21,5 @@ pub fn profit_lock_fak(ctx: &HarvestContext) -> (HarvestState, Decision) {
         order_type: OrderType::Fak,
         reason: "harvest:profit_lock:fak".to_string(),
     };
-    (HarvestState::ProfitLock, Decision::PlaceOrders(vec![fak]))
+    (HarvestState::Done, Decision::PlaceOrders(vec![fak]))
 }
