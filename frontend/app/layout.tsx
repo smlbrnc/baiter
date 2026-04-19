@@ -4,6 +4,7 @@ import { Geist_Mono, Inter } from "next/font/google";
 import "./globals.css";
 import { ThemeProvider } from "@/components/theme-provider";
 import { AppSidebar } from "@/components/app-sidebar";
+import { TooltipProvider } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 const inter = Inter({ subsets: ["latin"], variable: "--font-sans" });
@@ -32,6 +33,7 @@ export default function RootLayout({
     >
       <body>
         <ThemeProvider>
+          <TooltipProvider delayDuration={200}>
           <div className="bg-background text-foreground flex min-h-svh">
             <AppSidebar />
             <main className="bg-muted/30 flex-1 overflow-auto">
@@ -40,6 +42,7 @@ export default function RootLayout({
               </div>
             </main>
           </div>
+          </TooltipProvider>
         </ThemeProvider>
       </body>
     </html>

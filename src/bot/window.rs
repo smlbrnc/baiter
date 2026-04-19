@@ -41,25 +41,16 @@ pub async fn run_window(
         return Ok(Some(reason));
     }
 
-    let prepared = prepare_window(ctx, slug, &slug_str, &label).await?;
-    let streams = connect_streams(ctx, &prepared, &label);
+    let session = prepare_window(ctx, slug, &slug_str, &label).await?;
+    let streams = connect_streams(ctx, &session, &label);
 
-    wait_for_t_zero(prepared.start_ts).await;
+    wait_for_t_zero(session.start_ts).await;
     log_loop_start(ctx, &label);
 
-    let result = run_trading_loop(ctx, slug, prepared.session, streams.ev_rx, sigterm, sigint).await;
+    let result = run_trading_loop(ctx, slug, session, streams.ev_rx, sigterm, sigint).await;
 
     cleanup_window(ctx, streams.market_ws, streams.user_ws, &label, result).await;
     Ok(result)
-}
-
-/// Hazırlanmış pencere context'i — Gamma fetch + DB upsert sonrası state.
-struct PreparedWindow {
-    session: MarketSession,
-    yes_id: String,
-    no_id: String,
-    condition_id: String,
-    start_ts: u64,
 }
 
 /// T-15 ön hazırlığı: Gamma fetch → DB session upsert → MarketSession build →
@@ -69,7 +60,7 @@ async fn prepare_window(
     slug: SlugInfo,
     slug_str: &str,
     label: &str,
-) -> Result<PreparedWindow, AppError> {
+) -> Result<MarketSession, AppError> {
     ipc::log_line(label, format!("📡 Fetching market: {slug_str}"));
     let market = ctx.gamma.get_market_by_slug(slug_str).await?;
     let (yes_id, no_id) = market.parse_token_ids()?;
@@ -106,22 +97,6 @@ async fn prepare_window(
     )
     .await?;
 
-    let session = build_session(
-        ctx,
-        slug,
-        &market,
-        SessionTokens {
-            yes_id: &yes_id,
-            no_id: &no_id,
-            condition_id: &condition_id,
-        },
-        SessionWindow {
-            start_ts,
-            end_ts,
-            market_session_id: session_id,
-        },
-    );
-
     ipc::emit(&FrontendEvent::SessionOpened {
         bot_id: ctx.bot_id,
         slug: slug_str.to_string(),
@@ -131,13 +106,19 @@ async fn prepare_window(
         no_token_id: no_id.clone(),
     });
 
-    Ok(PreparedWindow {
-        session,
+    Ok(build_session(
+        ctx,
+        slug,
+        &market,
         yes_id,
         no_id,
         condition_id,
-        start_ts,
-    })
+        SessionWindow {
+            start_ts,
+            end_ts,
+            market_session_id: session_id,
+        },
+    ))
 }
 
 /// Aktif WS bağlantıları + event channel.
@@ -148,12 +129,14 @@ struct WindowStreams {
 }
 
 /// Market WS + (varsa) User WS task'larını başlatır, mpsc channel kurar.
-fn connect_streams(ctx: &Ctx, prepared: &PreparedWindow, label: &str) -> WindowStreams {
+fn connect_streams(ctx: &Ctx, session: &MarketSession, label: &str) -> WindowStreams {
     ipc::log_line(label, "🔌 Connecting to Market WebSocket...");
-    let (ev_tx, ev_rx) = mpsc::channel::<PolymarketEvent>(512);
+    // Buffer 2048: yoğun book + user event burst'lerinde drop oranını düşürür;
+    // PolymarketEvent ~200B → ~400KB worst case bellek (ihmal edilebilir).
+    let (ev_tx, ev_rx) = mpsc::channel::<PolymarketEvent>(2048);
     let market_ws = tokio::spawn(run_market_ws(
         ctx.env_.clob_ws_base.clone(),
-        vec![prepared.yes_id.clone(), prepared.no_id.clone()],
+        vec![session.yes_token_id.clone(), session.no_token_id.clone()],
         ev_tx.clone(),
     ));
     let user_ws = ctx.creds.as_ref().map(|c| {
@@ -161,7 +144,7 @@ fn connect_streams(ctx: &Ctx, prepared: &PreparedWindow, label: &str) -> WindowS
         tokio::spawn(run_user_ws(
             ctx.env_.clob_ws_base.clone(),
             c.clone(),
-            vec![prepared.condition_id.clone()],
+            vec![session.condition_id.clone()],
             ev_tx,
         ))
     });
@@ -203,11 +186,13 @@ async fn run_trading_loop(
     sigterm: &mut Signal,
     sigint: &mut Signal,
 ) -> Option<&'static str> {
-    let mut tick_timer = tokio_interval(Duration::from_millis(500));
-    let mut zone_timer = tokio_interval(Duration::from_secs(5));
-    let mut pnl_timer = tokio_interval(Duration::from_secs(5));
-    let mut last_zone: Option<String> = None;
-    let mut last_book_snapshot: Option<(f64, f64, f64, f64)> = None;
+    // ⚡ Kural 1 — Critical Path Zero Block:
+    //   [WS event] → handle_event(update_best) → tick::tick(decide+execute)
+    // tek select! arm'ında zincirlenir; aralarında bekleme yok.
+    // tick_timer (1 sn) safety net: WS event akışı yokken Binance signal
+    // değişimleri için periyodik fallback.
+    let mut tick_timer = tokio_interval(Duration::from_secs(1));
+    let mut frontend_timer = tokio_interval(Duration::from_secs(1));
 
     loop {
         tokio::select! {
@@ -215,15 +200,16 @@ async fn run_trading_loop(
             _ = sigint.recv()  => return Some("sigint"),
             Some(ev) = ev_rx.recv() => {
                 event::handle_event(&mut sess, &ctx.pool, ctx.bot_id, ctx.cfg.run_mode, ev);
+                tick::tick(ctx, &mut sess).await;
             }
             _ = tick_timer.tick() => tick::tick(ctx, &mut sess).await,
-            _ = zone_timer.tick() => {
-                zone::emit_zone_signal(ctx, &sess, slug, &mut last_zone, &mut last_book_snapshot).await;
+            _ = frontend_timer.tick() => {
+                zone::emit_frontend_snapshot(ctx, &sess, slug).await;
+                persist::snapshot_pnl(&ctx.pool, &sess);
                 if now_secs() >= sess.end_ts {
                     return None;
                 }
             }
-            _ = pnl_timer.tick() => persist::snapshot_pnl(&ctx.pool, &sess),
         }
     }
 }
@@ -293,12 +279,6 @@ async fn wait_for_t_minus_15(
     }
 }
 
-struct SessionTokens<'a> {
-    yes_id: &'a str,
-    no_id: &'a str,
-    condition_id: &'a str,
-}
-
 struct SessionWindow {
     start_ts: u64,
     end_ts: u64,
@@ -309,13 +289,15 @@ fn build_session(
     ctx: &Ctx,
     slug: SlugInfo,
     market: &GammaMarket,
-    tokens: SessionTokens<'_>,
+    yes_id: String,
+    no_id: String,
+    condition_id: String,
     window: SessionWindow,
 ) -> MarketSession {
     MarketSession {
-        yes_token_id: tokens.yes_id.to_string(),
-        no_token_id: tokens.no_id.to_string(),
-        condition_id: tokens.condition_id.to_string(),
+        yes_token_id: yes_id,
+        no_token_id: no_id,
+        condition_id,
         tick_size: market.tick_size.unwrap_or(0.01),
         api_min_order_size: market.minimum_order_size.unwrap_or(5.0),
         neg_risk: market.neg_risk.unwrap_or(false),

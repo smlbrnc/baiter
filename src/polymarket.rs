@@ -19,4 +19,4 @@ pub mod ws;
 
 pub use clob::{shared_http_client, CancelResponse, ClobClient};
 pub use gamma::{GammaClient, GammaMarket};
-pub use ws::{run_market_ws, run_user_ws, PolymarketEvent};
+pub use ws::{run_market_ws, run_user_ws, PolymarketEvent, PriceChangeLevel};

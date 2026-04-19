@@ -56,13 +56,17 @@ export function BotFormCredentialsSection({
           onChange={setIncludeCreds}
           title="Bu bot için kimlik bilgisi gir"
           description="CLOB API ve cüzdan anahtarlarını yalnızca güvendiğin ortamda kullan."
+          tooltip="Etkinleştirilirse bu bota özel Polymarket kimlik bilgileri kullanılır. Kapalıysa .env dosyasındaki varsayılan kimlik bilgileri devreye girer."
         />
 
         {includeCreds && (
           <>
             <Separator className="my-3" />
             <div className="grid gap-3 sm:grid-cols-2">
-              <Field label="POLY_ADDRESS">
+              <Field
+                label="POLY_ADDRESS"
+                tooltip="Polymarket hesabının EVM adresi (0x…). Emir imzalama ve kimlik doğrulamada kullanılır."
+              >
                 <Input
                   value={creds.poly_address}
                   onChange={(e) =>
@@ -70,7 +74,10 @@ export function BotFormCredentialsSection({
                   }
                 />
               </Field>
-              <Field label="POLY_API_KEY">
+              <Field
+                label="POLY_API_KEY"
+                tooltip="Polymarket CLOB L2 API anahtarı. HMAC imzalama için kullanılır; derive edilmiş veya manuel olarak alınabilir."
+              >
                 <Input
                   value={creds.poly_api_key}
                   onChange={(e) =>
@@ -78,7 +85,10 @@ export function BotFormCredentialsSection({
                   }
                 />
               </Field>
-              <Field label="POLY_PASSPHRASE">
+              <Field
+                label="POLY_PASSPHRASE"
+                tooltip="POLY_API_KEY ile birlikte gelen passphrase. L2 kimlik doğrulama başlığında kullanılır."
+              >
                 <Input
                   value={creds.poly_passphrase}
                   onChange={(e) =>
@@ -86,7 +96,10 @@ export function BotFormCredentialsSection({
                   }
                 />
               </Field>
-              <Field label="POLY_SECRET">
+              <Field
+                label="POLY_SECRET"
+                tooltip="HMAC-SHA256 imzalama için kullanılan URL-safe Base64 kodlu secret. API anahtarıyla eşleşmelidir."
+              >
                 <Input
                   type="password"
                   value={creds.poly_secret}
@@ -95,7 +108,10 @@ export function BotFormCredentialsSection({
                   }
                 />
               </Field>
-              <Field label="POLYGON_PRIVATE_KEY">
+              <Field
+                label="POLYGON_PRIVATE_KEY"
+                tooltip="EIP-712 emir imzalama için kullanılan Polygon cüzdanının özel anahtarı. Asla paylaşma; yalnızca güvenli ortamda gir."
+              >
                 <Input
                   type="password"
                   value={creds.polygon_private_key}
@@ -107,7 +123,10 @@ export function BotFormCredentialsSection({
                   }
                 />
               </Field>
-              <Field label="Signature type">
+              <Field
+                label="Signature type"
+                tooltip="EIP-712 imza tipi: 0 = EOA (doğrudan private key sahibi), 1 = POLY_PROXY (Magic Link proxy cüzdanı), 2 = POLY_GNOSIS_SAFE. Tip 1 ve 2 için FUNDER adresi zorunludur."
+              >
                 <select
                   value={creds.signature_type}
                   onChange={(e) =>
@@ -124,7 +143,10 @@ export function BotFormCredentialsSection({
                 </select>
               </Field>
               {(creds.signature_type === 1 || creds.signature_type === 2) && (
-                <Field label="FUNDER (proxy/safe adresi)">
+                <Field
+                  label="FUNDER (proxy/safe adresi)"
+                  tooltip="Proxy veya Gnosis Safe tipi imzada maker adresi olarak kullanılan EVM adresi. EOA'nın güvendiği ve imza yetkisi verdiği hesap olmalıdır."
+                >
                   <Input
                     value={creds.funder ?? ""}
                     placeholder="0x..."

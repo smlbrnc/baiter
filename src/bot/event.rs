@@ -1,10 +1,13 @@
 //! Polymarket WS event handler dispatch.
 
+use std::sync::Arc;
+
 use sqlx::SqlitePool;
 
 use crate::db;
 use crate::engine::{
-    absorb_trade_matched, outcome_from_asset_id, simulate_passive_fills, update_best, MarketSession,
+    absorb_trade_matched, outcome_from_asset_id, simulate_passive_fills, update_best,
+    MarketSession,
 };
 use crate::ipc::{self, FrontendEvent};
 use crate::polymarket::PolymarketEvent;
@@ -36,6 +39,9 @@ pub fn handle_event(
             asks,
             ..
         } => on_book_snapshot(sess, bot_id, run_mode, &asset_id, &bids, &asks),
+        PolymarketEvent::PriceChange { changes, .. } => {
+            on_price_change(sess, bot_id, run_mode, &changes)
+        }
         PolymarketEvent::Trade {
             trade_id,
             market,
@@ -112,10 +118,12 @@ pub fn handle_event(
             winning_asset_id,
             timestamp_ms,
         ),
-        _ => {}
     }
 }
 
+/// WS `best_bid_ask` event'i — sadece in-memory book'u güncelle ve strateji
+/// pipeline'ını (`after_book_update`) tetikle. Frontend BestBidAsk emit'i
+/// `bot/zone.rs` içinden 1 sn cadence ile yapılır.
 fn on_best_bid_ask(
     sess: &mut MarketSession,
     bot_id: i64,
@@ -125,14 +133,6 @@ fn on_best_bid_ask(
     best_ask: f64,
 ) {
     update_best(sess, asset_id, best_bid, best_ask);
-    ipc::emit(&FrontendEvent::BestBidAsk {
-        bot_id,
-        yes_best_bid: sess.yes_best_bid,
-        yes_best_ask: sess.yes_best_ask,
-        no_best_bid: sess.no_best_bid,
-        no_best_ask: sess.no_best_ask,
-        ts_ms: now_ms(),
-    });
     after_book_update(sess, bot_id, run_mode);
 }
 
@@ -141,14 +141,36 @@ fn on_book_snapshot(
     bot_id: i64,
     run_mode: RunMode,
     asset_id: &str,
-    bids: &[(String, String)],
-    asks: &[(String, String)],
+    bids: &[f64],
+    asks: &[f64],
 ) {
-    if let (Some(bid), Some(ask)) = (
-        bids.first().and_then(|b| b.0.parse::<f64>().ok()),
-        asks.first().and_then(|a| a.0.parse::<f64>().ok()),
-    ) {
-        update_best(sess, asset_id, bid, ask);
+    // Polymarket WS'in array sıralamasına güvenmeden best_bid = max(bids),
+    // best_ask = min(asks). Sparse NO orderbook'larında (ör. tek seviye
+    // 0.01/0.99) bile doğru sonuç.
+    let best_bid = bids.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let best_ask = asks.iter().copied().fold(f64::INFINITY, f64::min);
+    if best_bid.is_finite() && best_ask.is_finite() {
+        update_best(sess, asset_id, best_bid, best_ask);
+        after_book_update(sess, bot_id, run_mode);
+    }
+}
+
+/// `price_change` delta'sı best_bid/best_ask field'larını taşır; book snapshot
+/// sonrası tek güncelleme kanalıdır. Field eksikse o seviye atlanır.
+fn on_price_change(
+    sess: &mut MarketSession,
+    bot_id: i64,
+    run_mode: RunMode,
+    changes: &[crate::polymarket::PriceChangeLevel],
+) {
+    let mut any_update = false;
+    for ch in changes {
+        if let (Some(bb), Some(ba)) = (ch.best_bid, ch.best_ask) {
+            update_best(sess, &ch.asset_id, bb, ba);
+            any_update = true;
+        }
+    }
+    if any_update {
         after_book_update(sess, bot_id, run_mode);
     }
 }
@@ -174,7 +196,7 @@ fn on_trade(
     status: String,
     fee_rate_bps: Option<f64>,
     timestamp_ms: u64,
-    raw: serde_json::Value,
+    raw: Arc<serde_json::Value>,
 ) {
     let status_upper = status.to_ascii_uppercase();
     let label = bot_id.to_string();
@@ -184,14 +206,16 @@ fn on_trade(
     let fee = fee_rate_bps
         .map(|bps| price * size * bps / 10_000.0)
         .unwrap_or(0.0);
+    // trade_id ve status_upper'a aşağıda Fill emit'i için tekrar erişiliyor →
+    // sadece bu ikisini clone et; market/side/outcome_str kullanılmadığı için move.
     let trade_record = db::trades::TradeRecord::from_user_ws(db::trades::WsTradeInput {
         bot_id,
         market_session_id: sess.market_session_id,
         trade_id: trade_id.clone(),
-        market: market.clone(),
+        market,
         asset_id: asset_id.to_string(),
-        side: side.clone(),
-        outcome: outcome_str.clone(),
+        side,
+        outcome: outcome_str,
         size,
         price,
         status: status_upper.clone(),
@@ -296,7 +320,7 @@ fn on_order(
     status: String,
     lifecycle_type: String,
     timestamp_ms: u64,
-    raw: serde_json::Value,
+    raw: Arc<serde_json::Value>,
 ) {
     let label = bot_id.to_string();
     match lifecycle_type.as_str() {
@@ -359,24 +383,6 @@ fn on_market_resolved(
     winning_asset_id: Option<String>,
     timestamp_ms: u64,
 ) {
-    let slug = sess.slug.clone();
-    // Kural 4: WS event consumer DB I/O bekleyemez — fire-and-forget.
-    let pool = pool.clone();
-    let market_for_db = market.clone();
-    let winning_outcome_for_db = winning_outcome.clone();
-    let winning_asset_for_db = winning_asset_id.clone();
-    db::spawn_db("market_resolved upsert", async move {
-        db::markets::upsert_market_resolved(
-            &pool,
-            &market_for_db,
-            &winning_outcome_for_db,
-            winning_asset_for_db.as_deref(),
-            now_ms() as i64,
-            None,
-        )
-        .await
-    });
-
     let label = bot_id.to_string();
     let mut parts = vec![
         format!("market={market}"),
@@ -390,9 +396,24 @@ fn on_market_resolved(
 
     ipc::emit(&FrontendEvent::SessionResolved {
         bot_id,
-        slug,
-        winning_outcome,
+        slug: sess.slug.clone(),
+        winning_outcome: winning_outcome.clone(),
         ts_ms: now_ms(),
+    });
+
+    // Kural 4: WS event consumer DB I/O bekleyemez — fire-and-forget.
+    // market / winning_outcome / winning_asset_id artık okunmuyor → move.
+    let pool = pool.clone();
+    db::spawn_db("market_resolved upsert", async move {
+        db::markets::upsert_market_resolved(
+            &pool,
+            &market,
+            &winning_outcome,
+            winning_asset_id.as_deref(),
+            now_ms() as i64,
+            None,
+        )
+        .await
     });
 }
 

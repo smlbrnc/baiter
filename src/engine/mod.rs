@@ -6,8 +6,6 @@
 //!
 //! Referans: [docs/bot-platform-mimari.md §13 §16 §⚡ Kural 1-2](../../../docs/bot-platform-mimari.md).
 
-use serde::{Deserialize, Serialize};
-
 use crate::config::BotConfig;
 use crate::strategy::harvest::{
     HarvestContext, HarvestEngine, HarvestState, MAX_POSITION_SIZE,
@@ -25,8 +23,9 @@ pub use executor::{
 };
 pub use passive::simulate_passive_fills;
 
-/// Yürütülen emir sonucu.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Yürütülen emir sonucu. In-memory engine pipeline'ında kullanılır;
+/// JSON serialize/deserialize edilmez (DB persist sub-field'lar üzerinden yapılır).
+#[derive(Debug, Clone)]
 pub struct ExecutedOrder {
     pub order_id: String,
     pub planned: PlannedOrder,
@@ -130,6 +129,7 @@ impl MarketSession {
             Strategy::Harvest => {
                 let avg_threshold = cfg.strategy_params.harvest_avg_threshold();
                 let dual_timeout = cfg.strategy_params.harvest_dual_timeout();
+                let zone = self.current_zone(now_ms_v / 1000);
 
                 let ctx = HarvestContext {
                     params: &cfg.strategy_params,
@@ -144,7 +144,7 @@ impl MarketSession {
                     order_usdc: cfg.order_usdc,
                     signal_weight: cfg.signal_weight,
                     effective_score,
-                    zone: self.current_zone(now_ms_v / 1000),
+                    zone,
                     now_ms: now_ms_v,
                     last_averaging_ms: self.last_averaging_ms,
                     last_fill_price: self.last_fill_price,
@@ -160,7 +160,7 @@ impl MarketSession {
                 let (new_state, decision) =
                     <HarvestEngine as DecisionEngine>::decide(self.harvest_state, &ctx);
                 self.harvest_state = new_state;
-                if matches!(self.current_zone(now_ms_v / 1000), MarketZone::StopTrade) {
+                if matches!(zone, MarketZone::StopTrade) {
                     filter_stop_trade(decision)
                 } else {
                     decision
@@ -178,7 +178,7 @@ fn filter_stop_trade(d: Decision) -> Decision {
         Decision::NoOp | Decision::Complete => d,
         Decision::PlaceOrders(_) => Decision::NoOp,
         Decision::CancelOrders(ids) => Decision::CancelOrders(ids),
-        Decision::Batch { cancel, place: _ } => {
+        Decision::Batch { cancel, .. } => {
             if cancel.is_empty() {
                 Decision::NoOp
             } else {

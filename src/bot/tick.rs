@@ -42,7 +42,12 @@ struct TickLogCtx {
     snap: StateLogSnapshot,
 }
 
-/// 500 ms cadence'inde strateji çağrısı + decision execute.
+/// Strateji çağrısı + decision execute.
+///
+/// `bot/window.rs::run_trading_loop` içinden iki kanaldan tetiklenir:
+/// - **Event-driven**: her WS event sonrası (Critical Path Zero Block).
+/// - **Periyodik (1 sn)**: WS akışı sessiz olsa bile Binance signal
+///   değişimleri için safety net.
 pub async fn tick(ctx: &Ctx, sess: &mut MarketSession) {
     let signal_score = ctx.signal_state.read().await.signal_score;
     let es = binance::effective_score(signal_score, ctx.cfg.signal_weight);

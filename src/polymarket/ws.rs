@@ -6,10 +6,11 @@
 //!
 //! Referans: [docs/api/polymarket-clob.md §WebSocket](../../../docs/api/polymarket-clob.md).
 
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio::sync::mpsc::error::TrySendError;
@@ -20,15 +21,16 @@ use crate::config::Credentials;
 use crate::error::AppError;
 
 /// Engine/strateji tarafına iletilen tek tip Polymarket event'i.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "kind")]
+/// Yalnız in-process (mpsc) — JSON serialize/deserialize edilmez.
+#[derive(Debug, Clone)]
 pub enum PolymarketEvent {
     Book {
         asset_id: String,
         market: String,
-        bids: Vec<(String, String)>,
-        asks: Vec<(String, String)>,
-        hash: Option<String>,
+        /// Yalnız fiyat (size tüketici tarafında okunmuyordu); per-level
+        /// String alloc'u sıfırlamak için `Vec<f64>` olarak taşınır.
+        bids: Vec<f64>,
+        asks: Vec<f64>,
         timestamp_ms: u64,
     },
     PriceChange {
@@ -42,20 +44,6 @@ pub enum PolymarketEvent {
         best_bid: f64,
         best_ask: f64,
         spread: f64,
-        timestamp_ms: u64,
-    },
-    LastTradePrice {
-        asset_id: String,
-        market: String,
-        price: f64,
-        size: f64,
-        side: String,
-        timestamp_ms: u64,
-    },
-    TickSizeChange {
-        asset_id: String,
-        market: String,
-        new_tick_size: f64,
         timestamp_ms: u64,
     },
     MarketResolved {
@@ -77,7 +65,9 @@ pub enum PolymarketEvent {
         status: String,
         lifecycle_type: String,
         timestamp_ms: u64,
-        raw: Value,
+        /// Ham JSON; per-event `Value::clone` (deep) yerine `Arc::clone` (atomic
+        /// inc) ile paylaşılır. DB writer arka planda `raw.to_string()` üretir.
+        raw: Arc<Value>,
     },
     Trade {
         trade_id: String,
@@ -90,23 +80,17 @@ pub enum PolymarketEvent {
         status: String,
         fee_rate_bps: Option<f64>,
         timestamp_ms: u64,
-        raw: Value,
+        raw: Arc<Value>,
     },
-    Disconnected {
-        reason: String,
-    },
-    Reconnected,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// `price_change` event'inde her seviye için yalnız best_bid/best_ask delta'sı
+/// taşınır; `price/size/side/hash` field'ları tüketici tarafında okunmuyordu.
+#[derive(Debug, Clone)]
 pub struct PriceChangeLevel {
     pub asset_id: String,
-    pub price: f64,
-    pub size: f64,
-    pub side: String,
     pub best_bid: Option<f64>,
     pub best_ask: Option<f64>,
-    pub hash: Option<String>,
 }
 
 /// Market WS okuyucu task'ı — mpsc'ye event yayar.
@@ -147,7 +131,6 @@ pub async fn run_user_ws(
 
 async fn run_ws_loop(url: &str, subscription: Value, tx: mpsc::Sender<PolymarketEvent>) {
     let mut backoff_secs: u64 = 1;
-    let mut was_disconnected = false;
     loop {
         match connect_and_stream(url, &subscription, &tx).await {
             Ok(()) => {
@@ -158,21 +141,9 @@ async fn run_ws_loop(url: &str, subscription: Value, tx: mpsc::Sender<Polymarket
             }
             Err(e) => {
                 tracing::error!(url, error=%e, "ws error, reconnect in {backoff_secs}s");
-                forward_event(
-                    &tx,
-                    PolymarketEvent::Disconnected {
-                        reason: e.to_string(),
-                    },
-                );
-                was_disconnected = true;
             }
         }
         sleep(Duration::from_secs(backoff_secs)).await;
-        if was_disconnected {
-            // Yalnızca gerçek disconnect sonrası "tekrar bağlandık" sinyali yayılır.
-            forward_event(&tx, PolymarketEvent::Reconnected);
-            was_disconnected = false;
-        }
         backoff_secs = (backoff_secs * 2).min(60);
     }
 }
@@ -257,6 +228,9 @@ fn parse_and_dispatch(text: &str, tx: &mpsc::Sender<PolymarketEvent>) {
         other => vec![other],
     };
     for item in items {
+        // Item bir kez Arc'a sarılır; Order/Trade kollarında `Arc::clone`
+        // (atomic inc), diğer kollarda `&Value` deref coercion ile kullanılır.
+        let item = Arc::new(item);
         if let Some(ev) = map_event(&item) {
             if !forward_event(tx, ev) {
                 return; // receiver dropped
@@ -265,18 +239,25 @@ fn parse_and_dispatch(text: &str, tx: &mpsc::Sender<PolymarketEvent>) {
     }
 }
 
+/// Toplam drop edilen WS event sayısı (process-wide). Her 100 drop'ta bir
+/// `tracing::warn!` ile özet log atılır; tek tek warn spam'i önlenir.
+static DROP_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 /// ⚡ Kural 6: WS okuyucu mpsc kanalda asla bloke olmaz. `try_send` kullanır;
-/// kanal doluysa event drop edilir ve `tracing::warn!` ile sayılır (consumer
-/// taraflı yavaşlama göstergesi). Receiver dropped ise `false` döner ve
-/// caller döngüden çıkar.
+/// kanal doluysa event drop edilir ve `DROP_COUNTER` artırılır. Receiver
+/// dropped ise `false` döner ve caller döngüden çıkar.
 fn forward_event(tx: &mpsc::Sender<PolymarketEvent>, ev: PolymarketEvent) -> bool {
     match tx.try_send(ev) {
         Ok(()) => true,
         Err(TrySendError::Full(dropped)) => {
-            tracing::warn!(
-                event_kind = event_kind_label(&dropped),
-                "ws event channel full, dropping event"
-            );
+            let total = DROP_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
+            if total.is_multiple_of(100) {
+                tracing::warn!(
+                    drop_total = total,
+                    last_kind = event_kind_label(&dropped),
+                    "ws event channel full — drop summary (every 100 drops)"
+                );
+            }
             true
         }
         Err(TrySendError::Closed(_)) => false,
@@ -288,13 +269,9 @@ fn event_kind_label(ev: &PolymarketEvent) -> &'static str {
         PolymarketEvent::Book { .. } => "book",
         PolymarketEvent::PriceChange { .. } => "price_change",
         PolymarketEvent::BestBidAsk { .. } => "best_bid_ask",
-        PolymarketEvent::LastTradePrice { .. } => "last_trade_price",
-        PolymarketEvent::TickSizeChange { .. } => "tick_size_change",
         PolymarketEvent::MarketResolved { .. } => "market_resolved",
         PolymarketEvent::Order { .. } => "order",
         PolymarketEvent::Trade { .. } => "trade",
-        PolymarketEvent::Disconnected { .. } => "disconnected",
-        PolymarketEvent::Reconnected => "reconnected",
     }
 }
 
@@ -322,15 +299,13 @@ fn as_str(v: &Value, key: &str) -> Option<String> {
 ///
 /// `event_type`'a göre küçük yardımcılara dağıtır; her yardımcı kendi
 /// alanlarını zorunlu/opsiyonel olarak çözer.
-fn map_event(v: &Value) -> Option<PolymarketEvent> {
+fn map_event(v: &Arc<Value>) -> Option<PolymarketEvent> {
     let etype = v.get("event_type")?.as_str()?;
     let ts = as_u64(v, "timestamp").unwrap_or(0);
     match etype {
         "book" => map_book(v, ts),
         "price_change" => map_price_change(v, ts),
         "best_bid_ask" => map_best_bid_ask(v, ts),
-        "last_trade_price" => map_last_trade_price(v, ts),
-        "tick_size_change" => map_tick_size_change(v, ts),
         "market_resolved" => map_market_resolved(v, ts),
         "order" => Some(map_order(v, ts)),
         "trade" => Some(map_trade(v, ts)),
@@ -347,7 +322,6 @@ fn map_book(v: &Value, timestamp_ms: u64) -> Option<PolymarketEvent> {
         market: as_str(v, "market").unwrap_or_default(),
         bids: extract_levels(v, "bids"),
         asks: extract_levels(v, "asks"),
-        hash: as_str(v, "hash"),
         timestamp_ms,
     })
 }
@@ -359,12 +333,8 @@ fn map_price_change(v: &Value, timestamp_ms: u64) -> Option<PolymarketEvent> {
         .filter_map(|c| {
             Some(PriceChangeLevel {
                 asset_id: as_str(c, "asset_id")?,
-                price: as_f64(c, "price")?,
-                size: as_f64(c, "size")?,
-                side: as_str(c, "side").unwrap_or_default(),
                 best_bid: as_f64(c, "best_bid"),
                 best_ask: as_f64(c, "best_ask"),
-                hash: as_str(c, "hash"),
             })
         })
         .collect();
@@ -386,26 +356,6 @@ fn map_best_bid_ask(v: &Value, timestamp_ms: u64) -> Option<PolymarketEvent> {
     })
 }
 
-fn map_last_trade_price(v: &Value, timestamp_ms: u64) -> Option<PolymarketEvent> {
-    Some(PolymarketEvent::LastTradePrice {
-        asset_id: as_str(v, "asset_id")?,
-        market: as_str(v, "market").unwrap_or_default(),
-        price: as_f64(v, "price").unwrap_or(0.0),
-        size: as_f64(v, "size").unwrap_or(0.0),
-        side: as_str(v, "side").unwrap_or_default(),
-        timestamp_ms,
-    })
-}
-
-fn map_tick_size_change(v: &Value, timestamp_ms: u64) -> Option<PolymarketEvent> {
-    Some(PolymarketEvent::TickSizeChange {
-        asset_id: as_str(v, "asset_id")?,
-        market: as_str(v, "market").unwrap_or_default(),
-        new_tick_size: as_f64(v, "new_tick_size").unwrap_or(0.0),
-        timestamp_ms,
-    })
-}
-
 fn map_market_resolved(v: &Value, timestamp_ms: u64) -> Option<PolymarketEvent> {
     Some(PolymarketEvent::MarketResolved {
         market: as_str(v, "market")?,
@@ -415,7 +365,7 @@ fn map_market_resolved(v: &Value, timestamp_ms: u64) -> Option<PolymarketEvent> 
     })
 }
 
-fn map_order(v: &Value, timestamp_ms: u64) -> PolymarketEvent {
+fn map_order(v: &Arc<Value>, timestamp_ms: u64) -> PolymarketEvent {
     PolymarketEvent::Order {
         order_id: as_str(v, "id").unwrap_or_default(),
         market: as_str(v, "market").unwrap_or_default(),
@@ -429,11 +379,11 @@ fn map_order(v: &Value, timestamp_ms: u64) -> PolymarketEvent {
         status: as_str(v, "status").unwrap_or_default(),
         lifecycle_type: as_str(v, "type").unwrap_or_default(),
         timestamp_ms,
-        raw: v.clone(),
+        raw: Arc::clone(v),
     }
 }
 
-fn map_trade(v: &Value, timestamp_ms: u64) -> PolymarketEvent {
+fn map_trade(v: &Arc<Value>, timestamp_ms: u64) -> PolymarketEvent {
     PolymarketEvent::Trade {
         trade_id: as_str(v, "id").unwrap_or_default(),
         market: as_str(v, "market").unwrap_or_default(),
@@ -445,21 +395,16 @@ fn map_trade(v: &Value, timestamp_ms: u64) -> PolymarketEvent {
         status: as_str(v, "status").unwrap_or_default(),
         fee_rate_bps: as_f64(v, "fee_rate_bps"),
         timestamp_ms,
-        raw: v.clone(),
+        raw: Arc::clone(v),
     }
 }
 
-fn extract_levels(v: &Value, key: &str) -> Vec<(String, String)> {
+fn extract_levels(v: &Value, key: &str) -> Vec<f64> {
     v.get(key)
         .and_then(|x| x.as_array())
         .map(|arr| {
             arr.iter()
-                .filter_map(|lvl| {
-                    Some((
-                        lvl.get("price")?.as_str()?.to_string(),
-                        lvl.get("size")?.as_str()?.to_string(),
-                    ))
-                })
+                .filter_map(|lvl| lvl.get("price")?.as_str()?.parse::<f64>().ok())
                 .collect()
         })
         .unwrap_or_default()
@@ -471,7 +416,7 @@ mod tests {
 
     #[test]
     fn maps_best_bid_ask() {
-        let raw = serde_json::json!({
+        let raw = Arc::new(serde_json::json!({
             "event_type": "best_bid_ask",
             "asset_id": "abc",
             "market": "0x1",
@@ -479,7 +424,7 @@ mod tests {
             "best_ask": "0.77",
             "spread": "0.04",
             "timestamp": "1766789469958"
-        });
+        }));
         let ev = map_event(&raw).unwrap();
         match ev {
             PolymarketEvent::BestBidAsk {
@@ -494,20 +439,19 @@ mod tests {
 
     #[test]
     fn maps_book() {
-        let raw = serde_json::json!({
+        let raw = Arc::new(serde_json::json!({
             "event_type": "book",
             "asset_id": "abc",
             "market": "0x1",
             "bids": [{"price":"0.48","size":"30"}],
             "asks": [{"price":"0.52","size":"25"}],
-            "timestamp": "100",
-            "hash": "0xh"
-        });
+            "timestamp": "100"
+        }));
         let ev = map_event(&raw).unwrap();
         match ev {
             PolymarketEvent::Book { bids, asks, .. } => {
                 assert_eq!(bids.len(), 1);
-                assert_eq!(asks[0].0, "0.52");
+                assert!((asks[0] - 0.52).abs() < 1e-9);
             }
             _ => panic!("wrong event"),
         }
@@ -515,7 +459,7 @@ mod tests {
 
     #[test]
     fn unknown_event_skipped() {
-        let raw = serde_json::json!({"event_type": "banana"});
+        let raw = Arc::new(serde_json::json!({"event_type": "banana"}));
         assert!(map_event(&raw).is_none());
     }
 }

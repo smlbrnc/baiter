@@ -10,7 +10,7 @@ use crate::engine::MarketSession;
 
 /// `pnl_snapshots` tablosuna tek satır yazar — fire-and-forget (§⚡ Kural 4).
 ///
-/// `window.rs` içinde 5 sn aralıkla çağrılır.
+/// `window.rs` içinde 1 sn aralıkla çağrılır (frontend_timer ile aynı cadence).
 pub fn snapshot_pnl(pool: &SqlitePool, sess: &MarketSession) {
     if sess.market_session_id == 0 {
         return;

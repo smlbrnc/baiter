@@ -22,14 +22,21 @@ export function BotFormSettingsSection({ form, setForm }: Props) {
       </div>
 
       <div className="bg-muted/25 space-y-3 rounded-md border border-border/40 p-3">
-        <Field label="Bot adı">
+        <Field
+          label="Bot adı"
+          tooltip="Bota verilen görünen ad. Zorunlu değildir; boş bırakılırsa varlık + aralık + strateji birleştirilerek otomatik oluşturulur."
+        >
           <Input
             value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })}
             placeholder="İsteğe bağlı — örn. BTC 5m Prism"
           />
         </Field>
-        <Field label="Çalışma modu">
+
+        <Field
+          label="Çalışma modu"
+          tooltip="Live: gerçek CLOB API'ye emir gönderilir, kimlik bilgisi zorunludur. DryRun: emirler gönderilmez, fill anında simüle edilir; piyasa verisi gerçektir."
+        >
           <div
             className="bg-muted/70 flex overflow-hidden rounded-md border border-border/40"
             role="radiogroup"
@@ -81,8 +88,14 @@ export function BotFormSettingsSection({ form, setForm }: Props) {
             </div>
           </div>
         </Field>
+
+        {/* Order USDC · Signal weight · Cooldown — 3 kolonlu */}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-          <Field label="Order USDC" hint="Minimum 1 USDC.">
+          <Field
+            label="Order USDC"
+            tooltip="Emir başına harcanacak USDC miktarı. GTC size = max(⌈order_usdc / fiyat⌉, api_min_order_size). Artırmak emir büyüklüğünü doğrudan artırır."
+            hint="Minimum 1 USDC."
+          >
             <Input
               type="number"
               step="0.01"
@@ -93,7 +106,11 @@ export function BotFormSettingsSection({ form, setForm }: Props) {
               }
             />
           </Field>
-          <Field label="Signal weight" hint="0–10 arası.">
+          <Field
+            label="Signal weight"
+            tooltip="Binance aggTrade sinyalinin emir boyutuna etkisi. 0 = sinyal devre dışı (çarpan daima ×1.0); 10 = tam etki. Yalnızca BTC/ETH/SOL/XRP marketlerinde aktiftir."
+            hint="0–10 arası."
+          >
             <Input
               type="number"
               step="0.1"
@@ -108,11 +125,31 @@ export function BotFormSettingsSection({ form, setForm }: Props) {
               }
             />
           </Field>
-          <div aria-hidden className="hidden sm:block" />
+          <Field
+            label="Cooldown (ms)"
+            tooltip="İki averaging GTC emri arasındaki minimum bekleme süresi (milisaniye). Fiyat düştükten sonra bot bu süre dolmadan yeni averaging emri göndermez. Varsayılan: 30 000 ms = 30 sn."
+            hint="Varsayılan 30 000 ms."
+          >
+            <Input
+              type="number"
+              step="500"
+              min="500"
+              value={form.cooldown_threshold}
+              onChange={(e) =>
+                setForm({
+                  ...form,
+                  cooldown_threshold: Number(e.target.value),
+                })
+              }
+            />
+          </Field>
         </div>
+
+        {/* Min price · Max price — 2 kolonlu */}
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field
             label="Min price"
+            tooltip="Emirlerin kabul edildiği minimum fiyat eşiği (0.01–0.50 USDC/share). Bu değerin altındaki fiyatlarda emir gönderilmez; aşırı düşük likiditeye karşı koruma sağlar."
             hint="0.01 – 0.50; emirler bu fiyatın altında olamaz."
           >
             <Input
@@ -128,6 +165,7 @@ export function BotFormSettingsSection({ form, setForm }: Props) {
           </Field>
           <Field
             label="Max price"
+            tooltip="Emirlerin kabul edildiği maksimum fiyat eşiği (0.50–0.99 USDC/share). Bu değerin üzerindeki fiyatlarda emir gönderilmez; çok pahalı pozisyon almayı önler."
             hint="0.50 – 0.99; emirler bu fiyatın üstünde olamaz."
           >
             <Input
@@ -142,28 +180,13 @@ export function BotFormSettingsSection({ form, setForm }: Props) {
             />
           </Field>
         </div>
-        <Field
-          label="Cooldown threshold (ms)"
-          hint="Tüm stratejiler için averaging emirleri arası min süre ve açık averaging GTC max yaşı (default 30000 = 30 sn)."
-        >
-          <Input
-            type="number"
-            step="500"
-            min="500"
-            value={form.cooldown_threshold}
-            onChange={(e) =>
-              setForm({
-                ...form,
-                cooldown_threshold: Number(e.target.value),
-              })
-            }
-          />
-        </Field>
+
         <ToggleRow
           checked={form.auto_start ?? false}
           onChange={(v) => setForm({ ...form, auto_start: v })}
           title="Oluşturduktan sonra otomatik başlat"
           description="Açıksa bot kaydedilir kaydedilmez supervisor tarafından çalıştırılır."
+          tooltip="Etkinleştirilirse bot oluşturulur oluşturulmaz otomatik olarak başlatılır. Kapalı bırakılırsa bot kayıt edilir fakat manuel başlatma gerekir."
         />
       </div>
     </div>
