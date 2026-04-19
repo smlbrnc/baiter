@@ -9,6 +9,12 @@
 //! - `POST /api/bots/:id/stop` — durdur.
 //! - `GET  /api/bots/:id/logs?limit=N` — son N log.
 //! - `GET  /api/bots/:id/pnl` — son PnL snapshot.
+//! - `GET  /api/bots/:id/session` — aktif session özeti (Gamma cache).
+//! - `GET  /api/bots/:id/sessions` — bot'un tüm session'ları (özet liste).
+//! - `GET  /api/bots/:id/sessions/:slug` — session detay (Gamma + position).
+//! - `GET  /api/bots/:id/sessions/:slug/ticks?since_ms=N&limit=N` — BBA + signal history.
+//! - `GET  /api/bots/:id/sessions/:slug/pnl?since_ms=N&limit=N` — PnL history.
+//! - `GET  /api/bots/:id/sessions/:slug/trades?since_ms=N&limit=N` — trade history.
 //! - `GET  /api/events` — SSE stream (`FrontendEvent`).
 //!
 //! Referans: [docs/bot-platform-mimari.md §2 §5](../../../docs/bot-platform-mimari.md).
@@ -45,6 +51,14 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/bots/{id}/logs", get(bot_logs))
         .route("/api/bots/{id}/pnl", get(bot_pnl))
         .route("/api/bots/{id}/session", get(bot_session))
+        .route("/api/bots/{id}/sessions", get(bot_sessions))
+        .route("/api/bots/{id}/sessions/{slug}", get(session_detail))
+        .route("/api/bots/{id}/sessions/{slug}/ticks", get(session_ticks))
+        .route("/api/bots/{id}/sessions/{slug}/pnl", get(session_pnl))
+        .route(
+            "/api/bots/{id}/sessions/{slug}/trades",
+            get(session_trades),
+        )
         .route("/api/events", get(events_sse))
         .layer(
             CorsLayer::new()
@@ -256,6 +270,114 @@ async fn bot_session(
         }
         None => Ok(Json(Value::Null)),
     }
+}
+
+async fn bot_sessions(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+) -> Result<Json<Vec<Value>>, AppError> {
+    let rows = db::sessions::list_sessions_for_bot(&state.pool, id).await?;
+    let now = crate::time::now_secs() as i64;
+    Ok(Json(
+        rows.into_iter()
+            .map(|s| {
+                let is_live = s.end_ts > now && s.state != "RESOLVED" && s.state != "CLOSED";
+                serde_json::json!({
+                    "slug":          s.slug,
+                    "start_ts":      s.start_ts,
+                    "end_ts":        s.end_ts,
+                    "state":         s.state,
+                    "cost_basis":    s.cost_basis,
+                    "shares_yes":    s.shares_yes,
+                    "shares_no":     s.shares_no,
+                    "realized_pnl":  s.realized_pnl,
+                    "is_live":       is_live,
+                })
+            })
+            .collect(),
+    ))
+}
+
+async fn session_detail(
+    State(state): State<Arc<AppState>>,
+    Path((id, slug)): Path<(i64, String)>,
+) -> Result<Json<Value>, AppError> {
+    let detail = db::sessions::session_by_bot_slug(&state.pool, id, &slug).await?;
+    let Some(d) = detail else {
+        return Ok(Json(Value::Null));
+    };
+    let gamma = GammaClient::new(reqwest::Client::new(), state.env.gamma_base_url.clone());
+    let market = gamma.get_market_by_slug(&d.slug).await.ok();
+    let now = crate::time::now_secs() as i64;
+    let is_live = d.end_ts > now && d.state != "RESOLVED" && d.state != "CLOSED";
+    Ok(Json(serde_json::json!({
+        "bot_id":        d.bot_id,
+        "slug":          d.slug,
+        "start_ts":      d.start_ts,
+        "end_ts":        d.end_ts,
+        "state":         d.state,
+        "cost_basis":    d.cost_basis,
+        "fee_total":     d.fee_total,
+        "shares_yes":    d.shares_yes,
+        "shares_no":     d.shares_no,
+        "realized_pnl":  d.realized_pnl,
+        "is_live":       is_live,
+        "title":         market.as_ref().and_then(|m| m.question.clone()),
+        "image":         market.and_then(|m| m.image),
+    })))
+}
+
+#[derive(Debug, Deserialize)]
+struct HistoryQuery {
+    #[serde(default)]
+    since_ms: Option<i64>,
+    #[serde(default = "default_history_limit")]
+    limit: i64,
+}
+
+fn default_history_limit() -> i64 {
+    2000
+}
+
+async fn session_ticks(
+    State(state): State<Arc<AppState>>,
+    Path((id, slug)): Path<(i64, String)>,
+    Query(q): Query<HistoryQuery>,
+) -> Result<Json<Vec<db::MarketTick>>, AppError> {
+    let session = db::sessions::session_by_bot_slug(&state.pool, id, &slug)
+        .await?
+        .ok_or(AppError::BotNotFound { bot_id: id })?;
+    let ticks =
+        db::ticks::ticks_for_session(&state.pool, session.session_id, q.since_ms, q.limit).await?;
+    Ok(Json(ticks))
+}
+
+async fn session_pnl(
+    State(state): State<Arc<AppState>>,
+    Path((id, slug)): Path<(i64, String)>,
+    Query(q): Query<HistoryQuery>,
+) -> Result<Json<Vec<db::PnlSnapshot>>, AppError> {
+    let session = db::sessions::session_by_bot_slug(&state.pool, id, &slug)
+        .await?
+        .ok_or(AppError::BotNotFound { bot_id: id })?;
+    let history =
+        db::pnl::pnl_history_for_session(&state.pool, session.session_id, q.since_ms, q.limit)
+            .await?;
+    Ok(Json(history))
+}
+
+async fn session_trades(
+    State(state): State<Arc<AppState>>,
+    Path((id, slug)): Path<(i64, String)>,
+    Query(q): Query<HistoryQuery>,
+) -> Result<Json<Vec<db::TradeRecord>>, AppError> {
+    let session = db::sessions::session_by_bot_slug(&state.pool, id, &slug)
+        .await?
+        .ok_or(AppError::BotNotFound { bot_id: id })?;
+    let trades =
+        db::trades::trades_for_session(&state.pool, session.session_id, q.since_ms, q.limit)
+            .await?;
+    Ok(Json(trades))
 }
 
 async fn events_sse(

@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "./api";
 import type { BotRow, FrontendEvent, PnLSnapshot } from "./types";
 
@@ -131,6 +131,102 @@ export function useBots(pollMs = 2000): {
   }, [pollMs]);
 
   return { bots, reload };
+}
+
+/**
+ * History fetch + (SSE merge | polling) için generic time-series hook.
+ *
+ * Mount'ta `fetchInitial(0)` ile DB geçmişini çeker; ardından `isLive` ise:
+ * - `shouldAppend` verilmişse SSE'ye abone olur ve uygun event'leri append eder.
+ * - `pollMs` verilmişse periyodik delta fetch ile (lastTs üzerinden) ekler.
+ *
+ * SSE bağlantısı kopup yeniden kurulduğunda son `ts_ms`'ten itibaren delta
+ * fetch tetiklenir; sayfa yenilense bile boşluk kalmaz.
+ *
+ * Tip kısıtı: `T` mutlaka `ts_ms` alanına sahip olmalı.
+ */
+export function useHistoryStream<T extends { ts_ms: number }>(opts: {
+  fetchInitial: (sinceMs: number) => Promise<T[]>;
+  shouldAppend?: (ev: FrontendEvent) => T | null;
+  isLive: boolean;
+  filter?: (ev: FrontendEvent) => boolean;
+  pollMs?: number;
+}): T[] {
+  const { fetchInitial, shouldAppend, isLive, filter, pollMs } = opts;
+  const [items, setItems] = useState<T[]>([]);
+  const lastTsRef = useRef(0);
+  const fetchRef = useRef(fetchInitial);
+  const appendRef = useRef(shouldAppend);
+  const filterRef = useRef(filter);
+
+  useEffect(() => {
+    fetchRef.current = fetchInitial;
+    appendRef.current = shouldAppend;
+    filterRef.current = filter;
+  }, [fetchInitial, shouldAppend, filter]);
+
+  const reload = useCallback(async (sinceMs: number) => {
+    try {
+      const rows = await fetchRef.current(sinceMs);
+      if (sinceMs === 0) {
+        lastTsRef.current = rows.length
+          ? rows[rows.length - 1].ts_ms
+          : 0;
+        setItems(rows);
+        return;
+      }
+      if (rows.length === 0) return;
+      setItems((prev) => {
+        const last = prev.length ? prev[prev.length - 1].ts_ms : 0;
+        const fresh = rows.filter((r) => r.ts_ms > last);
+        if (fresh.length === 0) return prev;
+        const next = [...prev, ...fresh];
+        lastTsRef.current = next[next.length - 1].ts_ms;
+        return next;
+      });
+    } catch {
+      /* yut — sonraki tick toparlar */
+    }
+  }, []);
+
+  useEffect(() => {
+    lastTsRef.current = 0;
+    reload(0);
+    // fetchInitial referansı değiştiğinde (slug/botId değişimi) baştan yükle.
+  }, [fetchInitial, reload]);
+
+  useEffect(() => {
+    if (!isLive || !shouldAppend) return;
+    const offMsg = bus.subscribe((ev) => {
+      if (filterRef.current && !filterRef.current(ev)) return;
+      const append = appendRef.current;
+      if (!append) return;
+      const row = append(ev);
+      if (!row) return;
+      if (row.ts_ms <= lastTsRef.current) return;
+      lastTsRef.current = row.ts_ms;
+      setItems((prev) => [...prev, row]);
+    });
+    const offConn = bus.onConnected((connected) => {
+      if (connected && lastTsRef.current > 0) {
+        reload(lastTsRef.current);
+      }
+    });
+    return () => {
+      offMsg();
+      offConn();
+    };
+  }, [isLive, shouldAppend, reload]);
+
+  useEffect(() => {
+    if (!isLive || !pollMs) return;
+    const t = setInterval(() => {
+      reload(lastTsRef.current);
+    }, pollMs);
+    return () => clearInterval(t);
+  }, [isLive, pollMs, reload]);
+
+  return items;
 }
 
 /** Tek bir bot için detay + 1 sn poll. */

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import {
   CartesianGrid,
   Line,
@@ -22,8 +22,7 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart";
-import { useEventStream } from "@/lib/hooks";
-import type { FrontendEvent } from "@/lib/types";
+import type { MarketTick } from "@/lib/types";
 import {
   fmtTickTime,
   timeTicks,
@@ -33,7 +32,7 @@ import {
 } from "@/lib/chart-utils";
 
 interface Props {
-  botId: number;
+  data: MarketTick[];
   session: SessionRange | null;
 }
 
@@ -44,8 +43,6 @@ interface Row {
   noBid: number;
   noAsk: number;
 }
-
-const MAX_POINTS = 600;
 
 const chartConfig = {
   yesBid: { label: "YES bid", color: "var(--chart-1)" },
@@ -59,34 +56,29 @@ function fmtPx(v: number | undefined): string {
   return v.toFixed(4);
 }
 
-export function PriceChart({ botId, session }: Props) {
-  const [rows, setRows] = useState<Row[]>([]);
-
-  const filter = useMemo(
-    () => (ev: FrontendEvent) =>
-      ev.kind === "BestBidAsk" && ev.bot_id === botId,
-    [botId],
-  );
-
-  useEventStream((ev) => {
-    if (ev.kind !== "BestBidAsk") return;
+/** MarketTick[] → Row[] (saniye granülaritesinde tekilleştirme). */
+function toRows(ticks: MarketTick[]): Row[] {
+  const out: Row[] = [];
+  for (const tk of ticks) {
+    const t = Math.floor(tk.ts_ms / 1000);
     const row: Row = {
-      t: Math.floor(ev.ts_ms / 1000),
-      yesBid: ev.yes_best_bid,
-      yesAsk: ev.yes_best_ask,
-      noBid: ev.no_best_bid,
-      noAsk: ev.no_best_ask,
+      t,
+      yesBid: tk.yes_best_bid,
+      yesAsk: tk.yes_best_ask,
+      noBid: tk.no_best_bid,
+      noAsk: tk.no_best_ask,
     };
-    setRows((prev) => {
-      const next =
-        prev.length && prev[prev.length - 1].t === row.t
-          ? [...prev.slice(0, -1), row]
-          : [...prev, row];
-      return next.length > MAX_POINTS
-        ? next.slice(next.length - MAX_POINTS)
-        : next;
-    });
-  }, filter);
+    if (out.length && out[out.length - 1].t === t) {
+      out[out.length - 1] = row;
+    } else {
+      out.push(row);
+    }
+  }
+  return out;
+}
+
+export function PriceChart({ data, session }: Props) {
+  const rows = useMemo(() => toRows(data), [data]);
 
   if (!session) return null;
   const ticks = timeTicks(session);

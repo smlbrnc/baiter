@@ -47,6 +47,43 @@ pub async fn insert_pnl_snapshot(
     Ok(())
 }
 
+/// `/api/bots/:id/sessions/:slug/pnl` için: session bazlı PnL geçmişi.
+/// Sıralama: `ts_ms ASC` (chart için kronolojik).
+pub async fn pnl_history_for_session(
+    pool: &SqlitePool,
+    market_session_id: i64,
+    after_ts_ms: Option<i64>,
+    limit: i64,
+) -> Result<Vec<PnlSnapshot>, AppError> {
+    let after = after_ts_ms.unwrap_or(0);
+    let rows = sqlx::query(
+        "SELECT cost_basis, fee_total, shares_yes, shares_no, pnl_if_up, pnl_if_down, \
+         mtm_pnl, pair_count, ts_ms \
+         FROM pnl_snapshots \
+         WHERE market_session_id = ? AND ts_ms > ? \
+         ORDER BY ts_ms ASC LIMIT ?",
+    )
+    .bind(market_session_id)
+    .bind(after)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| PnlSnapshot {
+            cost_basis: r.get("cost_basis"),
+            fee_total: r.get("fee_total"),
+            shares_yes: r.get("shares_yes"),
+            shares_no: r.get("shares_no"),
+            pnl_if_up: r.get("pnl_if_up"),
+            pnl_if_down: r.get("pnl_if_down"),
+            mtm_pnl: r.get("mtm_pnl"),
+            pair_count: r.get("pair_count"),
+            ts_ms: r.get("ts_ms"),
+        })
+        .collect())
+}
+
 /// `api::bot_pnl` için: bot'un en son PnL snapshot'ı.
 pub async fn latest_pnl_for_bot(
     pool: &SqlitePool,

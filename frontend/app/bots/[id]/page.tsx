@@ -1,8 +1,9 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import Link from "next/link";
+import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, CircleStop, Play } from "lucide-react";
+import { ArrowLeft, ArrowRight, CircleStop, Play } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -14,68 +15,36 @@ import {
 } from "@/components/ui/card";
 import { LogStream } from "@/components/bots/log-stream";
 import { PnLWidget } from "@/components/bots/pnl-widget";
-import {
-  MetricsPanel,
-  type LiveMetrics,
-} from "@/components/bots/metrics-panel";
-import { PriceChart } from "@/components/charts/price-chart";
-import { PnLChart } from "@/components/charts/pnl-chart";
-import { SpreadSignalChart } from "@/components/charts/spread-signal-chart";
+import { SessionsTable } from "@/components/bots/sessions-table";
 import { api } from "@/lib/api";
-import { useBot, useEventStream } from "@/lib/hooks";
-import type { FrontendEvent, SessionInfo } from "@/lib/types";
+import { useBot } from "@/lib/hooks";
+import type { SessionListItem } from "@/lib/types";
 
-export default function BotDetailPage() {
+export default function BotSummaryPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const botId = Number(id);
   const { bot, pnl } = useBot(Number.isFinite(botId) ? botId : null);
 
-  const [metrics, setMetrics] = useState<LiveMetrics>({
-    lastBestBidAsk: null,
-    lastSignal: null,
-    lastFill: null,
-  });
-  const [session, setSession] = useState<SessionInfo | null>(null);
-
-  const refreshSession = useCallback(() => {
-    if (!Number.isFinite(botId)) return;
-    api
-      .botSession(botId)
-      .then((s) => setSession(s ?? null))
-      .catch(() => {});
-  }, [botId]);
+  const [sessions, setSessions] = useState<SessionListItem[]>([]);
 
   useEffect(() => {
-    refreshSession();
-  }, [refreshSession]);
-
-  const sessionRange = useMemo(
-    () => (session ? { start: session.start_ts, end: session.end_ts } : null),
-    [session],
-  );
-
-  const filter = useMemo(
-    () => (ev: FrontendEvent) => "bot_id" in ev && ev.bot_id === botId,
-    [botId],
-  );
-
-  useEventStream((ev) => {
-    switch (ev.kind) {
-      case "BestBidAsk":
-        setMetrics((m) => ({ ...m, lastBestBidAsk: ev }));
-        break;
-      case "SignalUpdate":
-        setMetrics((m) => ({ ...m, lastSignal: ev }));
-        break;
-      case "Fill":
-        setMetrics((m) => ({ ...m, lastFill: ev }));
-        break;
-      case "SessionOpened":
-        refreshSession();
-        break;
-    }
-  }, filter);
+    if (!Number.isFinite(botId)) return;
+    let cancelled = false;
+    const reload = () =>
+      api
+        .botSessions(botId)
+        .then((s) => {
+          if (!cancelled) setSessions(s);
+        })
+        .catch(() => {});
+    reload();
+    const t = setInterval(reload, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [botId]);
 
   if (!bot) {
     return (
@@ -89,6 +58,8 @@ export default function BotDetailPage() {
     );
   }
 
+  const liveSession = sessions.find((s) => s.is_live);
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
@@ -101,45 +72,34 @@ export default function BotDetailPage() {
           >
             <ArrowLeft />
           </Button>
-          <div className="flex min-w-0 items-center gap-3">
-            {session?.image && (
-              <img
-                src={session.image}
-                alt=""
-                className="h-12 w-12 shrink-0 rounded-md object-cover"
-              />
-            )}
-            <div className="min-w-0 space-y-2">
-              {session?.title && (
-                <h1 className="font-heading truncate text-2xl font-semibold tracking-tight">
-                  {session.title}
-                </h1>
-              )}
-              <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
-                <p className="text-muted-foreground min-w-0 shrink font-mono text-xs break-all sm:max-w-[min(100%,42rem)] sm:break-normal sm:truncate">
-                  {session?.slug ?? bot.slug_pattern}
-                </p>
-                <div className="flex shrink-0 flex-wrap items-center gap-2">
-                  <Badge variant="outline">{bot.strategy}</Badge>
-                  <Badge
-                    className={
-                      bot.run_mode === "live"
-                        ? "border-transparent bg-primary/15 text-primary"
-                        : "border-transparent bg-amber-500/15 text-amber-700 dark:text-amber-400"
-                    }
-                  >
-                    {bot.run_mode}
-                  </Badge>
-                  <Badge
-                    className={
-                      bot.state === "RUNNING"
-                        ? "border-transparent bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
-                        : "border-transparent bg-secondary text-secondary-foreground"
-                    }
-                  >
-                    {bot.state}
-                  </Badge>
-                </div>
+          <div className="min-w-0 space-y-2">
+            <h1 className="font-heading truncate text-2xl font-semibold tracking-tight">
+              {bot.name}
+            </h1>
+            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1.5">
+              <p className="text-muted-foreground min-w-0 shrink font-mono text-xs break-all">
+                {bot.slug_pattern}
+              </p>
+              <div className="flex shrink-0 flex-wrap items-center gap-2">
+                <Badge variant="outline">{bot.strategy}</Badge>
+                <Badge
+                  className={
+                    bot.run_mode === "live"
+                      ? "border-transparent bg-primary/15 text-primary"
+                      : "border-transparent bg-amber-500/15 text-amber-700 dark:text-amber-400"
+                  }
+                >
+                  {bot.run_mode}
+                </Badge>
+                <Badge
+                  className={
+                    bot.state === "RUNNING"
+                      ? "border-transparent bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
+                      : "border-transparent bg-secondary text-secondary-foreground"
+                  }
+                >
+                  {bot.state}
+                </Badge>
               </div>
             </div>
           </div>
@@ -203,13 +163,33 @@ export default function BotDetailPage() {
         </CardContent>
       </Card>
 
-      <MetricsPanel m={metrics} />
+      {liveSession && (
+        <Link
+          href={`/bots/${botId}/${liveSession.slug}`}
+          className="block transition-transform hover:-translate-y-0.5"
+        >
+          <Card className="border-emerald-500/40 bg-emerald-500/5">
+            <CardHeader className="flex flex-row items-start justify-between gap-3">
+              <div className="min-w-0 space-y-2">
+                <div className="flex items-center gap-2">
+                  <Badge className="border-transparent bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
+                    LIVE
+                  </Badge>
+                  <CardTitle>Aktif Market</CardTitle>
+                </div>
+                <CardDescription className="font-mono break-all">
+                  {liveSession.slug}
+                </CardDescription>
+              </div>
+              <ArrowRight className="text-emerald-500 h-5 w-5 shrink-0" />
+            </CardHeader>
+          </Card>
+        </Link>
+      )}
 
       <PnLWidget pnl={pnl ?? null} />
 
-      <PriceChart botId={botId} session={sessionRange} />
-      <SpreadSignalChart botId={botId} session={sessionRange} />
-      <PnLChart botId={botId} session={sessionRange} />
+      <SessionsTable botId={botId} sessions={sessions} />
 
       <LogStream botId={botId} />
     </div>

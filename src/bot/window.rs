@@ -206,6 +206,7 @@ async fn run_trading_loop(
             _ = frontend_timer.tick() => {
                 zone::emit_frontend_snapshot(ctx, &sess, slug).await;
                 persist::snapshot_pnl(&ctx.pool, &sess);
+                persist::snapshot_tick(ctx, &sess).await;
                 if now_secs() >= sess.end_ts {
                     return None;
                 }

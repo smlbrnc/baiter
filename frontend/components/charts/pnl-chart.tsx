@@ -1,11 +1,10 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useMemo } from "react";
 import { Area, AreaChart, CartesianGrid, XAxis, YAxis } from "recharts";
 import {
   Card,
   CardContent,
-  CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
@@ -15,13 +14,12 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart";
-import { api } from "@/lib/api";
+import type { PnLSnapshot } from "@/lib/types";
 import { fmtTickTime, timeTicks, type SessionRange } from "@/lib/chart-utils";
 
 interface Props {
-  botId: number;
+  data: PnLSnapshot[];
   session: SessionRange | null;
-  pollMs?: number;
 }
 
 interface Row {
@@ -29,40 +27,26 @@ interface Row {
   mtm: number;
 }
 
-const MAX_POINTS = 600;
-
 const chartConfig = {
   mtm: { label: "mtm_pnl", color: "var(--chart-3)" },
 } satisfies ChartConfig;
 
-export function PnLChart({ botId, session, pollMs = 1000 }: Props) {
-  const [rows, setRows] = useState<Row[]>([]);
+function toRows(snaps: PnLSnapshot[]): Row[] {
+  const out: Row[] = [];
+  for (const p of snaps) {
+    const t = Math.floor(p.ts_ms / 1000);
+    const row: Row = { t, mtm: p.mtm_pnl };
+    if (out.length && out[out.length - 1].t === t) {
+      out[out.length - 1] = row;
+    } else {
+      out.push(row);
+    }
+  }
+  return out;
+}
 
-  useEffect(() => {
-    let cancelled = false;
-    let last = -1;
-    const tick = async () => {
-      const p = await api.botPnl(botId);
-      if (cancelled || !p || p.ts_ms === last) return;
-      last = p.ts_ms;
-      const row: Row = { t: Math.floor(p.ts_ms / 1000), mtm: p.mtm_pnl };
-      setRows((prev) => {
-        const next =
-          prev.length && prev[prev.length - 1].t === row.t
-            ? [...prev.slice(0, -1), row]
-            : [...prev, row];
-        return next.length > MAX_POINTS
-          ? next.slice(next.length - MAX_POINTS)
-          : next;
-      });
-    };
-    tick();
-    const t = setInterval(tick, pollMs);
-    return () => {
-      cancelled = true;
-      clearInterval(t);
-    };
-  }, [botId, pollMs]);
+export function PnLChart({ data, session }: Props) {
+  const rows = useMemo(() => toRows(data), [data]);
 
   if (!session) return null;
   const ticks = timeTicks(session);
@@ -71,7 +55,6 @@ export function PnLChart({ botId, session, pollMs = 1000 }: Props) {
     <Card>
       <CardHeader>
         <CardTitle>PnL (mtm)</CardTitle>
-        <CardDescription>1 sn polling</CardDescription>
       </CardHeader>
       <CardContent>
         <ChartContainer config={chartConfig} className="h-[200px] w-full">

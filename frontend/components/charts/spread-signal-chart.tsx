@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import {
   Bar,
   CartesianGrid,
@@ -24,12 +24,11 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart";
-import { useEventStream } from "@/lib/hooks";
-import type { FrontendEvent } from "@/lib/types";
+import type { MarketTick } from "@/lib/types";
 import { fmtTickTime, timeTicks, type SessionRange } from "@/lib/chart-utils";
 
 interface Props {
-  botId: number;
+  data: MarketTick[];
   session: SessionRange | null;
 }
 
@@ -40,74 +39,33 @@ interface Row {
   score: number;
 }
 
-const MAX_POINTS = 600;
-
 const chartConfig = {
   yesSpread: { label: "YES spread", color: "var(--chart-1)" },
   noSpread: { label: "NO spread", color: "oklch(0.63 0.2 352)" },
   score: { label: "signal_score", color: "var(--chart-2)" },
 } satisfies ChartConfig;
 
-function trimRows(rows: Row[]): Row[] {
-  if (rows.length <= MAX_POINTS) return rows;
-  return rows.slice(rows.length - MAX_POINTS);
+function toRows(ticks: MarketTick[]): Row[] {
+  const out: Row[] = [];
+  for (const tk of ticks) {
+    const t = Math.floor(tk.ts_ms / 1000);
+    const row: Row = {
+      t,
+      yesSpread: Math.max(0, tk.yes_best_ask - tk.yes_best_bid),
+      noSpread: Math.max(0, tk.no_best_ask - tk.no_best_bid),
+      score: tk.signal_score,
+    };
+    if (out.length && out[out.length - 1].t === t) {
+      out[out.length - 1] = row;
+    } else {
+      out.push(row);
+    }
+  }
+  return out;
 }
 
-export function SpreadSignalChart({ botId, session }: Props) {
-  const [rows, setRows] = useState<Row[]>([]);
-
-  const filter = useMemo(
-    () => (ev: FrontendEvent) =>
-      ev.bot_id === botId &&
-      (ev.kind === "BestBidAsk" || ev.kind === "SignalUpdate"),
-    [botId],
-  );
-
-  useEventStream((ev) => {
-    if (ev.kind === "BestBidAsk") {
-      const t = Math.floor(ev.ts_ms / 1000);
-      setRows((prev) => {
-        const i = prev.findIndex((r) => r.t === t);
-        const last = prev[prev.length - 1];
-        const patch = {
-          yesSpread: Math.max(0, ev.yes_best_ask - ev.yes_best_bid),
-          noSpread: Math.max(0, ev.no_best_ask - ev.no_best_bid),
-        };
-        if (i >= 0) {
-          const next = [...prev];
-          next[i] = { ...next[i], ...patch, t };
-          return trimRows(next);
-        }
-        const row: Row = {
-          t,
-          ...patch,
-          score: last?.score ?? 5,
-        };
-        return trimRows([...prev, row]);
-      });
-      return;
-    }
-    if (ev.kind === "SignalUpdate") {
-      const t = Math.floor(ev.ts_ms / 1000);
-      setRows((prev) => {
-        const i = prev.findIndex((r) => r.t === t);
-        const last = prev[prev.length - 1];
-        const patch = { score: ev.signal_score };
-        if (i >= 0) {
-          const next = [...prev];
-          next[i] = { ...next[i], ...patch, t };
-          return trimRows(next);
-        }
-        const row: Row = {
-          t,
-          yesSpread: last?.yesSpread ?? 0,
-          noSpread: last?.noSpread ?? 0,
-          ...patch,
-        };
-        return trimRows([...prev, row]);
-      });
-    }
-  }, filter);
+export function SpreadSignalChart({ data, session }: Props) {
+  const rows = useMemo(() => toRows(data), [data]);
 
   if (!session) return null;
   const ticks = timeTicks(session);

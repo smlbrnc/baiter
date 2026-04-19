@@ -20,6 +20,7 @@ pub mod markets;
 pub mod orders;
 pub mod pnl;
 pub mod sessions;
+pub mod ticks;
 pub mod trades;
 
 pub use bots::{delete_bot, get_bot, insert_bot, list_bots, set_bot_state, BotRow};
@@ -32,6 +33,7 @@ pub use sessions::{
     latest_session_for_bot, update_market_session_meta, upsert_market_session, MarketSessionRow,
     SessionSummary,
 };
+pub use ticks::MarketTick;
 pub use trades::{upsert_trade, TradeRecord};
 
 /// Veritabanını aç (dosya yoksa oluştur) ve WAL mode etkinleştir.

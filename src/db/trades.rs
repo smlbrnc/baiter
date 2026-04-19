@@ -1,7 +1,7 @@
 //! `trades` tablosu CRUD'u.
 
 use serde::{Deserialize, Serialize};
-use sqlx::SqlitePool;
+use sqlx::{Row, SqlitePool};
 
 use crate::error::AppError;
 
@@ -63,6 +63,50 @@ pub async fn upsert_trade(pool: &SqlitePool, r: &TradeRecord) -> Result<(), AppE
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// `/api/bots/:id/sessions/:slug/trades` için: session bazlı trade listesi.
+/// Sıralama: `ts_ms ASC` (chart marker'ları için kronolojik).
+pub async fn trades_for_session(
+    pool: &SqlitePool,
+    market_session_id: i64,
+    after_ts_ms: Option<i64>,
+    limit: i64,
+) -> Result<Vec<TradeRecord>, AppError> {
+    let after = after_ts_ms.unwrap_or(0);
+    let rows = sqlx::query(
+        "SELECT trade_id, bot_id, market_session_id, market, asset_id, taker_order_id, \
+         maker_orders, trader_side, side, outcome, size, price, status, fee, ts_ms, raw_payload \
+         FROM trades \
+         WHERE market_session_id = ? AND ts_ms > ? \
+         ORDER BY ts_ms ASC LIMIT ?",
+    )
+    .bind(market_session_id)
+    .bind(after)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| TradeRecord {
+            trade_id: r.get("trade_id"),
+            bot_id: r.get("bot_id"),
+            market_session_id: r.get("market_session_id"),
+            market: r.get("market"),
+            asset_id: r.get("asset_id"),
+            taker_order_id: r.get("taker_order_id"),
+            maker_orders: r.get("maker_orders"),
+            trader_side: r.get("trader_side"),
+            side: r.get("side"),
+            outcome: r.get("outcome"),
+            size: r.get("size"),
+            price: r.get("price"),
+            status: r.get("status"),
+            fee: r.get("fee"),
+            ts_ms: r.get("ts_ms"),
+            raw_payload: r.get("raw_payload"),
+        })
+        .collect())
 }
 
 /// User WS `trade` event payload'ından satır üretmek için input bag.

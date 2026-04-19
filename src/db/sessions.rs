@@ -37,6 +37,35 @@ pub struct SessionSummary {
     pub state: String,
 }
 
+/// `api::sessions_for_bot` listesi için: özet + pozisyon agregatları.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionListItem {
+    pub slug: String,
+    pub start_ts: i64,
+    pub end_ts: i64,
+    pub state: String,
+    pub cost_basis: f64,
+    pub shares_yes: f64,
+    pub shares_no: f64,
+    pub realized_pnl: Option<f64>,
+}
+
+/// `api::session_detail` için: pozisyon agregatları + window meta.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionDetail {
+    pub bot_id: i64,
+    pub slug: String,
+    pub start_ts: i64,
+    pub end_ts: i64,
+    pub state: String,
+    pub cost_basis: f64,
+    pub fee_total: f64,
+    pub shares_yes: f64,
+    pub shares_no: f64,
+    pub realized_pnl: Option<f64>,
+    pub session_id: i64,
+}
+
 impl<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> for MarketSessionRow {
     fn from_row(row: &'r sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
         Ok(Self {
@@ -130,5 +159,62 @@ pub async fn latest_session_for_bot(
         start_ts: r.get::<i64, _>("start_ts"),
         end_ts: r.get::<i64, _>("end_ts"),
         state: r.get::<String, _>("state"),
+    }))
+}
+
+/// `/api/bots/:id/sessions` için: bot'un tüm session'ları, en yeniden eskiye.
+pub async fn list_sessions_for_bot(
+    pool: &SqlitePool,
+    bot_id: i64,
+) -> Result<Vec<SessionListItem>, AppError> {
+    let rows = sqlx::query(
+        "SELECT slug, start_ts, end_ts, state, cost_basis, shares_yes, shares_no, realized_pnl \
+         FROM market_sessions WHERE bot_id = ? ORDER BY start_ts DESC",
+    )
+    .bind(bot_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .map(|r| SessionListItem {
+            slug: r.get("slug"),
+            start_ts: r.get("start_ts"),
+            end_ts: r.get("end_ts"),
+            state: r.get("state"),
+            cost_basis: r.get("cost_basis"),
+            shares_yes: r.get("shares_yes"),
+            shares_no: r.get("shares_no"),
+            realized_pnl: r.get("realized_pnl"),
+        })
+        .collect())
+}
+
+/// `/api/bots/:id/sessions/:slug` için: detay + position agregatları.
+pub async fn session_by_bot_slug(
+    pool: &SqlitePool,
+    bot_id: i64,
+    slug: &str,
+) -> Result<Option<SessionDetail>, AppError> {
+    let row = sqlx::query(
+        "SELECT id, slug, start_ts, end_ts, state, cost_basis, fee_total, \
+         shares_yes, shares_no, realized_pnl \
+         FROM market_sessions WHERE bot_id = ? AND slug = ?",
+    )
+    .bind(bot_id)
+    .bind(slug)
+    .fetch_optional(pool)
+    .await?;
+    Ok(row.map(|r| SessionDetail {
+        bot_id,
+        slug: r.get("slug"),
+        start_ts: r.get("start_ts"),
+        end_ts: r.get("end_ts"),
+        state: r.get("state"),
+        cost_basis: r.get("cost_basis"),
+        fee_total: r.get("fee_total"),
+        shares_yes: r.get("shares_yes"),
+        shares_no: r.get("shares_no"),
+        realized_pnl: r.get("realized_pnl"),
+        session_id: r.get("id"),
     }))
 }

@@ -2,8 +2,12 @@ import type {
   BotRow,
   CreateBotReq,
   LogRow,
+  MarketTick,
   PnLSnapshot,
+  SessionDetail,
   SessionInfo,
+  SessionListItem,
+  TradeRow,
 } from "./types";
 
 const API_BASE = "/api";
@@ -22,6 +26,13 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const text = await res.text();
   if (!text) return undefined as T;
   return JSON.parse(text) as T;
+}
+
+function historyQs(sinceMs: number, limit: number): string {
+  const qs = new URLSearchParams();
+  if (sinceMs > 0) qs.set("since_ms", String(sinceMs));
+  qs.set("limit", String(limit));
+  return qs.toString();
 }
 
 export const api = {
@@ -45,4 +56,21 @@ export const api = {
     req<LogRow[]>(`/bots/${id}/logs?limit=${limit}`),
   botPnl: (id: number) => req<PnLSnapshot | null>(`/bots/${id}/pnl`),
   botSession: (id: number) => req<SessionInfo | null>(`/bots/${id}/session`),
+
+  botSessions: (id: number) =>
+    req<SessionListItem[]>(`/bots/${id}/sessions`),
+  sessionDetail: (id: number, slug: string) =>
+    req<SessionDetail | null>(`/bots/${id}/sessions/${slug}`),
+  sessionTicks: (id: number, slug: string, sinceMs = 0, limit = 2000) =>
+    req<MarketTick[]>(
+      `/bots/${id}/sessions/${slug}/ticks?${historyQs(sinceMs, limit)}`,
+    ),
+  sessionPnlHistory: (id: number, slug: string, sinceMs = 0, limit = 2000) =>
+    req<PnLSnapshot[]>(
+      `/bots/${id}/sessions/${slug}/pnl?${historyQs(sinceMs, limit)}`,
+    ),
+  sessionTrades: (id: number, slug: string, sinceMs = 0, limit = 2000) =>
+    req<TradeRow[]>(
+      `/bots/${id}/sessions/${slug}/trades?${historyQs(sinceMs, limit)}`,
+    ),
 };

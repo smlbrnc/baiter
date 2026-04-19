@@ -42,6 +42,69 @@ export interface SessionInfo {
   image: string | null;
 }
 
+/** `/api/bots/:id/sessions` listesindeki tek satır. */
+export interface SessionListItem {
+  slug: string;
+  start_ts: number;
+  end_ts: number;
+  state: string;
+  cost_basis: number;
+  shares_yes: number;
+  shares_no: number;
+  realized_pnl: number | null;
+  is_live: boolean;
+}
+
+/** `/api/bots/:id/sessions/:slug` — detay + Gamma cache + position. */
+export interface SessionDetail {
+  bot_id: number;
+  slug: string;
+  start_ts: number;
+  end_ts: number;
+  state: string;
+  cost_basis: number;
+  fee_total: number;
+  shares_yes: number;
+  shares_no: number;
+  realized_pnl: number | null;
+  is_live: boolean;
+  title: string | null;
+  image: string | null;
+}
+
+/** `/api/bots/:id/sessions/:slug/ticks` — 1 sn cadence BBA + Binance signal. */
+export interface MarketTick {
+  yes_best_bid: number;
+  yes_best_ask: number;
+  no_best_bid: number;
+  no_best_ask: number;
+  signal_score: number;
+  bsi: number;
+  ofi: number;
+  cvd: number;
+  ts_ms: number;
+}
+
+/** `/api/bots/:id/sessions/:slug/trades` — DB tarafı `TradeRecord` ile birebir. */
+export interface TradeRow {
+  trade_id: string;
+  bot_id: number;
+  market_session_id: number | null;
+  market: string | null;
+  asset_id: string | null;
+  taker_order_id: string | null;
+  maker_orders: string | null;
+  trader_side: string | null;
+  side: string | null;
+  outcome: string | null;
+  size: number;
+  price: number;
+  status: string;
+  fee: number;
+  ts_ms: number;
+  raw_payload: string | null;
+}
+
 export interface PnLSnapshot {
   cost_basis: number;
   fee_total: number;
