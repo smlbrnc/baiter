@@ -157,3 +157,53 @@ pub async fn delete_bot(pool: &SqlitePool, bot_id: i64) -> Result<(), AppError> 
         .await?;
     Ok(())
 }
+
+/// `update_bot` için editable alanların gövdesi.
+///
+/// `slug_pattern` ve `strategy` immutable kabul edilir — bot oluşturulurken
+/// belirlenir, sonradan değiştirilmez. Bu yüzden burada da yer almaz.
+#[derive(Debug, Clone)]
+pub struct BotUpdate {
+    pub name: String,
+    pub run_mode: RunMode,
+    pub order_usdc: f64,
+    pub signal_weight: f64,
+    pub min_price: f64,
+    pub max_price: f64,
+    pub cooldown_threshold: u64,
+    pub start_offset: u32,
+    pub strategy_params: StrategyParams,
+}
+
+/// Bot ayarlarını güncelle (state, timestamps ve immutable alanlar hariç).
+///
+/// Çağıran taraf bot'un STOPPED olduğunu garanti etmelidir; supervisor koşan
+/// bir process'e güncel ayarları yansıtmaz (yeniden start gerekir).
+pub async fn update_bot(pool: &SqlitePool, bot_id: i64, upd: &BotUpdate) -> Result<(), AppError> {
+    let now = now_ms() as i64;
+    let run_mode = serde_json::to_string(&upd.run_mode)?
+        .trim_matches('"')
+        .to_string();
+    let params = serde_json::to_string(&upd.strategy_params)?;
+
+    sqlx::query(
+        "UPDATE bots SET name = ?, run_mode = ?, \
+         order_usdc = ?, signal_weight = ?, min_price = ?, max_price = ?, \
+         cooldown_threshold = ?, start_offset = ?, strategy_params = ?, \
+         updated_at_ms = ? WHERE id = ?",
+    )
+    .bind(&upd.name)
+    .bind(&run_mode)
+    .bind(upd.order_usdc)
+    .bind(upd.signal_weight)
+    .bind(upd.min_price)
+    .bind(upd.max_price)
+    .bind(upd.cooldown_threshold as i64)
+    .bind(upd.start_offset as i64)
+    .bind(&params)
+    .bind(now)
+    .bind(bot_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}

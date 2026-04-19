@@ -23,15 +23,16 @@ pub mod sessions;
 pub mod ticks;
 pub mod trades;
 
-pub use bots::{delete_bot, get_bot, insert_bot, list_bots, set_bot_state, BotRow};
+pub use bots::{
+    delete_bot, get_bot, insert_bot, list_bots, set_bot_state, update_bot, BotRow, BotUpdate,
+};
 pub use credentials::{get_credentials, upsert_credentials};
 pub use logs::{insert_log, recent_logs, LogRow};
 pub use markets::upsert_market_resolved;
 pub use orders::{upsert_order, OrderRecord};
 pub use pnl::{insert_pnl_snapshot, latest_pnl_for_bot, PnlSnapshot};
 pub use sessions::{
-    latest_session_for_bot, update_market_session_meta, upsert_market_session, MarketSessionRow,
-    SessionSummary,
+    latest_session_for_bot, update_market_session_meta, upsert_market_session, SessionSummary,
 };
 pub use ticks::MarketTick;
 pub use trades::{upsert_trade, TradeRecord};

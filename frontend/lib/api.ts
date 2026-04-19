@@ -6,8 +6,9 @@ import type {
   PnLSnapshot,
   SessionDetail,
   SessionInfo,
-  SessionListItem,
+  SessionListResponse,
   TradeRow,
+  UpdateBotReq,
 } from "./types";
 
 const API_BASE = "/api";
@@ -45,6 +46,11 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+  updateBot: (id: number, body: UpdateBotReq) =>
+    req<BotRow>(`/bots/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
   deleteBot: (id: number) =>
     req<void>(`/bots/${id}`, { method: "DELETE" }),
   startBot: (id: number) =>
@@ -57,8 +63,10 @@ export const api = {
   botPnl: (id: number) => req<PnLSnapshot | null>(`/bots/${id}/pnl`),
   botSession: (id: number) => req<SessionInfo | null>(`/bots/${id}/session`),
 
-  botSessions: (id: number) =>
-    req<SessionListItem[]>(`/bots/${id}/sessions`),
+  botSessions: (id: number, limit = 10, offset = 0) =>
+    req<SessionListResponse>(
+      `/bots/${id}/sessions?limit=${limit}&offset=${offset}`,
+    ),
   sessionDetail: (id: number, slug: string) =>
     req<SessionDetail | null>(`/bots/${id}/sessions/${slug}`),
   sessionTicks: (id: number, slug: string, sinceMs = 0, limit = 2000) =>

@@ -1,6 +1,4 @@
-//! Zaman yardımcıları: unix ms/sec, T-15, zone_pct.
-//!
-//! Referans: [docs/bot-platform-mimari.md §4 §15](../../../docs/bot-platform-mimari.md).
+//! Zaman yardımcıları: unix ms/sec, T-15, `zone_pct`, `MarketZone` (§4, §15).
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -17,15 +15,12 @@ pub fn now_secs() -> u64 {
     now_ms() / 1000
 }
 
-/// Market başlangıcından 15 saniye önce (T-15) unix sn döner.
+/// Market başlangıcından 15 saniye önce (T-15) unix sn.
 pub fn t_minus_15(market_start_ts: u64) -> u64 {
     market_start_ts.saturating_sub(15)
 }
 
-/// Market penceresinin % ilerleme oranı [0.0, 1.0].
-///
-/// `start_ts` ve `end_ts` unix saniye; `now` hesaba dahil edilerek pencere
-/// içindeki ilerleme yüzdesi döner. Pencere öncesi 0.0, sonrası 1.0.
+/// Market penceresinin % ilerleme oranı [0.0, 1.0]; `start_ts`/`end_ts`/`now` unix saniye.
 pub fn zone_pct(start_ts: u64, end_ts: u64, now: u64) -> f64 {
     if now <= start_ts {
         return 0.0;
@@ -33,17 +28,11 @@ pub fn zone_pct(start_ts: u64, end_ts: u64, now: u64) -> f64 {
     if now >= end_ts {
         return 1.0;
     }
-    let total = (end_ts - start_ts) as f64;
-    if total <= 0.0 {
-        return 1.0;
-    }
-    (now - start_ts) as f64 / total
+    (now - start_ts) as f64 / (end_ts - start_ts) as f64
 }
 
-/// Bölge hesabı — `MarketZone` enum ile uyumlu yüzde eşikleri.
-///
-/// Eşikler mimari §15 ile birebir: DeepTrade < 10 %, NormalTrade < 50 %,
-/// AggTrade < 90 %, FakTrade < 97 %, StopTrade ≥ 97 %.
+/// Bölge eşikleri (§15): DeepTrade < 10 %, NormalTrade < 50 %, AggTrade < 90 %,
+/// FakTrade < 97 %, StopTrade ≥ 97 %.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub enum MarketZone {

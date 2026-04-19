@@ -1,8 +1,10 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowRight } from "lucide-react";
+import { ArrowRight, ChevronLeft, ChevronRight } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import {
   Card,
   CardContent,
@@ -10,41 +12,89 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
+import { api } from "@/lib/api";
 import type { SessionListItem } from "@/lib/types";
+
+const PAGE_SIZE = 10;
+const POLL_MS = 5000;
 
 function fmtTs(ts: number): string {
   return new Date(ts * 1000).toLocaleString();
 }
 
-function fmtPnl(p: number | null): string {
-  if (p == null) return "—";
-  return p.toFixed(4);
-}
+/**
+ * Sayfa yüklendikten sonra `/api/bots/:id/sessions` listesini sayfa sayfa
+ * (10'arlı) çeker; arka plan yenileme şu anki sayfayı tazeler. Bot
+ * detay sayfasının ilk render'ı bu komponentin fetch'ini beklemez —
+ * iskelet hemen görünür, veri sonradan dolar.
+ */
+export function SessionsTable({ botId }: { botId: number }) {
+  // null sentinel = ilk fetch henüz tamamlanmadı (iskelet "Yükleniyor…").
+  // Sayfa değişiminde önceki sayfanın verisi yeni veri gelene kadar
+  // ekranda kalır — daha akıcı geçiş için reset etmiyoruz.
+  const [items, setItems] = useState<SessionListItem[] | null>(null);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
+  const [error, setError] = useState<string | null>(null);
 
-export function SessionsTable({
-  botId,
-  sessions,
-}: {
-  botId: number;
-  sessions: SessionListItem[];
-}) {
+  useEffect(() => {
+    if (!Number.isFinite(botId)) return;
+    let cancelled = false;
+    const reload = async () => {
+      try {
+        const res = await api.botSessions(botId, PAGE_SIZE, page * PAGE_SIZE);
+        if (cancelled) return;
+        setItems(res.items);
+        setTotal(res.total);
+        setError(null);
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : "Hata");
+      }
+    };
+    reload();
+    const t = setInterval(reload, POLL_MS);
+    return () => {
+      cancelled = true;
+      clearInterval(t);
+    };
+  }, [botId, page]);
+
+  const list = items ?? [];
+  const pageCount = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const showingFrom = total === 0 ? 0 : page * PAGE_SIZE + 1;
+  const showingTo = Math.min(total, page * PAGE_SIZE + list.length);
+
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Geçmiş Marketler</CardTitle>
+        <CardTitle className="flex items-center gap-2">
+          <span>Geçmiş Marketler</span>
+          <Badge variant="secondary" className="font-mono tabular-nums">
+            {total}
+          </Badge>
+        </CardTitle>
       </CardHeader>
       <CardContent className="p-0">
-        {sessions.length === 0 ? (
+        {items === null ? (
+          <p className="text-muted-foreground p-6 text-sm">Yükleniyor…</p>
+        ) : error && list.length === 0 ? (
+          <p className="text-destructive p-6 text-sm">{error}</p>
+        ) : list.length === 0 ? (
           <p className="text-muted-foreground p-6 text-sm">
             Henüz session geçmişi yok.
           </p>
         ) : (
           <div className="divide-y">
-            {sessions.map((s) => (
+            {list.map((s) => (
               <Link
                 key={s.slug}
                 href={`/bots/${botId}/${s.slug}`}
-                className="hover:bg-muted/40 group flex items-center gap-4 px-4 py-3 transition-colors"
+                className={cn(
+                  "group flex items-center gap-4 px-4 py-3 transition-colors",
+                  s.is_live
+                    ? "bg-emerald-500/10 hover:bg-emerald-500/15"
+                    : "hover:bg-muted/40",
+                )}
               >
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
@@ -57,39 +107,121 @@ export function SessionsTable({
                     {fmtTs(s.start_ts)} → {fmtTs(s.end_ts)}
                   </p>
                 </div>
-                <div className="hidden flex-col items-end gap-0.5 text-right sm:flex">
-                  <span className="text-muted-foreground text-[10px] tracking-wider uppercase">
-                    Cost / Pos
+                <Stat label="Cost" width="w-20">
+                  <span className="font-mono text-xs tabular-nums">
+                    ${s.cost_basis.toFixed(2)}
                   </span>
-                  <span className="font-mono text-xs">
-                    ${s.cost_basis.toFixed(2)} · Y{s.shares_yes.toFixed(0)} · N
-                    {s.shares_no.toFixed(0)}
+                </Stat>
+                <Stat label="Shares" width="w-28">
+                  <span className="font-mono text-xs tabular-nums">
+                    <span className="text-emerald-500">
+                      Y{s.shares_yes.toFixed(0)}
+                    </span>
+                    <span className="text-muted-foreground"> · </span>
+                    <span className="text-destructive">
+                      N{s.shares_no.toFixed(0)}
+                    </span>
                   </span>
-                </div>
-                <div className="flex flex-col items-end gap-0.5 text-right">
-                  <span className="text-muted-foreground text-[10px] tracking-wider uppercase">
-                    Realized
-                  </span>
-                  <span
-                    className={cn(
-                      "font-mono text-sm",
-                      s.realized_pnl != null && s.realized_pnl > 0
-                        ? "text-emerald-500"
-                        : s.realized_pnl != null && s.realized_pnl < 0
-                          ? "text-destructive"
-                          : "text-foreground",
-                    )}
-                  >
-                    {fmtPnl(s.realized_pnl)}
-                  </span>
-                </div>
+                </Stat>
+                <Stat label="If Up" width="w-24">
+                  <PnlValue value={s.pnl_if_up} />
+                </Stat>
+                <Stat label="If Down" width="w-24">
+                  <PnlValue value={s.pnl_if_down} />
+                </Stat>
+                <Stat label="Realized" width="w-24">
+                  <PnlValue value={s.realized_pnl} bold />
+                </Stat>
                 <ArrowRight className="text-muted-foreground group-hover:text-foreground h-4 w-4 shrink-0" />
               </Link>
             ))}
           </div>
         )}
+        {items !== null && total > 0 && (
+          <div className="border-border/50 flex items-center justify-between border-t px-4 py-2.5">
+            <p className="text-muted-foreground text-xs tabular-nums">
+              {showingFrom}–{showingTo} / {total}
+            </p>
+            <div className="flex items-center gap-2">
+              <span className="text-muted-foreground text-xs tabular-nums">
+                Sayfa {page + 1} / {pageCount}
+              </span>
+              <Button
+                size="icon"
+                variant="outline"
+                className="h-7 w-7"
+                onClick={() => setPage((p) => Math.max(0, p - 1))}
+                disabled={page === 0}
+                aria-label="Önceki sayfa"
+              >
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+              <Button
+                size="icon"
+                variant="outline"
+                className="h-7 w-7"
+                onClick={() =>
+                  setPage((p) => Math.min(pageCount - 1, p + 1))
+                }
+                disabled={page >= pageCount - 1}
+                aria-label="Sonraki sayfa"
+              >
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        )}
       </CardContent>
     </Card>
+  );
+}
+
+function Stat({
+  label,
+  width,
+  children,
+}: {
+  label: string;
+  width: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div
+      className={cn(
+        "hidden shrink-0 flex-col items-end gap-0.5 text-right md:flex",
+        width,
+      )}
+    >
+      <span className="text-muted-foreground text-[10px] tracking-wider uppercase">
+        {label}
+      </span>
+      {children}
+    </div>
+  );
+}
+
+function PnlValue({ value, bold }: { value: number | null; bold?: boolean }) {
+  if (value == null) {
+    return (
+      <span className="text-muted-foreground font-mono text-xs tabular-nums">
+        —
+      </span>
+    );
+  }
+  return (
+    <span
+      className={cn(
+        "font-mono tabular-nums",
+        bold ? "text-sm" : "text-xs",
+        value > 0
+          ? "text-emerald-500"
+          : value < 0
+            ? "text-destructive"
+            : "text-foreground",
+      )}
+    >
+      {value.toFixed(4)}
+    </span>
   );
 }
 
@@ -101,5 +233,12 @@ function StateBadge({ state, live }: { state: string; live: boolean }) {
       </Badge>
     );
   }
-  return <Badge variant="outline">{state}</Badge>;
+  if (state === "RESOLVED") {
+    return (
+      <Badge variant="outline" className="text-muted-foreground">
+        RESOLVED
+      </Badge>
+    );
+  }
+  return null;
 }

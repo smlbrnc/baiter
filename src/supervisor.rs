@@ -1,12 +1,12 @@
-//! Supervisor — bot process spawn + lifecycle + stdout event bridge.
+//! Supervisor — bot süreç spawn + lifecycle + stdout event köprüsü (§1, §5.1, §18).
 //!
-//! - Her bot ayrı `Child` olarak başlar (PID izolasyonu § 1).
-//! - `ChildStdout` satır satır okunur, `[[EVENT]]` prefix'li satırlar parse edilip
-//!   internal `broadcast` kanalıyla SSE frontend'e iletilir.
-//! - Crash loop kuralı: exit_code ≠ 0 → exponential backoff (1s, 2s, 4s, 8s, max 60s).
-//! - SIGTERM → 10 sn timeout → SIGKILL (§18.2).
-//!
-//! Referans: [docs/bot-platform-mimari.md §1 §5.1 §18](../../../docs/bot-platform-mimari.md).
+//! - Her bot ayrı `Child` olarak başlar (PID izolasyonu).
+//! - `ChildStdout` satır satır okunur, `[[EVENT]]` prefix'li satırlar
+//!   `parse_event_line` ile parse edilip SSE kanalına yayılır; diğerleri
+//!   `logs` tablosuna yazılır.
+//! - Crash loop: exit_code ≠ 0 → exponential backoff (1s, 2s, …, max 60s).
+//! - Stop: `BotHandle::shutdown` oneshot tetiklenince `kill_on_drop` aracılığıyla
+//!   child SIGKILL ile sonlandırılır.
 
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -15,8 +15,8 @@ use std::time::Duration;
 
 use sqlx::SqlitePool;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::{Child, Command};
-use tokio::sync::{broadcast, Mutex};
+use tokio::process::Command;
+use tokio::sync::{broadcast, oneshot, Mutex};
 use tokio::time::sleep;
 
 use crate::config::RuntimeEnv;
@@ -24,7 +24,7 @@ use crate::db;
 use crate::error::AppError;
 use crate::ipc::{parse_event_line, FrontendEvent, EVENT_PREFIX};
 
-/// Supervisor'un paylaşılan state'i.
+/// Supervisor'un paylaşılan state'i (axum router + bot süreçleri).
 pub struct AppState {
     pub pool: SqlitePool,
     pub env: RuntimeEnv,
@@ -33,7 +33,7 @@ pub struct AppState {
 }
 
 pub struct BotHandle {
-    pub shutdown: tokio::sync::oneshot::Sender<()>,
+    pub shutdown: oneshot::Sender<()>,
 }
 
 impl AppState {
@@ -50,38 +50,23 @@ impl AppState {
 
 /// Bir bot'u başlat — zaten çalışıyorsa no-op.
 pub async fn start_bot(state: Arc<AppState>, bot_id: i64) -> Result<(), AppError> {
+    let (shutdown_tx, shutdown_rx) = oneshot::channel();
     {
-        let children = state.children.lock().await;
+        let mut children = state.children.lock().await;
         if children.contains_key(&bot_id) {
             return Ok(());
         }
+        children.insert(bot_id, BotHandle { shutdown: shutdown_tx });
     }
 
-    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-    {
-        let mut children = state.children.lock().await;
-        children.insert(
-            bot_id,
-            BotHandle {
-                shutdown: shutdown_tx,
-            },
-        );
-    }
-
-    let state2 = state.clone();
-    tokio::spawn(async move {
-        run_bot_with_backoff(state2, bot_id, shutdown_rx).await;
-    });
-
+    let st = state.clone();
+    tokio::spawn(async move { run_bot_with_backoff(st, bot_id, shutdown_rx).await });
     Ok(())
 }
 
-/// Bot'u durdur (SIGTERM → 10sn → SIGKILL).
+/// Bot'u durdur — child SIGKILL ile sonlandırılır, state STOPPED'e set edilir.
 pub async fn stop_bot(state: Arc<AppState>, bot_id: i64) -> Result<(), AppError> {
-    let handle = {
-        let mut children = state.children.lock().await;
-        children.remove(&bot_id)
-    };
+    let handle = state.children.lock().await.remove(&bot_id);
     if let Some(h) = handle {
         let _ = h.shutdown.send(());
     }
@@ -92,30 +77,28 @@ pub async fn stop_bot(state: Arc<AppState>, bot_id: i64) -> Result<(), AppError>
 async fn run_bot_with_backoff(
     state: Arc<AppState>,
     bot_id: i64,
-    mut shutdown_rx: tokio::sync::oneshot::Receiver<()>,
+    mut shutdown_rx: oneshot::Receiver<()>,
 ) {
+    const MAX_BACKOFF: Duration = Duration::from_secs(60);
     let mut backoff = Duration::from_secs(1);
-    let max_backoff = Duration::from_secs(60);
 
     loop {
         tokio::select! {
             _ = &mut shutdown_rx => {
-                tracing::info!(bot_id, "supervisor shutdown requested before spawn");
+                tracing::info!(bot_id, "supervisor shutdown requested");
                 return;
             }
-            res = spawn_once(state.clone(), bot_id) => {
-                match res {
-                    Ok(0) => {
-                        tracing::info!(bot_id, "bot exited cleanly");
-                        let _ = db::set_bot_state(&state.pool, bot_id, "STOPPED").await;
-                        return;
-                    }
-                    Ok(code) => {
-                        tracing::warn!(bot_id, exit_code = code, "bot crashed, backoff {:?}", backoff);
-                    }
-                    Err(e) => {
-                        tracing::error!(bot_id, error = %e, "spawn failed, backoff {:?}", backoff);
-                    }
+            res = spawn_once(state.clone(), bot_id) => match res {
+                Ok(0) => {
+                    tracing::info!(bot_id, "bot exited cleanly");
+                    let _ = db::set_bot_state(&state.pool, bot_id, "STOPPED").await;
+                    return;
+                }
+                Ok(code) => {
+                    tracing::warn!(bot_id, exit_code = code, ?backoff, "bot crashed");
+                }
+                Err(e) => {
+                    tracing::error!(bot_id, error = %e, ?backoff, "spawn failed");
                 }
             }
         }
@@ -124,7 +107,7 @@ async fn run_bot_with_backoff(
             &state.pool,
             Some(bot_id),
             "error",
-            &format!("bot crashed, restarting in {:?}", backoff),
+            &format!("bot crashed, restarting in {backoff:?}"),
         )
         .await;
 
@@ -132,21 +115,21 @@ async fn run_bot_with_backoff(
             _ = &mut shutdown_rx => return,
             _ = sleep(backoff) => {}
         }
-        backoff = (backoff * 2).min(max_backoff);
+        backoff = (backoff * 2).min(MAX_BACKOFF);
     }
 }
 
 /// Tek bir bot process'i spawn eder; exit code döner.
 async fn spawn_once(state: Arc<AppState>, bot_id: i64) -> Result<i32, AppError> {
-    let mut cmd = Command::new(&state.env.bot_binary);
-    cmd.arg("--bot-id")
+    let mut child = Command::new(&state.env.bot_binary)
+        .arg("--bot-id")
         .arg(bot_id.to_string())
         .env("BAITER_BOT_ID", bot_id.to_string())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .kill_on_drop(true);
+        .kill_on_drop(true)
+        .spawn()?;
 
-    let mut child: Child = cmd.spawn()?;
     tracing::info!(bot_id, pid = child.id(), "bot spawned");
     let _ = db::set_bot_state(&state.pool, bot_id, "RUNNING").await;
 
@@ -161,8 +144,7 @@ async fn spawn_once(state: Arc<AppState>, bot_id: i64) -> Result<i32, AppError> 
 
     let s_out = state.clone();
     tokio::spawn(async move {
-        let reader = BufReader::new(stdout);
-        let mut lines = reader.lines();
+        let mut lines = BufReader::new(stdout).lines();
         while let Ok(Some(line)) = lines.next_line().await {
             handle_stdout_line(&s_out, bot_id, &line).await;
         }
@@ -170,24 +152,23 @@ async fn spawn_once(state: Arc<AppState>, bot_id: i64) -> Result<i32, AppError> 
 
     let s_err = state.clone();
     tokio::spawn(async move {
-        let reader = BufReader::new(stderr);
-        let mut lines = reader.lines();
+        let mut lines = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = lines.next_line().await {
             let _ = db::insert_log(&s_err.pool, Some(bot_id), "error", &line).await;
         }
     });
 
     let status = child.wait().await?;
-    let code = status.code().unwrap_or(-1);
-    Ok(code)
+    Ok(status.code().unwrap_or(-1))
 }
 
 async fn handle_stdout_line(state: &AppState, bot_id: i64, line: &str) {
-    if line.starts_with(EVENT_PREFIX) {
-        if let Some(ev) = parse_event_line(line) {
-            let _ = state.events.send(ev);
-        } else {
-            tracing::warn!(bot_id, "event parse failed: {line}");
+    if let Some(rest) = line.strip_prefix(EVENT_PREFIX) {
+        match parse_event_line(line) {
+            Some(ev) => {
+                let _ = state.events.send(ev);
+            }
+            None => tracing::warn!(bot_id, payload = rest, "event parse failed"),
         }
         return;
     }
@@ -198,21 +179,18 @@ async fn handle_stdout_line(state: &AppState, bot_id: i64, line: &str) {
     let _ = db::insert_log(&state.pool, Some(bot_id), level, line).await;
 }
 
-/// Tracing'in compact formatı satır başına `INFO` / `WARN` / `ERROR` token'ı koyar
-/// (örn. `WARN ws error...`). Spec §5.2 metin satırlarında ise level token'ı
-/// yoktur — varsayılan `info`. Bu yardımcı her iki biçimi de doğru sınıflandırır.
+/// Tracing'in compact formatı satır başına `INFO`/`WARN`/`ERROR` token koyar
+/// (örn. `WARN ws error...`); spec §5.2 düz metin satırlarında token yoktur
+/// ve `info` sayılır. `DEBUG`/`TRACE` de `info` seviyesine düşer.
 fn detect_log_level(line: &str) -> &'static str {
-    let head = line.trim_start();
-    let token = head.split_whitespace().next().unwrap_or("");
-    match token {
+    match line.split_whitespace().next().unwrap_or("") {
         "ERROR" => "error",
         "WARN" => "warn",
-        "DEBUG" | "TRACE" => "info",
         _ => "info",
     }
 }
 
-/// Uygulama başlarken previously RUNNING botları otomatik olarak yeniden başlat.
+/// Uygulama açılışında previously RUNNING botları otomatik yeniden başlatır.
 pub async fn restart_previously_running(state: Arc<AppState>) {
     let bots = match db::list_bots(&state.pool).await {
         Ok(b) => b,
@@ -221,10 +199,8 @@ pub async fn restart_previously_running(state: Arc<AppState>) {
             return;
         }
     };
-    for b in bots {
-        if b.state == "RUNNING" {
-            tracing::info!(bot_id = b.id, "auto-restart previously running bot");
-            let _ = start_bot(state.clone(), b.id).await;
-        }
+    for b in bots.into_iter().filter(|b| b.state == "RUNNING") {
+        tracing::info!(bot_id = b.id, "auto-restart previously running bot");
+        let _ = start_bot(state.clone(), b.id).await;
     }
 }

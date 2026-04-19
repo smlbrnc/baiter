@@ -9,9 +9,15 @@ import { Field, SectionLabel, ToggleRow } from "@/components/bots/bot-form-share
 type Props = {
   form: CreateBotReq;
   setForm: Dispatch<SetStateAction<CreateBotReq>>;
+  /** Edit modunda `auto_start` toggle'ı gizlenir (zaten oluşturulmuş bot). */
+  hideAutoStart?: boolean;
 };
 
-export function BotFormSettingsSection({ form, setForm }: Props) {
+export function BotFormSettingsSection({
+  form,
+  setForm,
+  hideAutoStart = false,
+}: Props) {
   return (
     <div className="space-y-3">
       <div>
@@ -181,13 +187,15 @@ export function BotFormSettingsSection({ form, setForm }: Props) {
           </Field>
         </div>
 
-        <ToggleRow
-          checked={form.auto_start ?? false}
-          onChange={(v) => setForm({ ...form, auto_start: v })}
-          title="Oluşturduktan sonra otomatik başlat"
-          description="Açıksa bot kaydedilir kaydedilmez supervisor tarafından çalıştırılır."
-          tooltip="Etkinleştirilirse bot oluşturulur oluşturulmaz otomatik olarak başlatılır. Kapalı bırakılırsa bot kayıt edilir fakat manuel başlatma gerekir."
-        />
+        {!hideAutoStart && (
+          <ToggleRow
+            checked={form.auto_start ?? false}
+            onChange={(v) => setForm({ ...form, auto_start: v })}
+            title="Oluşturduktan sonra otomatik başlat"
+            description="Açıksa bot kaydedilir kaydedilmez supervisor tarafından çalıştırılır."
+            tooltip="Etkinleştirilirse bot oluşturulur oluşturulmaz otomatik olarak başlatılır. Kapalı bırakılırsa bot kayıt edilir fakat manuel başlatma gerekir."
+          />
+        )}
       </div>
     </div>
   );

@@ -1,22 +1,5 @@
 //! HTTP + SSE API — axum router, frontend'in tek arayüzü.
 //!
-//! Endpoint özeti:
-//! - `POST /api/bots` — yeni bot (opsiyonel kimlik bilgileri), `auto_start=true` → spawn.
-//! - `GET  /api/bots` — bot listesi.
-//! - `GET  /api/bots/:id` — bot detayı.
-//! - `DELETE /api/bots/:id` — durdur + sil.
-//! - `POST /api/bots/:id/start` — başlat.
-//! - `POST /api/bots/:id/stop` — durdur.
-//! - `GET  /api/bots/:id/logs?limit=N` — son N log.
-//! - `GET  /api/bots/:id/pnl` — son PnL snapshot.
-//! - `GET  /api/bots/:id/session` — aktif session özeti (Gamma cache).
-//! - `GET  /api/bots/:id/sessions` — bot'un tüm session'ları (özet liste).
-//! - `GET  /api/bots/:id/sessions/:slug` — session detay (Gamma + position).
-//! - `GET  /api/bots/:id/sessions/:slug/ticks?since_ms=N&limit=N` — BBA + signal history.
-//! - `GET  /api/bots/:id/sessions/:slug/pnl?since_ms=N&limit=N` — PnL history.
-//! - `GET  /api/bots/:id/sessions/:slug/trades?since_ms=N&limit=N` — trade history.
-//! - `GET  /api/events` — SSE stream (`FrontendEvent`).
-//!
 //! Referans: [docs/bot-platform-mimari.md §2 §5](../../../docs/bot-platform-mimari.md).
 
 use std::convert::Infallible;
@@ -35,7 +18,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::config::{BotConfig, Credentials, StrategyParams};
-use crate::db;
+use crate::db::{self, BotUpdate};
 use crate::error::AppError;
 use crate::polymarket::GammaClient;
 use crate::supervisor::{self, AppState};
@@ -45,7 +28,10 @@ pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/api/health", get(health))
         .route("/api/bots", get(list_bots).post(create_bot))
-        .route("/api/bots/{id}", get(get_bot).delete(delete_bot))
+        .route(
+            "/api/bots/{id}",
+            get(get_bot).patch(update_bot).delete(delete_bot),
+        )
         .route("/api/bots/{id}/start", post(start_bot))
         .route("/api/bots/{id}/stop", post(stop_bot))
         .route("/api/bots/{id}/logs", get(bot_logs))
@@ -109,6 +95,37 @@ fn default_cooldown_threshold() -> u64 {
     30_000
 }
 
+/// Bot ayarlarının ortak doğrulaması — tüm ihlaller tek bir
+/// `AppError::Config` mesajında birleştirilip 400 olarak döner.
+fn validate_bot_settings(
+    min_price: f64,
+    max_price: f64,
+    cooldown_threshold: u64,
+    start_offset: u32,
+) -> Result<(), AppError> {
+    let mut errors: Vec<String> = Vec::new();
+    if !(min_price > 0.0 && min_price < max_price && max_price < 1.0) {
+        errors.push(format!(
+            "price bounds: 0 < min_price ({min_price}) < max_price ({max_price}) < 1 olmalı"
+        ));
+    }
+    if cooldown_threshold == 0 {
+        errors.push("cooldown_threshold: > 0 ms olmalı".into());
+    }
+    if start_offset > 1 {
+        errors.push(format!(
+            "start_offset ({start_offset}): 0 (aktif) veya 1 (sonraki) olmalı"
+        ));
+    }
+    if errors.is_empty() {
+        return Ok(());
+    }
+    Err(AppError::Config(format!(
+        "invalid bot settings: {}",
+        errors.join("; ")
+    )))
+}
+
 #[derive(Debug, Serialize)]
 struct CreateBotResp {
     id: i64,
@@ -118,23 +135,12 @@ async fn create_bot(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateBotReq>,
 ) -> Result<Json<CreateBotResp>, AppError> {
-    if !(req.min_price > 0.0 && req.min_price < req.max_price && req.max_price < 1.0) {
-        return Err(AppError::Config(format!(
-            "invalid price bounds: 0 < min_price ({}) < max_price ({}) < 1 olmalı",
-            req.min_price, req.max_price
-        )));
-    }
-    if req.cooldown_threshold == 0 {
-        return Err(AppError::Config(
-            "invalid cooldown_threshold: > 0 ms olmalı".to_string(),
-        ));
-    }
-    if req.start_offset > 1 {
-        return Err(AppError::Config(format!(
-            "invalid start_offset ({}): 0 (aktif) veya 1 (sonraki) olmalı",
-            req.start_offset
-        )));
-    }
+    validate_bot_settings(
+        req.min_price,
+        req.max_price,
+        req.cooldown_threshold,
+        req.start_offset,
+    )?;
     let cfg = BotConfig {
         id: 0,
         name: req.name,
@@ -159,6 +165,69 @@ async fn create_bot(
     Ok(Json(CreateBotResp { id }))
 }
 
+/// `slug_pattern` ve `strategy` immutable — bot oluşturulurken belirlenir.
+#[derive(Debug, Deserialize)]
+struct UpdateBotReq {
+    name: String,
+    run_mode: RunMode,
+    order_usdc: f64,
+    signal_weight: f64,
+    #[serde(default = "default_min_price")]
+    min_price: f64,
+    #[serde(default = "default_max_price")]
+    max_price: f64,
+    #[serde(default = "default_cooldown_threshold")]
+    cooldown_threshold: u64,
+    #[serde(default)]
+    start_offset: u32,
+    #[serde(default)]
+    strategy_params: StrategyParams,
+    #[serde(default)]
+    credentials: Option<Credentials>,
+}
+
+async fn update_bot(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+    Json(req): Json<UpdateBotReq>,
+) -> Result<Json<Value>, AppError> {
+    let row = db::get_bot(&state.pool, id)
+        .await?
+        .ok_or(AppError::BotNotFound { bot_id: id })?;
+    // Koşan bot'ta state ↔ config drift'i önlemek için yalnızca STOPPED kabul.
+    if row.state != "STOPPED" {
+        return Err(AppError::Conflict(format!(
+            "bot {id} state={s}; ayarları güncellemek için önce durdur",
+            s = row.state
+        )));
+    }
+    validate_bot_settings(
+        req.min_price,
+        req.max_price,
+        req.cooldown_threshold,
+        req.start_offset,
+    )?;
+    let upd = BotUpdate {
+        name: req.name,
+        run_mode: req.run_mode,
+        order_usdc: req.order_usdc,
+        signal_weight: req.signal_weight,
+        min_price: req.min_price,
+        max_price: req.max_price,
+        cooldown_threshold: req.cooldown_threshold,
+        start_offset: req.start_offset,
+        strategy_params: req.strategy_params,
+    };
+    db::update_bot(&state.pool, id, &upd).await?;
+    if let Some(creds) = req.credentials {
+        db::upsert_credentials(&state.pool, id, &creds).await?;
+    }
+    let updated = db::get_bot(&state.pool, id)
+        .await?
+        .ok_or(AppError::BotNotFound { bot_id: id })?;
+    bot_row_to_json(updated).map(Json)
+}
+
 async fn list_bots(State(state): State<Arc<AppState>>) -> Result<Json<Vec<Value>>, AppError> {
     let rows = db::list_bots(&state.pool).await?;
     rows.into_iter()
@@ -177,15 +246,13 @@ async fn get_bot(
     bot_row_to_json(row).map(Json)
 }
 
+/// Force delete: koşan child varsa önce durdurmaya çalış, hata olsa bile sil.
 async fn delete_bot(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, AppError> {
-    // Silme operasyonunun semantiği: koşan child varsa önce durdurmaya çalış,
-    // ancak DB satırını her durumda sil ("force delete"). Stop hatası
-    // operatörün görmesi için warn olarak loglanır.
     if let Err(e) = supervisor::stop_bot(state.clone(), id).await {
-        tracing::warn!(bot_id = id, error = %e, "stop_bot failed during delete; proceeding with DB delete");
+        tracing::warn!(bot_id = id, error = %e, "stop_bot failed during delete");
     }
     db::delete_bot(&state.pool, id).await?;
     Ok(StatusCode::NO_CONTENT)
@@ -221,42 +288,17 @@ async fn bot_logs(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
     Query(q): Query<LogQuery>,
-) -> Result<Json<Vec<Value>>, AppError> {
+) -> Result<Json<Vec<db::LogRow>>, AppError> {
     let logs = db::recent_logs(&state.pool, Some(id), q.limit).await?;
-    Ok(Json(
-        logs.into_iter()
-            .map(|l| {
-                serde_json::json!({
-                    "id": l.id,
-                    "bot_id": l.bot_id,
-                    "level": l.level,
-                    "message": l.message,
-                    "ts_ms": l.ts_ms,
-                })
-            })
-            .collect(),
-    ))
+    Ok(Json(logs))
 }
 
 async fn bot_pnl(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
-) -> Result<Json<Value>, AppError> {
+) -> Result<Json<Option<db::PnlSnapshot>>, AppError> {
     let snap = db::pnl::latest_pnl_for_bot(&state.pool, id).await?;
-    match snap {
-        Some(s) => Ok(Json(serde_json::json!({
-            "cost_basis": s.cost_basis,
-            "fee_total": s.fee_total,
-            "shares_yes": s.shares_yes,
-            "shares_no": s.shares_no,
-            "pnl_if_up": s.pnl_if_up,
-            "pnl_if_down": s.pnl_if_down,
-            "mtm_pnl": s.mtm_pnl,
-            "pair_count": s.pair_count,
-            "ts_ms": s.ts_ms,
-        }))),
-        None => Ok(Json(Value::Null)),
-    }
+    Ok(Json(snap))
 }
 
 async fn bot_session(
@@ -281,30 +323,56 @@ async fn bot_session(
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct SessionListQuery {
+    #[serde(default = "default_sessions_limit")]
+    limit: i64,
+    #[serde(default)]
+    offset: i64,
+}
+
+fn default_sessions_limit() -> i64 {
+    20
+}
+
 async fn bot_sessions(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
-) -> Result<Json<Vec<Value>>, AppError> {
-    let rows = db::sessions::list_sessions_for_bot(&state.pool, id).await?;
+    Query(q): Query<SessionListQuery>,
+) -> Result<Json<Value>, AppError> {
+    // Aşırı büyük istekler ve negatif değerler için sınırla.
+    let limit = q.limit.clamp(1, 200);
+    let offset = q.offset.max(0);
+    let (rows, total) = tokio::try_join!(
+        db::sessions::list_sessions_for_bot(&state.pool, id, limit, offset),
+        db::sessions::count_sessions_for_bot(&state.pool, id),
+    )?;
     let now = crate::time::now_secs() as i64;
-    Ok(Json(
-        rows.into_iter()
-            .map(|s| {
-                let is_live = s.end_ts > now && s.state != "RESOLVED" && s.state != "CLOSED";
-                serde_json::json!({
-                    "slug":          s.slug,
-                    "start_ts":      s.start_ts,
-                    "end_ts":        s.end_ts,
-                    "state":         s.state,
-                    "cost_basis":    s.cost_basis,
-                    "shares_yes":    s.shares_yes,
-                    "shares_no":     s.shares_no,
-                    "realized_pnl":  s.realized_pnl,
-                    "is_live":       is_live,
-                })
+    let items: Vec<Value> = rows
+        .into_iter()
+        .map(|s| {
+            let is_live = s.end_ts > now && s.state != "RESOLVED" && s.state != "CLOSED";
+            serde_json::json!({
+                "slug":          s.slug,
+                "start_ts":      s.start_ts,
+                "end_ts":        s.end_ts,
+                "state":         s.state,
+                "cost_basis":    s.cost_basis,
+                "shares_yes":    s.shares_yes,
+                "shares_no":     s.shares_no,
+                "realized_pnl":  s.realized_pnl,
+                "pnl_if_up":     s.pnl_if_up,
+                "pnl_if_down":   s.pnl_if_down,
+                "is_live":       is_live,
             })
-            .collect(),
-    ))
+        })
+        .collect();
+    Ok(Json(serde_json::json!({
+        "items":  items,
+        "total":  total,
+        "limit":  limit,
+        "offset": offset,
+    })))
 }
 
 async fn session_detail(

@@ -1,10 +1,9 @@
-//! IPC — bot → supervisor event bridge.
+//! IPC — bot → supervisor event/log köprüsü (§5.1, §5.2).
 //!
-//! Bot process'leri kritik event'leri stdout'a tek satır JSON olarak yazar:
-//! `[[EVENT]] {"kind":"Fill", ...}\n`
-//! Supervisor `ChildStdout` satırlarını okurken bu prefix'e göre ayırır.
-//!
-//! Referans: [docs/bot-platform-mimari.md §5.1 §5.2](../../../docs/bot-platform-mimari.md).
+//! Bot süreçleri stdout'a iki tür satır yazar:
+//! 1. `[HH:MM:SS.mmm] [bot_label] mesaj` — sade log; supervisor `info`/`warn`/`error`
+//!    seviyesine göre `logs` tablosuna yazar.
+//! 2. `[[EVENT]] {json}` — `FrontendEvent` payload'ı; supervisor parse eder ve SSE'ye yayar.
 
 use std::io::{self, Write};
 
@@ -14,18 +13,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::types::{Outcome, Side};
 
-/// Stdout event prefix'i — supervisor bu prefix ile satırları parser'a yönlendirir.
+/// `[[EVENT]] ` prefix'i — supervisor bunu görünce satırı event parser'a yönlendirir.
 pub const EVENT_PREFIX: &str = "[[EVENT]] ";
 
-/// Mimari §5.1 — `[HH:MM:SS.mmm] [bot_label] mesaj` formatlı tek satır metin log.
-///
-/// Stdout'a yazılır; supervisor `[[EVENT]]` olmayan satırları logs tablosuna `info`
-/// seviyesiyle (veya satır başında `WARN`/`ERROR` belirteci varsa o seviyeyle) yazar.
+/// `[HH:MM:SS.mmm] [bot_label] mesaj` formatlı tek satır metin log (ET zaman dilimi).
 pub fn log_line(bot_label: &str, msg: impl AsRef<str>) {
-    // Mimari §5.1 örnekleri ET (America/New_York) zaman dilimindedir.
-    let ts = Utc::now()
-        .with_timezone(&New_York)
-        .format("%H:%M:%S%.3f");
+    let ts = Utc::now().with_timezone(&New_York).format("%H:%M:%S%.3f");
     let stdout = io::stdout();
     let mut h = stdout.lock();
     let _ = writeln!(h, "[{ts}] [{bot_label}] {}", msg.as_ref());
@@ -33,25 +26,21 @@ pub fn log_line(bot_label: &str, msg: impl AsRef<str>) {
 }
 
 /// Supervisor → frontend SSE ile taşınan event tipleri.
-///
-/// `serde_json` ile tek satırda (newline'sız) serialize edilir.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind")]
 pub enum FrontendEvent {
-    /// Bot başlatıldı veya yeniden başlatıldı.
     BotStarted {
         bot_id: i64,
         name: String,
         slug: String,
         ts_ms: u64,
     },
-    /// Bot normal şekilde durdu (SIGTERM).
     BotStopped {
         bot_id: i64,
         ts_ms: u64,
         reason: String,
     },
-    /// Yeni market penceresi açıldı (startDate-endDate).
+    /// Yeni market penceresi açıldı.
     SessionOpened {
         bot_id: i64,
         slug: String,
@@ -60,15 +49,14 @@ pub enum FrontendEvent {
         yes_token_id: String,
         no_token_id: String,
     },
-    /// Market penceresi çözümlendi (market_resolved).
+    /// Market penceresi çözümlendi (`market_resolved`).
     SessionResolved {
         bot_id: i64,
         slug: String,
         winning_outcome: String,
         ts_ms: u64,
     },
-    /// Emir gönderildi (POST /order döndü). `status` "matched" (taker fill)
-    /// veya "live" (orderbook'a yerleşti).
+    /// `status`: `"matched"` (taker fill) veya `"live"` (orderbook'a yerleşti).
     OrderPlaced {
         bot_id: i64,
         order_id: String,
@@ -80,13 +68,12 @@ pub enum FrontendEvent {
         status: String,
         ts_ms: u64,
     },
-    /// Emir iptal edildi.
     OrderCanceled {
         bot_id: i64,
         order_id: String,
         ts_ms: u64,
     },
-    /// Trade fill event'i (User WS `trade` MATCHED + sonraki statuslar).
+    /// User WS `trade` MATCHED + sonraki status geçişleri.
     Fill {
         bot_id: i64,
         trade_id: String,
@@ -96,7 +83,7 @@ pub enum FrontendEvent {
         status: String,
         ts_ms: u64,
     },
-    /// Market WS `best_bid_ask` snapshot'ı (frontend PriceChart).
+    /// Market WS `best_bid_ask` snapshot'ı.
     BestBidAsk {
         bot_id: i64,
         yes_best_bid: f64,
@@ -105,7 +92,6 @@ pub enum FrontendEvent {
         no_best_ask: f64,
         ts_ms: u64,
     },
-    /// Binance sinyal skor güncelleme.
     SignalUpdate {
         bot_id: i64,
         symbol: String,
@@ -115,7 +101,6 @@ pub enum FrontendEvent {
         cvd: f64,
         ts_ms: u64,
     },
-    /// Genel hata / uyarı.
     Error {
         bot_id: i64,
         message: String,
@@ -138,10 +123,7 @@ pub fn emit(ev: &FrontendEvent) {
     let _ = handle.flush();
 }
 
-/// Log satırından `FrontendEvent` parse eder (supervisor tarafında kullanılır).
-///
-/// - `[[EVENT]] ` prefix'i yoksa `None` döner.
-/// - JSON parse hatası `None` döner (log satırı hata olarak yutulmaz, üst katman loglar).
+/// Tek satırı `FrontendEvent`'e parse eder; prefix yoksa veya JSON bozuksa `None`.
 pub fn parse_event_line(line: &str) -> Option<FrontendEvent> {
     let rest = line.strip_prefix(EVENT_PREFIX)?;
     serde_json::from_str::<FrontendEvent>(rest.trim()).ok()
@@ -168,9 +150,7 @@ mod tests {
         let line = format!("{EVENT_PREFIX}{json}");
         let parsed = parse_event_line(&line).expect("must parse");
         match parsed {
-            FrontendEvent::OrderPlaced {
-                order_id, price, ..
-            } => {
+            FrontendEvent::OrderPlaced { order_id, price, .. } => {
                 assert_eq!(order_id, "0xff35");
                 assert!((price - 0.57).abs() < 1e-9);
             }

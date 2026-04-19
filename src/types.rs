@@ -1,13 +1,8 @@
 //! Polymarket ham tipleri — CLOB REST + WS payload'larıyla bire bir uyumlu.
-//!
-//! Referans: [docs/api/polymarket-clob.md](../../../docs/api/polymarket-clob.md),
-//! [docs/bot-platform-mimari.md §1 §11](../../../docs/bot-platform-mimari.md).
 
 use serde::{Deserialize, Serialize};
 
-/// İkili market outcome'u. Polymarket'te "UP/DOWN" yalnız ürün/strateji dilidir;
-/// ham API alanı `outcome` değeri (ör. "Yes"/"No") string olarak taşınır. Bu
-/// enum strateji kodunun kullandığı iç temsildir.
+/// İkili market outcome'u — Polymarket "Yes/No"yu strateji dilinde "UP/DOWN"a maler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum Outcome {
@@ -23,7 +18,7 @@ impl Outcome {
         }
     }
 
-    /// CLOB wire-form ("UP" / "DOWN") — log ve API çıktısında aynı string.
+    /// Wire-form ("UP" / "DOWN") — log ve API çıktısında aynı string.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Up => "UP",
@@ -50,10 +45,8 @@ impl Side {
 }
 
 /// CLOB emir tipi — REST `order_type` alanı.
-/// - GTC: Good 'Til Canceled
-/// - GTD: Good 'Til Date
-/// - FOK: Fill Or Kill
-/// - FAK: Fill And Kill (partial fill + cancel remainder)
+/// `GTC` = Good 'Til Canceled, `GTD` = Good 'Til Date,
+/// `FOK` = Fill Or Kill, `FAK` = Fill And Kill.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "UPPERCASE")]
 pub enum OrderType {
@@ -74,7 +67,7 @@ impl OrderType {
     }
 }
 
-/// Bot işlem modu — `BotConfig.run_mode`.
+/// `BotConfig.run_mode` — Live (CLOB REST) veya DryRun (Simulator).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RunMode {
@@ -82,7 +75,7 @@ pub enum RunMode {
     Dryrun,
 }
 
-/// Strateji adı.
+/// `BotConfig.strategy` — aktif olan: `Harvest`. Diğerleri DB sözleşmesi için durur.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Strategy {

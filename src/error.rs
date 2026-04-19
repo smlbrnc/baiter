@@ -30,6 +30,9 @@ pub enum AppError {
     #[error("config: {0}")]
     Config(String),
 
+    #[error("conflict: {0}")]
+    Conflict(String),
+
     #[error("io: {0}")]
     Io(#[from] std::io::Error),
 
@@ -50,12 +53,11 @@ pub enum AppError {
 }
 
 impl AppError {
-    /// HTTP status mapping — `IntoResponse` ve API katmanı tarafından kullanılır.
-    /// Domain hataları (4xx) ile beklenmeyen sistem hataları (5xx) ayrılır.
     pub fn status_code(&self) -> StatusCode {
         match self {
             Self::BotNotFound { .. } => StatusCode::NOT_FOUND,
             Self::InvalidSlug { .. } | Self::Config(_) => StatusCode::BAD_REQUEST,
+            Self::Conflict(_) => StatusCode::CONFLICT,
             Self::MissingCredentials { .. } | Self::Auth(_) => StatusCode::UNAUTHORIZED,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         }
@@ -64,7 +66,6 @@ impl AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        let status = self.status_code();
-        (status, self.to_string()).into_response()
+        (self.status_code(), self.to_string()).into_response()
     }
 }

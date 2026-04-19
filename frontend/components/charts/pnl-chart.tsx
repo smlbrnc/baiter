@@ -8,10 +8,10 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import { cn } from "@/lib/utils";
 import {
   ChartContainer,
   ChartTooltip,
-  ChartTooltipContent,
   type ChartConfig,
 } from "@/components/ui/chart";
 import type { PnLSnapshot } from "@/lib/types";
@@ -25,6 +25,7 @@ interface Props {
 interface Row {
   t: number;
   mtm: number;
+  fee_total: number;
 }
 
 const chartConfig = {
@@ -35,7 +36,7 @@ function toRows(snaps: PnLSnapshot[]): Row[] {
   const out: Row[] = [];
   for (const p of snaps) {
     const t = Math.floor(p.ts_ms / 1000);
-    const row: Row = { t, mtm: p.mtm_pnl };
+    const row: Row = { t, mtm: p.mtm_pnl, fee_total: p.fee_total };
     if (out.length && out[out.length - 1].t === t) {
       out[out.length - 1] = row;
     } else {
@@ -95,14 +96,32 @@ export function PnLChart({ data, session }: Props) {
               width={48}
             />
             <ChartTooltip
-              content={
-                <ChartTooltipContent
-                  labelFormatter={(_v, p) => {
-                    const t = p?.[0]?.payload?.t;
-                    return typeof t === "number" ? fmtTickTime(t) : "";
-                  }}
-                />
-              }
+              content={({ active, payload }) => {
+                if (!active || !payload?.length) return null;
+                const row = payload[0]?.payload as Row | undefined;
+                if (!row) return null;
+                return (
+                  <div
+                    className={cn(
+                      "grid min-w-36 gap-1.5 rounded-md border border-border/35 bg-background px-2.5 py-1.5 text-xs shadow-xl",
+                    )}
+                  >
+                    <div className="font-medium">{fmtTickTime(row.t)}</div>
+                    <div className="flex justify-between gap-4 leading-none">
+                      <span className="text-muted-foreground">mtm_pnl</span>
+                      <span className="font-mono font-medium tabular-nums">
+                        {row.mtm.toFixed(4)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between gap-4 leading-none">
+                      <span className="text-muted-foreground">Fee total</span>
+                      <span className="font-mono font-medium tabular-nums">
+                        ${row.fee_total.toFixed(4)}
+                      </span>
+                    </div>
+                  </div>
+                );
+              }}
             />
             <Area
               type="monotone"

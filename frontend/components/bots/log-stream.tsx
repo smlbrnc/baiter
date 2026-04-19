@@ -1,13 +1,21 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Download, Eraser } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import {
   Card,
+  CardAction,
   CardContent,
   CardDescription,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { api } from "@/lib/api";
 import type { LogRow } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -17,6 +25,11 @@ const STICK_BOTTOM_THRESHOLD_PX = 64;
 
 export function LogStream({ botId }: { botId: number }) {
   const [logs, setLogs] = useState<LogRow[]>([]);
+  /**
+   * "Ekranı temizle" salt UI tarafıdır — bu id'den küçük/eşit logları
+   * gizleriz, yeni gelenler normal görünür. DB'ye dokunmuyoruz.
+   */
+  const [clearCutoffId, setClearCutoffId] = useState<number | null>(null);
   const boxRef = useRef<HTMLDivElement>(null);
   /** true: son yenilemede kullanıcı alta yakındı; false: yukarı kaydırmış. */
   const stickToBottomRef = useRef(true);
@@ -40,6 +53,14 @@ export function LogStream({ botId }: { botId: number }) {
     };
   }, [botId]);
 
+  const visibleLogs = useMemo(
+    () =>
+      clearCutoffId == null
+        ? logs
+        : logs.filter((l) => l.id > clearCutoffId),
+    [logs, clearCutoffId],
+  );
+
   const updateStickFromScroll = () => {
     const el = boxRef.current;
     if (!el) return;
@@ -51,7 +72,40 @@ export function LogStream({ botId }: { botId: number }) {
     const el = boxRef.current;
     if (!el || !stickToBottomRef.current) return;
     el.scrollTop = el.scrollHeight;
-  }, [logs]);
+  }, [visibleLogs]);
+
+  const onClear = () => {
+    if (logs.length === 0) return;
+    const maxId = logs.reduce((m, l) => (l.id > m ? l.id : m), 0);
+    setClearCutoffId(maxId);
+    stickToBottomRef.current = true;
+  };
+
+  const onDownload = () => {
+    if (visibleLogs.length === 0) return;
+    const lines = visibleLogs
+      .map((l) => {
+        const ts = new Date(l.ts_ms).toISOString();
+        return `[${ts}] [${l.level.toUpperCase()}] ${l.message}`;
+      })
+      .join("\n");
+    const blob = new Blob([lines + "\n"], {
+      type: "text/plain;charset=utf-8",
+    });
+    const url = URL.createObjectURL(blob);
+    const stamp = new Date()
+      .toISOString()
+      .replace(/[:.]/g, "-")
+      .replace("T", "_")
+      .slice(0, 19);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `bot-${botId}-logs-${stamp}.log`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
 
   return (
     <Card>
@@ -60,17 +114,51 @@ export function LogStream({ botId }: { botId: number }) {
         <CardDescription>
           Son 300 satır · 2 sn&apos;de bir yenilenir
         </CardDescription>
+        <CardAction className="flex gap-1">
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                size="icon"
+                variant="ghost"
+                onClick={onDownload}
+                disabled={visibleLogs.length === 0}
+                aria-label="Logları indir"
+              >
+                <Download />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Logları indir (.log)</TooltipContent>
+          </Tooltip>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                size="icon"
+                variant="ghost"
+                onClick={onClear}
+                disabled={visibleLogs.length === 0}
+                aria-label="Ekranı temizle"
+              >
+                <Eraser />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent>Ekranı temizle (yeni loglar görünür)</TooltipContent>
+          </Tooltip>
+        </CardAction>
       </CardHeader>
       <CardContent>
         <div
           ref={boxRef}
           onScroll={updateStickFromScroll}
-          className="bg-muted/40 h-72 overflow-auto rounded-md border border-border/45 p-3 font-mono text-[11px]"
+          className="bg-muted/40 border-border/45 h-[60vh] min-h-96 overflow-auto rounded-md border p-3 font-mono text-[11px]"
         >
-          {logs.length === 0 ? (
-            <div className="text-muted-foreground">Henüz log yok.</div>
+          {visibleLogs.length === 0 ? (
+            <div className="text-muted-foreground">
+              {logs.length === 0
+                ? "Henüz log yok."
+                : "Ekran temizlendi — yeni loglar burada görünecek."}
+            </div>
           ) : (
-            logs.map((l) => (
+            visibleLogs.map((l) => (
               <div
                 key={l.id}
                 className={cn(

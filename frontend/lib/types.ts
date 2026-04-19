@@ -53,7 +53,17 @@ export interface SessionListItem {
   shares_yes: number;
   shares_no: number;
   realized_pnl: number | null;
+  pnl_if_up: number | null;
+  pnl_if_down: number | null;
   is_live: boolean;
+}
+
+/** `/api/bots/:id/sessions` sayfalanmış cevap. */
+export interface SessionListResponse {
+  items: SessionListItem[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 /** `/api/bots/:id/sessions/:slug` — detay + Gamma cache + position. */
@@ -232,4 +242,23 @@ export interface CreateBotReq {
   strategy_params?: Record<string, unknown>;
   credentials?: Credentials;
   auto_start?: boolean;
+}
+
+/**
+ * PATCH /api/bots/:id — bot ayarlarını günceller (yalnızca STOPPED).
+ *
+ * `slug_pattern` ve `strategy` immutable; bot oluşturulurken belirlenir,
+ * sonradan değiştirilemez (yeniden oluşturulması gerekir).
+ */
+export interface UpdateBotReq {
+  name: string;
+  run_mode: RunMode;
+  order_usdc: number;
+  signal_weight: number;
+  min_price: number;
+  max_price: number;
+  cooldown_threshold: number;
+  start_offset: number;
+  strategy_params?: Record<string, unknown>;
+  credentials?: Credentials;
 }

@@ -1,9 +1,6 @@
-//! Polymarket slug parser.
+//! Polymarket slug parser — `{asset}-updown-{interval}-{unix_ts_sec}` (§1).
 //!
-//! Desteklenen kalıp: `{asset}-updown-{interval}-{unix_timestamp_saniye}`.
-//! Eşleşmeyen slug → bot başlatma reddi (ürün hatası).
-//!
-//! Referans: [docs/bot-platform-mimari.md §1](../../../docs/bot-platform-mimari.md).
+//! Eşleşmeyen slug → `AppError::InvalidSlug` (bot başlatma reddi).
 
 use crate::error::AppError;
 
@@ -27,7 +24,7 @@ impl Asset {
         }
     }
 
-    /// Binance USD-M Futures sembol eşlemesi (`binance_signal` için).
+    /// Binance USD-M Futures sembol eşlemesi (`binance_signal` task'ı için).
     pub fn binance_symbol(self) -> &'static str {
         match self {
             Self::Btc => "btcusdt",
@@ -88,12 +85,11 @@ impl Interval {
     }
 }
 
-/// Parse edilmiş slug bilgisi.
+/// Parse edilmiş slug bilgisi (`ts` = pencere başlangıcı, unix saniye).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SlugInfo {
     pub asset: Asset,
     pub interval: Interval,
-    /// Pencere başlangıcı, unix saniye.
     pub ts: u64,
 }
 
@@ -103,7 +99,7 @@ impl SlugInfo {
         self.ts + self.interval.seconds()
     }
 
-    /// Slug string'e geri serialize.
+    /// Slug string'e geri serialize eder.
     pub fn to_slug(&self) -> String {
         format!(
             "{}-updown-{}-{}",
@@ -114,72 +110,73 @@ impl SlugInfo {
     }
 }
 
+fn invalid(slug: &str, reason: impl Into<String>) -> AppError {
+    AppError::InvalidSlug {
+        slug: slug.to_string(),
+        reason: reason.into(),
+    }
+}
+
 /// `{asset}-updown-{interval}-{ts}` formatını parse eder.
 pub fn parse_slug(slug: &str) -> Result<SlugInfo, AppError> {
     let parts: Vec<&str> = slug.split('-').collect();
     if parts.len() != 4 {
-        return Err(AppError::InvalidSlug {
-            slug: slug.to_string(),
-            reason: format!("beklenen 4 parça, {} bulundu", parts.len()),
-        });
+        return Err(invalid(
+            slug,
+            format!("beklenen 4 parça, {} bulundu", parts.len()),
+        ));
     }
     if parts[1] != "updown" {
-        return Err(AppError::InvalidSlug {
-            slug: slug.to_string(),
-            reason: format!("2. parça 'updown' olmalı, '{}' bulundu", parts[1]),
-        });
+        return Err(invalid(
+            slug,
+            format!("2. parça 'updown' olmalı, '{}' bulundu", parts[1]),
+        ));
     }
-    let asset = Asset::parse(parts[0]).ok_or_else(|| AppError::InvalidSlug {
-        slug: slug.to_string(),
-        reason: format!("desteklenmeyen asset '{}' (btc/eth/sol/xrp)", parts[0]),
+    let asset = Asset::parse(parts[0]).ok_or_else(|| {
+        invalid(
+            slug,
+            format!("desteklenmeyen asset '{}' (btc/eth/sol/xrp)", parts[0]),
+        )
     })?;
-    let interval = Interval::parse(parts[2]).ok_or_else(|| AppError::InvalidSlug {
-        slug: slug.to_string(),
-        reason: format!("desteklenmeyen interval '{}' (5m/15m/1h/4h)", parts[2]),
+    let interval = Interval::parse(parts[2]).ok_or_else(|| {
+        invalid(
+            slug,
+            format!("desteklenmeyen interval '{}' (5m/15m/1h/4h)", parts[2]),
+        )
     })?;
-    let ts: u64 = parts[3].parse().map_err(|_| AppError::InvalidSlug {
-        slug: slug.to_string(),
-        reason: format!("timestamp parse hatası: '{}'", parts[3]),
-    })?;
+    let ts: u64 = parts[3]
+        .parse()
+        .map_err(|_| invalid(slug, format!("timestamp parse hatası: '{}'", parts[3])))?;
     if ts == 0 {
-        return Err(AppError::InvalidSlug {
-            slug: slug.to_string(),
-            reason: "timestamp 0 olamaz".to_string(),
-        });
+        return Err(invalid(slug, "timestamp 0 olamaz"));
     }
     if !ts.is_multiple_of(interval.seconds()) {
-        return Err(AppError::InvalidSlug {
-            slug: slug.to_string(),
-            reason: format!(
-                "timestamp {} interval ({}s) katı değil",
-                ts,
-                interval.seconds()
-            ),
-        });
+        return Err(invalid(
+            slug,
+            format!("timestamp {ts} interval ({}s) katı değil", interval.seconds()),
+        ));
     }
-    Ok(SlugInfo {
-        asset,
-        interval,
-        ts,
-    })
+    Ok(SlugInfo { asset, interval, ts })
 }
 
-/// Tam slug → explicit `ts` döner (offset no-op).
-/// Önek (`{asset}-updown-{interval}`) → `ts = snap_active + start_offset * interval.seconds()`.
+/// Tam slug ise direkt parse; aksi halde `{asset}-updown-{interval}` öneki kabul edilir
+/// ve `ts = snap_active + start_offset * interval.seconds()` ile tamamlanır.
 pub fn parse_slug_or_prefix(pattern: &str, start_offset: u32) -> Result<SlugInfo, AppError> {
     if let Ok(info) = parse_slug(pattern) {
         return Ok(info);
     }
     let parts: Vec<&str> = pattern.trim_end_matches('-').split('-').collect();
     if parts.len() < 3 {
-        return Err(AppError::InvalidSlug {
-            slug: pattern.to_string(),
-            reason: "tam slug değil; önek de en az 3 parça olmalı".into(),
-        });
+        return Err(invalid(
+            pattern,
+            "tam slug değil; önek de en az 3 parça olmalı",
+        ));
     }
-    let interval = Interval::parse(parts[2]).ok_or_else(|| AppError::InvalidSlug {
-        slug: pattern.to_string(),
-        reason: format!("önekten interval parse edilemedi: '{}'", parts[2]),
+    let interval = Interval::parse(parts[2]).ok_or_else(|| {
+        invalid(
+            pattern,
+            format!("önekten interval parse edilemedi: '{}'", parts[2]),
+        )
     })?;
     let secs = interval.seconds();
     let ts = (crate::time::now_secs() / secs) * secs + (start_offset as u64) * secs;

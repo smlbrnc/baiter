@@ -1,49 +1,34 @@
 "use client";
 
-import Link from "next/link";
-import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, ArrowRight, CircleStop, Play } from "lucide-react";
+import {
+  ArrowLeft,
+  CircleStop,
+  LineChart,
+  Play,
+  ScrollText,
+  Settings as SettingsIcon,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs";
+import { BotSettingsCards } from "@/components/bots/bot-settings-cards";
 import { LogStream } from "@/components/bots/log-stream";
 import { SessionsTable } from "@/components/bots/sessions-table";
+import { BotSettingsEditForm } from "@/components/bots/bot-settings-edit-form";
 import { api } from "@/lib/api";
 import { useBot } from "@/lib/hooks";
-import type { SessionListItem } from "@/lib/types";
 
 export default function BotSummaryPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const botId = Number(id);
   const { bot } = useBot(Number.isFinite(botId) ? botId : null);
-
-  const [sessions, setSessions] = useState<SessionListItem[]>([]);
-
-  useEffect(() => {
-    if (!Number.isFinite(botId)) return;
-    let cancelled = false;
-    const reload = () =>
-      api
-        .botSessions(botId)
-        .then((s) => {
-          if (!cancelled) setSessions(s);
-        })
-        .catch(() => {});
-    reload();
-    const t = setInterval(reload, 5000);
-    return () => {
-      cancelled = true;
-      clearInterval(t);
-    };
-  }, [botId]);
 
   if (!bot) {
     return (
@@ -56,8 +41,6 @@ export default function BotSummaryPage() {
       </div>
     );
   }
-
-  const liveSession = sessions.find((s) => s.is_live);
 
   return (
     <div className="space-y-6">
@@ -137,69 +120,61 @@ export default function BotSummaryPage() {
         </div>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Özet</CardTitle>
-          <CardDescription className="font-mono">
-            {bot.slug_pattern}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
-          <Item label="Order USDC" value={`$${bot.order_usdc.toFixed(2)}`} />
-          <Item label="Signal weight" value={String(bot.signal_weight)} />
-          <Item
-            label="Last active"
-            value={
-              bot.last_active_ms
-                ? new Date(bot.last_active_ms).toLocaleTimeString()
-                : "-"
-            }
-          />
-          <Item
-            label="Created"
-            value={new Date(bot.created_at_ms).toLocaleString()}
-          />
-        </CardContent>
-      </Card>
+      <Tabs defaultValue="markets" className="w-full">
+        <div className="border-border/50 border-b">
+          <TabsList
+            variant="line"
+            className="!h-10 w-full justify-start gap-1 rounded-none !p-0"
+          >
+            <TabTrigger value="markets" icon={<LineChart />} label="Markets" />
+            <TabTrigger value="logs" icon={<ScrollText />} label="Logs" />
+            <TabTrigger
+              value="settings"
+              icon={<SettingsIcon />}
+              label="Settings"
+            />
+          </TabsList>
+        </div>
 
-      {liveSession && (
-        <Link
-          href={`/bots/${botId}/${liveSession.slug}`}
-          className="block transition-transform hover:-translate-y-0.5"
-        >
-          <Card className="border-emerald-500/40 bg-emerald-500/5">
-            <CardHeader className="flex flex-row items-start justify-between gap-3">
-              <div className="min-w-0 space-y-2">
-                <div className="flex items-center gap-2">
-                  <Badge className="border-transparent bg-emerald-500/15 text-emerald-600 dark:text-emerald-400">
-                    LIVE
-                  </Badge>
-                  <CardTitle>Aktif Market</CardTitle>
-                </div>
-                <CardDescription className="font-mono break-all">
-                  {liveSession.slug}
-                </CardDescription>
-              </div>
-              <ArrowRight className="text-emerald-500 h-5 w-5 shrink-0" />
-            </CardHeader>
-          </Card>
-        </Link>
-      )}
+        <TabsContent value="markets" className="mt-6 space-y-6">
+          <BotSettingsCards bot={bot} />
+          <SessionsTable botId={botId} />
+        </TabsContent>
 
-      <SessionsTable botId={botId} sessions={sessions} />
+        <TabsContent value="logs" className="mt-6">
+          <LogStream botId={botId} />
+        </TabsContent>
 
-      <LogStream botId={botId} />
+        <TabsContent value="settings" className="mt-6">
+          <BotSettingsEditForm key={bot.id} bot={bot} />
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
 
-function Item({ label, value }: { label: string; value: string }) {
+/**
+ * Underlined tab tetikleyici — line variant ile uyumlu, ikon + etiket.
+ * Active state'te tab'in altında foreground renginde ince çubuk belirir
+ * (TabsTrigger'in `after:` pseudo-element'i `data-active`'de açılır).
+ */
+function TabTrigger({
+  value,
+  icon,
+  label,
+}: {
+  value: string;
+  icon: React.ReactNode;
+  label: string;
+}) {
   return (
-    <div className="flex flex-col gap-1">
-      <span className="text-muted-foreground text-xs font-medium tracking-wide uppercase">
-        {label}
-      </span>
-      <span className="font-mono text-sm leading-snug">{value}</span>
-    </div>
+    <TabsTrigger
+      value={value}
+      className="!flex-none gap-2 px-3 text-sm font-medium [&_svg]:size-4"
+    >
+      {icon}
+      {label}
+    </TabsTrigger>
   );
 }
+
