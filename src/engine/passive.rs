@@ -43,8 +43,8 @@ pub fn simulate_passive_fills(session: &mut MarketSession) -> Vec<ExecutedOrder>
                 reason: o.reason.clone(),
             },
             filled: true,
-            fill_price: Some(fill_price),
-            fill_size: Some(fill_size),
+            fill_price,
+            fill_size,
         });
     }
     session.open_orders = keep;

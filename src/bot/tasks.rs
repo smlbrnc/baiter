@@ -20,12 +20,16 @@ pub fn heartbeat_path(dir: &str, bot_id: i64) -> PathBuf {
 /// Her 5 sn dosyaya unix-ms yazar (supervisor sağlık takibi için).
 pub async fn heartbeat_task(path: PathBuf) {
     if let Some(parent) = path.parent() {
-        let _ = fs::create_dir_all(parent).await;
+        if let Err(e) = fs::create_dir_all(parent).await {
+            tracing::warn!(path=%parent.display(), error=%e, "heartbeat dir create failed");
+        }
     }
     let mut tick = interval(Duration::from_secs(5));
     loop {
         tick.tick().await;
-        let _ = fs::write(&path, now_ms().to_string().as_bytes()).await;
+        if let Err(e) = fs::write(&path, now_ms().to_string().as_bytes()).await {
+            tracing::warn!(path=%path.display(), error=%e, "heartbeat write failed");
+        }
     }
 }
 

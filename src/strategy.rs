@@ -46,16 +46,13 @@ pub trait DecisionEngine {
 }
 
 /// `decide()` döndüğü aksiyon — engine tarafından yürütülür.
+/// Harvest FSM yalnızca üç varyantı üretir; `Batch`/`Complete` gibi v1
+/// kalıntıları kaldırıldı (doc §11).
 #[derive(Debug, Clone)]
 pub enum Decision {
     NoOp,
     PlaceOrders(Vec<PlannedOrder>),
     CancelOrders(Vec<String>),
-    Batch {
-        cancel: Vec<String>,
-        place: Vec<PlannedOrder>,
-    },
-    Complete,
 }
 
 /// Strateji motorunun ürettiği emir planı; Live (CLOB REST) ve DryRun (Simulator)

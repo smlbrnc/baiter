@@ -1,27 +1,23 @@
 //! Bot binary çekirdeği — `src/bin/bot.rs` ince bir `bot::run()` entry point'tir;
-//! sorumluluklar alt modüller (`ctx`, `window`, `tick`, `event`, `persist`,
-//! `zone`, `tasks`, `shutdown`) arasında bölünmüştür.
-//!
-//! Referans: [docs/bot-platform-mimari.md §4 §5 §13](../../../docs/bot-platform-mimari.md).
+//! sorumluluklar alt modüller arasında bölünmüştür.
 
-pub mod ctx;
-pub mod event;
-pub mod persist;
-pub mod shutdown;
-pub mod tasks;
-pub mod tick;
-pub mod window;
-pub mod zone;
+pub(crate) mod ctx;
+pub(crate) mod event;
+pub(crate) mod persist;
+pub(crate) mod shutdown;
+pub(crate) mod signal;
+pub(crate) mod tasks;
+pub(crate) mod tick;
+pub(crate) mod window;
+pub(crate) mod zone;
 
 use crate::error::AppError;
 use crate::ipc::{self, FrontendEvent};
 use crate::time::now_ms;
 
-pub use ctx::{parse_bot_id, Ctx};
-
 /// Bot binary entry point — `cargo run --bin bot -- --bot-id N`.
 pub async fn run() -> Result<(), AppError> {
-    let bot_id = parse_bot_id()?;
+    let bot_id = ctx::parse_bot_id()?;
     std::env::set_var("BAITER_BOT_ID", bot_id.to_string());
 
     let (ctx, mut slug, mut sigterm, mut sigint) = ctx::load(bot_id).await?;

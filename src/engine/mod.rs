@@ -16,18 +16,20 @@ pub mod executor;
 pub mod passive;
 
 pub use executor::{
-    execute, ExecuteOutput, Executor, LiveExecutor, OrderSink, Simulator, DRYRUN_FEE_RATE,
+    execute, ExecuteOutput, Executor, LiveExecutor, Simulator, DRYRUN_FEE_RATE,
 };
 pub use passive::simulate_passive_fills;
 
 /// Yürütülen emir sonucu — in-memory pipeline kaydı (DB persist sub-field'lar üzerinden).
+/// `fill_price`/`fill_size` daima set edilir: fill olmamış emirlerde planned
+/// değerleriyle (kitapta canlı duran emrin beklenen fiyatı/boyutu).
 #[derive(Debug, Clone)]
 pub struct ExecutedOrder {
     pub order_id: String,
     pub planned: PlannedOrder,
     pub filled: bool,
-    pub fill_price: Option<f64>,
-    pub fill_size: Option<f64>,
+    pub fill_price: f64,
+    pub fill_size: f64,
 }
 
 /// Market seansı — bir bot × bir pencere (slug).
@@ -104,8 +106,8 @@ impl MarketSession {
         }
     }
 
-    /// Güncel market bölgesi.
-    pub fn current_zone(&self, now_secs: u64) -> MarketZone {
+    /// Güncel market bölgesi (yalnızca `tick` içinden çağrılır).
+    fn current_zone(&self, now_secs: u64) -> MarketZone {
         MarketZone::from_pct(zone_pct(self.start_ts, self.end_ts, now_secs))
     }
 

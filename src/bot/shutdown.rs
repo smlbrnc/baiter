@@ -12,13 +12,17 @@ use super::ctx::Ctx;
 /// SIGTERM/SIGINT'ten sonra: cancel_all → DB STOPPED → frontend BotStopped.
 pub async fn graceful_shutdown(ctx: &Ctx, reason: &str) {
     cancel_all_open(ctx, "shutdown").await;
-    let _ = db::set_bot_state(&ctx.pool, ctx.bot_id, "STOPPED").await;
+    if let Err(e) = db::set_bot_state(&ctx.pool, ctx.bot_id, "STOPPED").await {
+        tracing::warn!(bot_id = ctx.bot_id, error=%e, "set_bot_state STOPPED failed");
+    }
     ipc::emit(&FrontendEvent::BotStopped {
         bot_id: ctx.bot_id,
         ts_ms: now_ms(),
         reason: reason.into(),
     });
-    let _ = std::io::stdout().flush();
+    if let Err(e) = std::io::stdout().flush() {
+        tracing::warn!(error=%e, "stdout flush failed during shutdown");
+    }
 }
 
 /// Live mod ise CLOB'da tüm açık emirleri iptal eder; DryRun no-op.

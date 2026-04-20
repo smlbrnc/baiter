@@ -59,7 +59,17 @@ async fn prepare_window(
     ipc::log_line(label, format!("📡 Fetching market: {slug_str}"));
     let market = ctx.gamma.get_market_by_slug(slug_str).await?;
     let (yes_id, no_id) = market.parse_token_ids()?;
-    let condition_id = market.condition_id.clone().unwrap_or_default();
+    let condition_id = market
+        .condition_id
+        .clone()
+        .ok_or_else(|| AppError::Gamma(format!("conditionId eksik (slug={slug_str})")))?;
+    let tick_size = market
+        .tick_size
+        .ok_or_else(|| AppError::Gamma(format!("orderPriceMinTickSize eksik (slug={slug_str})")))?;
+    let api_min_order_size = market
+        .minimum_order_size
+        .ok_or_else(|| AppError::Gamma(format!("orderMinSize eksik (slug={slug_str})")))?;
+    let neg_risk = market.neg_risk.unwrap_or(false);
     let (start_ts, end_ts) = (slug.ts, slug.end_ts());
 
     if let Some(q) = market.question.as_deref() {
@@ -89,8 +99,8 @@ async fn prepare_window(
         &condition_id,
         &yes_id,
         &no_id,
-        market.tick_size.unwrap_or(0.01),
-        market.minimum_order_size.unwrap_or(5.0),
+        tick_size,
+        api_min_order_size,
     )
     .await?;
 
@@ -122,9 +132,9 @@ async fn prepare_window(
         yes_token_id: yes_id,
         no_token_id: no_id,
         condition_id,
-        tick_size: market.tick_size.unwrap_or(0.01),
-        api_min_order_size: market.minimum_order_size.unwrap_or(5.0),
-        neg_risk: market.neg_risk.unwrap_or(false),
+        tick_size,
+        api_min_order_size,
+        neg_risk,
         start_ts,
         end_ts,
         market_session_id: session_id,
@@ -282,7 +292,6 @@ async fn wait_for_t_minus_15(
     }
 }
 
-/// Unix saniyesini `YYYY-MM-DD HH:MM:SS` (UTC) string'ine çevirir.
 fn fmt_utc(ts: u64) -> String {
     chrono::DateTime::<chrono::Utc>::from_timestamp(ts as i64, 0)
         .map(|d| d.format("%Y-%m-%d %H:%M:%S").to_string())

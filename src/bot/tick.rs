@@ -6,13 +6,13 @@
 use crate::engine::{execute, ExecuteOutput, MarketSession};
 use crate::ipc::{self, FrontendEvent};
 use crate::polymarket::CancelResponse;
-use crate::rtds;
 use crate::strategy::harvest::HarvestState;
 use crate::strategy::Decision;
 use crate::time::now_ms;
 use crate::types::{Outcome, RunMode};
 
 use super::ctx::Ctx;
+use super::signal::decision_composite;
 
 /// State-transition logu için `tick` sırasındaki session snapshot — `'static`
 /// task'a güvenle taşınır (tüm alanlar `Copy`).
@@ -39,30 +39,11 @@ struct TickLogCtx {
 ///   → composite_score → sess.tick`.
 /// Composite hem OpenPair opener fiyatını hem zona-duyarlı avg/pyramid kararlarını sürer.
 pub async fn tick(ctx: &Ctx, sess: &mut MarketSession) {
-    let binance_score = ctx.signal_state.read().await.signal_score;
-    let rtds_enabled = ctx.cfg.strategy_params.rtds_enabled_or_default();
-    let (window_score, signal_ready) = if rtds_enabled {
-        let rtds_snap = ctx.rtds_state.read().await;
-        // Sinyal hazırlığı: RTDS aktif iken pencere açılış fiyatı yakalanana
-        // kadar opener basılmaz. Aksi halde yeni pencerenin ilk 0.5-1 sn'sinde
-        // composite skoru tamamen Binance OFI'a düşer ve eski pencerenin son
-        // momentumu opener yönünü belirler (doc §3, §5; bot/tick gate).
-        let ready = rtds_snap.window_open_price.is_some();
-        let interval_secs = sess.end_ts.saturating_sub(sess.start_ts);
-        // Linear extrapolation: 3 sn sonraki bps ≈ kümülatif + velocity × dt.
-        let lookahead = ctx.cfg.strategy_params.signal_lookahead_secs_or_default();
-        let projected_bps =
-            rtds_snap.window_delta_bps + rtds_snap.recent_velocity_bps_per_sec * lookahead;
-        let score = rtds::window_delta_score(projected_bps, rtds::interval_scale(interval_secs));
-        (score, ready)
-    } else {
-        (5.0, true)
-    };
-    let composite = rtds::composite_score(
-        window_score,
-        binance_score,
-        ctx.cfg.strategy_params.window_delta_weight_or_default(),
-    );
+    // Sinyal hazırlığı: RTDS aktif iken pencere açılış fiyatı yakalanana
+    // kadar opener basılmaz. Aksi halde yeni pencerenin ilk 0.5-1 sn'sinde
+    // composite skoru tamamen Binance OFI'a düşer ve eski pencerenin son
+    // momentumu opener yönünü belirler (doc §3, §5; bot/tick gate).
+    let (composite, signal_ready) = decision_composite(ctx, sess).await;
     let prev_state = sess.harvest_state;
     let decision = sess.tick(&ctx.cfg, now_ms(), composite, signal_ready);
     let bot_id = ctx.bot_id;
@@ -108,9 +89,14 @@ pub async fn tick(ctx: &Ctx, sess: &mut MarketSession) {
     if ctx.cfg.run_mode == RunMode::Dryrun {
         for ex in &out.placed {
             if ex.filled {
-                let fp = ex.fill_price.unwrap_or(ex.planned.price);
-                let fs = ex.fill_size.unwrap_or(ex.planned.size);
-                super::persist::persist_dryrun_fill(&ctx.pool, sess, ex, fp, fs, "TAKER");
+                super::persist::persist_dryrun_fill(
+                    &ctx.pool,
+                    sess,
+                    ex,
+                    ex.fill_price,
+                    ex.fill_size,
+                    "TAKER",
+                );
             }
         }
     }
@@ -258,8 +244,7 @@ fn log_state_transition(c: &TickLogCtx) {
 fn log_cancel_request(decision: &Decision, label: &str) {
     let cancel_ids: &[String] = match decision {
         Decision::CancelOrders(ids) => ids,
-        Decision::Batch { cancel, .. } => cancel,
-        _ => return,
+        Decision::NoOp | Decision::PlaceOrders(_) => return,
     };
     if cancel_ids.is_empty() {
         return;

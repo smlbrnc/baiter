@@ -8,12 +8,11 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::AppError;
 
-/// Gamma market yanıt DTO'su — ihtiyaç duyulan alanlar.
+/// Gamma market yanıt DTO'su — yalnızca bot tarafından okunan alanlar.
+/// Polymarket Gamma şemasında daha çok alan vardır; serde varsayılan olarak
+/// bilinmeyen alanları yutar (deserialize sapması olmaz).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GammaMarket {
-    #[serde(default)]
-    pub id: Option<String>,
-    pub slug: String,
     #[serde(default)]
     pub question: Option<String>,
     #[serde(default)]
@@ -26,16 +25,6 @@ pub struct GammaMarket {
     pub tick_size: Option<f64>,
     #[serde(default, rename = "orderMinSize")]
     pub minimum_order_size: Option<f64>,
-    #[serde(default, rename = "startDate")]
-    pub start_date: Option<String>,
-    #[serde(default, rename = "endDate")]
-    pub end_date: Option<String>,
-    #[serde(default)]
-    pub active: Option<bool>,
-    #[serde(default)]
-    pub closed: Option<bool>,
-    #[serde(default, rename = "acceptingOrders")]
-    pub accepting_orders: Option<bool>,
     /// `negRisk` true ise Polymarket NegRisk Exchange & Adapter sözleşmesine
     /// gönderilir; false ise standart Exchange. EIP-712 verifying_contract
     /// seçimini doğrudan etkiler.

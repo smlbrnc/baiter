@@ -71,7 +71,7 @@ pub struct BuildArgs<'a> {
 }
 
 /// `neg_risk`'e göre verifying_contract adresi.
-pub fn verifying_contract(neg_risk: bool) -> Address {
+fn verifying_contract(neg_risk: bool) -> Address {
     if neg_risk {
         NEG_RISK_CTF_EXCHANGE
     } else {

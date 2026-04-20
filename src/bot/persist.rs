@@ -7,10 +7,10 @@ use sqlx::SqlitePool;
 
 use crate::db;
 use crate::engine::{ExecutedOrder, MarketSession, DRYRUN_FEE_RATE};
-use crate::rtds;
 use crate::time::now_ms;
 
 use super::ctx::Ctx;
+use super::signal::observed_snapshot;
 
 /// `pnl_snapshots` tablosuna tek satır yazar — `window.rs` 1 sn cadence'inden.
 pub fn snapshot_pnl(pool: &SqlitePool, sess: &MarketSession) {
@@ -44,33 +44,16 @@ pub async fn snapshot_tick(ctx: &Ctx, sess: &MarketSession) {
     if sess.market_session_id == 0 {
         return;
     }
-    let (binance_score, bsi, ofi, cvd) = {
-        let snap = ctx.signal_state.read().await;
-        (snap.signal_score, snap.bsi, snap.ofi, snap.cvd)
-    };
-    let window_score = if ctx.cfg.strategy_params.rtds_enabled_or_default() {
-        let rtds_snap = ctx.rtds_state.read().await;
-        rtds::window_delta_score(
-            rtds_snap.window_delta_bps,
-            rtds::interval_scale(sess.end_ts.saturating_sub(sess.start_ts)),
-        )
-    } else {
-        5.0
-    };
-    let signal_score = rtds::composite_score(
-        window_score,
-        binance_score,
-        ctx.cfg.strategy_params.window_delta_weight_or_default(),
-    );
+    let sig = observed_snapshot(ctx, sess).await;
     let tick = db::MarketTick {
         yes_best_bid: sess.yes_best_bid,
         yes_best_ask: sess.yes_best_ask,
         no_best_bid: sess.no_best_bid,
         no_best_ask: sess.no_best_ask,
-        signal_score,
-        bsi,
-        ofi,
-        cvd,
+        signal_score: sig.composite,
+        bsi: sig.bsi,
+        ofi: sig.ofi,
+        cvd: sig.cvd,
         ts_ms: now_ms() as i64,
     };
     db::ticks::persist_tick(

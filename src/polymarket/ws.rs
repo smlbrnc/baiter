@@ -26,25 +26,18 @@ use crate::error::AppError;
 pub enum PolymarketEvent {
     Book {
         asset_id: String,
-        market: String,
         /// Yalnız fiyat (size tüketici tarafında okunmuyordu); per-level
         /// String alloc'u sıfırlamak için `Vec<f64>` olarak taşınır.
         bids: Vec<f64>,
         asks: Vec<f64>,
-        timestamp_ms: u64,
     },
     PriceChange {
-        market: String,
         changes: Vec<PriceChangeLevel>,
-        timestamp_ms: u64,
     },
     BestBidAsk {
         asset_id: String,
-        market: String,
         best_bid: f64,
         best_ask: f64,
-        spread: f64,
-        timestamp_ms: u64,
     },
     MarketResolved {
         market: String,
@@ -301,14 +294,13 @@ fn as_str(v: &Value, key: &str) -> Option<String> {
 /// alanlarını zorunlu/opsiyonel olarak çözer.
 fn map_event(v: &Arc<Value>) -> Option<PolymarketEvent> {
     let etype = v.get("event_type")?.as_str()?;
-    let ts = as_u64(v, "timestamp").unwrap_or(0);
     match etype {
-        "book" => map_book(v, ts),
-        "price_change" => map_price_change(v, ts),
-        "best_bid_ask" => map_best_bid_ask(v, ts),
-        "market_resolved" => map_market_resolved(v, ts),
-        "order" => Some(map_order(v, ts)),
-        "trade" => Some(map_trade(v, ts)),
+        "book" => map_book(v),
+        "price_change" => map_price_change(v),
+        "best_bid_ask" => map_best_bid_ask(v),
+        "market_resolved" => map_market_resolved(v, as_u64(v, "timestamp").unwrap_or(0)),
+        "order" => Some(map_order(v, as_u64(v, "timestamp").unwrap_or(0))),
+        "trade" => Some(map_trade(v, as_u64(v, "timestamp").unwrap_or(0))),
         other => {
             tracing::debug!(event_type = other, "unknown event_type, skipped");
             None
@@ -316,17 +308,15 @@ fn map_event(v: &Arc<Value>) -> Option<PolymarketEvent> {
     }
 }
 
-fn map_book(v: &Value, timestamp_ms: u64) -> Option<PolymarketEvent> {
+fn map_book(v: &Value) -> Option<PolymarketEvent> {
     Some(PolymarketEvent::Book {
         asset_id: as_str(v, "asset_id")?,
-        market: as_str(v, "market").unwrap_or_default(),
         bids: extract_levels(v, "bids"),
         asks: extract_levels(v, "asks"),
-        timestamp_ms,
     })
 }
 
-fn map_price_change(v: &Value, timestamp_ms: u64) -> Option<PolymarketEvent> {
+fn map_price_change(v: &Value) -> Option<PolymarketEvent> {
     let arr = v.get("price_changes")?.as_array()?;
     let changes = arr
         .iter()
@@ -338,21 +328,14 @@ fn map_price_change(v: &Value, timestamp_ms: u64) -> Option<PolymarketEvent> {
             })
         })
         .collect();
-    Some(PolymarketEvent::PriceChange {
-        market: as_str(v, "market").unwrap_or_default(),
-        changes,
-        timestamp_ms,
-    })
+    Some(PolymarketEvent::PriceChange { changes })
 }
 
-fn map_best_bid_ask(v: &Value, timestamp_ms: u64) -> Option<PolymarketEvent> {
+fn map_best_bid_ask(v: &Value) -> Option<PolymarketEvent> {
     Some(PolymarketEvent::BestBidAsk {
         asset_id: as_str(v, "asset_id")?,
-        market: as_str(v, "market").unwrap_or_default(),
-        best_bid: as_f64(v, "best_bid").unwrap_or(0.0),
-        best_ask: as_f64(v, "best_ask").unwrap_or(0.0),
-        spread: as_f64(v, "spread").unwrap_or(0.0),
-        timestamp_ms,
+        best_bid: as_f64(v, "best_bid")?,
+        best_ask: as_f64(v, "best_ask")?,
     })
 }
 
@@ -419,19 +402,16 @@ mod tests {
         let raw = Arc::new(serde_json::json!({
             "event_type": "best_bid_ask",
             "asset_id": "abc",
-            "market": "0x1",
             "best_bid": "0.73",
             "best_ask": "0.77",
-            "spread": "0.04",
-            "timestamp": "1766789469958"
         }));
         let ev = map_event(&raw).unwrap();
         match ev {
             PolymarketEvent::BestBidAsk {
-                best_bid, spread, ..
+                best_bid, best_ask, ..
             } => {
                 assert!((best_bid - 0.73).abs() < 1e-9);
-                assert!((spread - 0.04).abs() < 1e-9);
+                assert!((best_ask - 0.77).abs() < 1e-9);
             }
             _ => panic!("wrong event"),
         }

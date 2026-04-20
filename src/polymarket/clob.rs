@@ -192,10 +192,6 @@ pub struct PostOrderResponse {
     pub status: String,
     #[serde(default, rename = "errorMsg")]
     pub error_msg: String,
-    #[serde(default, rename = "transactionsHashes")]
-    pub transactions_hashes: Vec<String>,
-    #[serde(default, rename = "tradeIDs")]
-    pub trade_ids: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

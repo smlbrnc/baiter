@@ -1,5 +1,6 @@
 //! Emir yürütücü — DryRun Simulator veya Live CLOB.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use sqlx::SqlitePool;
@@ -8,6 +9,7 @@ use uuid::Uuid;
 use crate::config::Credentials;
 use crate::db;
 use crate::error::AppError;
+use crate::ipc;
 use crate::polymarket::order::{
     build_order, expiration_for, order_to_json, sign_order, BuildArgs,
 };
@@ -137,6 +139,10 @@ impl LiveExecutor {
                 resp.status, resp.error_msg
             )));
         }
+        // `status=matched` REST yanıtı bilgi amaçlı (`filled` flag → persist
+        // post_status). Pozisyon math'ini User WS `trade MATCHED` event'i tek
+        // kaynak olarak yazar (`absorb_trade_matched`); REST'te `ingest_fill`
+        // çağırmak çift sayıma yol açar. Bkz. plan: fix-trade-fill-accounting.
         let filled = resp.status.eq_ignore_ascii_case("matched");
         if !filled {
             session.open_orders.push(OpenOrder {
@@ -148,20 +154,13 @@ impl LiveExecutor {
                 reason: planned.reason.clone(),
                 placed_at_ms: now_ms(),
             });
-        } else {
-            session
-                .metrics
-                .ingest_fill(planned.outcome, planned.price, planned.size, 0.0);
-            if is_averaging_like(&planned.reason) {
-                session.last_averaging_ms = now_ms();
-            }
         }
         let executed = ExecutedOrder {
             order_id: resp.order_id.clone(),
             planned: planned.clone(),
             filled,
-            fill_price: filled.then_some(planned.price),
-            fill_size: filled.then_some(planned.size),
+            fill_price: planned.price,
+            fill_size: planned.size,
         };
         self.persist_place(session, &executed, &resp.status);
         Ok(executed)
@@ -184,7 +183,7 @@ impl LiveExecutor {
             order_type: executed.planned.order_type.as_str(),
             price: executed.planned.price,
             original_size: executed.planned.size,
-            size_matched: executed.fill_size,
+            size_matched: executed.filled.then_some(executed.fill_size),
             post_status: post_status.to_string(),
             ts_ms: now_ms() as i64,
         });
@@ -206,7 +205,7 @@ impl LiveExecutor {
 }
 
 /// DryRun simülatörü — slip yok, sabit fee.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct Simulator;
 
 impl Simulator {
@@ -231,23 +230,22 @@ impl Simulator {
                 order_id,
                 planned: planned.clone(),
                 filled: false,
-                fill_price: None,
-                fill_size: None,
+                fill_price: planned.price,
+                fill_size: planned.size,
             };
         };
 
         let fill_size = planned.size;
         apply_dryrun_fill(session, planned.outcome, fill_price, fill_size);
-        if is_averaging_like(&planned.reason) {
-            session.last_averaging_ms = now_ms();
-        }
+        // `last_averaging_ms` `place_batch` sonunda tek noktada güncellenir
+        // (averaging cooldown takibi için tek kaynak).
 
         ExecutedOrder {
             order_id,
             planned: planned.clone(),
             filled: true,
-            fill_price: Some(fill_price),
-            fill_size: Some(fill_size),
+            fill_price,
+            fill_size,
         }
     }
 }
@@ -327,13 +325,9 @@ pub async fn execute<S: OrderSink + ?Sized>(
 ) -> Result<ExecuteOutput, AppError> {
     let mut out = ExecuteOutput::default();
     match decision {
-        Decision::NoOp | Decision::Complete => {}
+        Decision::NoOp => {}
         Decision::PlaceOrders(orders) => place_batch(session, exec, orders, &mut out).await?,
         Decision::CancelOrders(ids) => cancel_batch(session, exec, &ids, &mut out).await?,
-        Decision::Batch { cancel, place } => {
-            cancel_batch(session, exec, &cancel, &mut out).await?;
-            place_batch(session, exec, place, &mut out).await?;
-        }
     }
     Ok(out)
 }
@@ -363,9 +357,32 @@ async fn cancel_batch<S: OrderSink + ?Sized>(
     ids: &[String],
     out: &mut ExecuteOutput,
 ) -> Result<(), AppError> {
+    let label = session.bot_id.to_string();
+    // Sadece Polymarket'in **gerçekten** iptal ettiği id'leri lokal state'ten
+    // sil. `not_canceled` (örn. "matched orders can't be canceled") emir hâlâ
+    // canlı veya match'te demektir; silersek ardından gelen MATCHED event'inde
+    // `extract_our_fills` bu id'yi `our_open_orders` setinde bulamaz ve maker
+    // fill atlanır.
+    let mut truly_canceled: HashSet<String> = HashSet::new();
     for id in ids {
-        out.canceled.push(exec.cancel(session, id).await?);
+        let resp = exec.cancel(session, id).await?;
+        for c in &resp.canceled {
+            truly_canceled.insert(c.clone());
+        }
+        if let Some(map) = resp.not_canceled.as_object() {
+            for (nc_id, reason) in map {
+                let reason_s = reason
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| reason.to_string());
+                ipc::log_line(
+                    &label,
+                    format!("⚠️ cancel rejected id={nc_id} reason={reason_s}"),
+                );
+            }
+        }
+        out.canceled.push(resp);
     }
-    session.open_orders.retain(|o| !ids.contains(&o.id));
+    session.open_orders.retain(|o| !truly_canceled.contains(&o.id));
     Ok(())
 }
