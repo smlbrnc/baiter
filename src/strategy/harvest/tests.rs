@@ -39,7 +39,6 @@ fn default_ctx<'a>(
         no_best_ask: 0.48,
         api_min_order_size: 5.0,
         order_usdc: 5.0,
-        signal_weight: 0.0,
         effective_score: 5.0,
         zone: MarketZone::NormalTrade,
         now_ms: 1_000_000,
@@ -852,16 +851,14 @@ fn double_leg_one_side_at_max_position_freezes() {
 
 #[test]
 fn double_leg_no_signal_multiplier() {
-    // effective_score=10, signal_weight>0 → SingleLeg'de DOWN avg multiplier
-    // 1.3× olurdu (UP=1.0). DoubleLeg'de iki taraf da 1.0 — sinyal etkisi
-    // double-count edilmez. DOWN size'ında fark teyit edilir.
+    // effective_score=10 → SingleLeg'de DOWN avg multiplier 1.3× olurdu (UP=1.0).
+    // DoubleLeg'de iki taraf da 1.0 — sinyal etkisi double-count edilmez.
     let mut metrics = StrategyMetrics::default();
     metrics.ingest_fill(Outcome::Up, 0.55, 10.0, 0.0);
     metrics.ingest_fill(Outcome::Down, 0.50, 10.0, 0.0);
     let params = StrategyParams::default();
     let opens: Vec<OpenOrder> = vec![];
     let mut ctx = default_ctx(&metrics, &params, &opens);
-    ctx.signal_weight = 10.0;
     ctx.effective_score = 10.0;
     ctx.now_ms = COOLDOWN_THRESHOLD + 1;
     ctx.yes_best_bid = 0.48;

@@ -55,7 +55,7 @@ pub struct HarvestContext<'a> {
     pub no_best_ask: f64,
     pub api_min_order_size: f64,
     pub order_usdc: f64,
-    pub signal_weight: f64,
+    /// Composite skor (RTDS + Binance harmanı; 5.0 = nötr).
     pub effective_score: f64,
     pub zone: MarketZone,
     pub now_ms: u64,
@@ -101,10 +101,9 @@ impl<'a> HarvestContext<'a> {
         }
     }
 
-    /// Averaging size çarpanı (§14.4 harvest tablosu). Harvest zone aktif ve
-    /// `signal_weight > 0` değilse 1.0.
+    /// Averaging size çarpanı (§14.4 harvest tablosu). Harvest zone aktif değilse 1.0.
     pub(super) fn signal_multiplier(&self, averaging_side: Outcome) -> f64 {
-        if !ZoneSignalMap::HARVEST.is_active(self.zone) || self.signal_weight <= 0.0 {
+        if !ZoneSignalMap::HARVEST.is_active(self.zone) {
             return 1.0;
         }
         let s = self.effective_score;

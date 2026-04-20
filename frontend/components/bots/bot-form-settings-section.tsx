@@ -15,12 +15,12 @@ export function BotFormSettingsSection({ form, setForm }: Props) {
       <div>
         <SectionLabel icon={Settings2} title="Risk ve emir parametreleri" />
         <p className="text-muted-foreground mt-1 text-sm">
-          Emir boyutu, sinyal ağırlığı ve fiyat aralığı.
+          Emir boyutu, cooldown ve fiyat aralığı.
         </p>
       </div>
 
       <div className="bg-muted/25 space-y-3 rounded-md border border-border/40 p-3">
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field
             label="Order USDC"
             tooltip="Emir başına harcanacak USDC miktarı. GTC size = max(⌈order_usdc / fiyat⌉, api_min_order_size). Artırmak emir büyüklüğünü doğrudan artırır."
@@ -33,25 +33,6 @@ export function BotFormSettingsSection({ form, setForm }: Props) {
               value={form.order_usdc}
               onChange={(e) =>
                 setForm({ ...form, order_usdc: Number(e.target.value) })
-              }
-            />
-          </Field>
-          <Field
-            label="Signal weight"
-            tooltip="Composite sinyalin (RTDS Chainlink window-delta + Binance aggTrade) emir fiyatı ve boyutu üzerindeki etkisi. effective = 5 + (composite − 5) · weight/10 → 0 = nötr (5.0, sinyal devre dışı), 10 = ham composite. Composite içindeki window/binance dengesini aşağıdaki Strateji parametrelerinden ayarla."
-            hint="0–10 arası."
-          >
-            <Input
-              type="number"
-              step="0.1"
-              min="0"
-              max="10"
-              value={form.signal_weight}
-              onChange={(e) =>
-                setForm({
-                  ...form,
-                  signal_weight: Number(e.target.value),
-                })
               }
             />
           </Field>

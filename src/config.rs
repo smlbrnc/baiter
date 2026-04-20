@@ -91,8 +91,6 @@ pub struct BotConfig {
     pub strategy: Strategy,
     pub run_mode: RunMode,
     pub order_usdc: f64,
-    /// 0-10 arası Binance sinyal ağırlığı.
-    pub signal_weight: f64,
     pub min_price: f64,
     pub max_price: f64,
     /// Averaging cooldown (ms): iki averaging emri arası min süre + açık

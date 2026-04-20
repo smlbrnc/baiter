@@ -90,12 +90,6 @@ pub fn composite_score(window_score: f64, binance_score: f64, window_weight: f64
     (w * window_score + (1.0 - w) * binance_score).clamp(0.0, 10.0)
 }
 
-/// Composite'i `signal_weight` (0-10) ile skala eder (`binance::effective_score`
-/// ile aynı semantik); `0 → 5.0`, `10 → ham composite`.
-pub fn effective_composite(composite: f64, signal_weight: f64) -> f64 {
-    5.0 + (composite - 5.0) * (signal_weight / 10.0)
-}
-
 /// Asset için makul fiyat bandı (bozuk veri / spike koruması).
 fn sane_price(symbol: &str, value: f64) -> bool {
     if !value.is_finite() || value <= 0.0 {
@@ -404,17 +398,6 @@ mod tests {
     fn composite_score_clamps() {
         assert!((composite_score(11.0, 11.0, 0.5) - 10.0).abs() < 1e-6);
         assert!(composite_score(-1.0, -1.0, 0.5).abs() < 1e-6);
-    }
-
-    #[test]
-    fn effective_composite_zero_weight_neutral() {
-        assert!((effective_composite(8.0, 0.0) - 5.0).abs() < 1e-9);
-        assert!((effective_composite(2.0, 0.0) - 5.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn effective_composite_full_weight_raw() {
-        assert!((effective_composite(8.0, 10.0) - 8.0).abs() < 1e-9);
     }
 
     #[test]

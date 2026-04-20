@@ -37,8 +37,8 @@ import {
 } from "@/lib/chart-utils";
 
 /* ─── Bot bid formula (mirrors src/strategy/harvest/dual.rs) ─────────────
- *   effective_score = 5 + (signal_score − 5) × (signal_weight / 10)
- *   delta           = (es − 5) / 5                         → [−1, +1]
+ *   delta = (composite − 5) / 5    → [−1, +1]
+ *   (composite = backend signal_score; ham composite skor)
  *
  *   yes_spread = max(0, yes_ask − yes_bid)   ← Polymarket WS anlık spread
  *   no_spread  = max(0, no_ask  − no_bid)
@@ -56,15 +56,13 @@ const MAX_PRICE = 0.95;
 const snap = (p: number) => Math.round(p / TICK) * TICK;
 const clampPrice = (p: number) => Math.min(MAX_PRICE, Math.max(MIN_PRICE, snap(p)));
 function botBids(
-  signalScore: number,
-  signalWeight: number,
+  composite: number,
   yesBid: number,
   yesAsk: number,
   noBid: number,
   noAsk: number,
 ) {
-  const es = 5 + (signalScore - 5) * (signalWeight / 10);
-  const delta = (es - 5) / 5;
+  const delta = (composite - 5) / 5;
   const yesSpread = Math.max(0, yesAsk - yesBid);
   const noSpread  = Math.max(0, noAsk  - noBid);
   return {
@@ -76,7 +74,6 @@ function botBids(
 interface Props {
   data: MarketTick[];
   session: SessionRange | null;
-  signalWeight?: number;
 }
 
 interface Row {
@@ -104,13 +101,12 @@ function fmtPx(v: number | undefined): string {
 }
 
 /** MarketTick[] → Row[] (saniye granülaritesinde tekilleştirme). */
-function toRows(ticks: MarketTick[], signalWeight: number): Row[] {
+function toRows(ticks: MarketTick[]): Row[] {
   const out: Row[] = [];
   for (const tk of ticks) {
     const t = Math.floor(tk.ts_ms / 1000);
     const { upBotBid, downBotBid } = botBids(
       tk.signal_score,
-      signalWeight,
       tk.yes_best_bid,
       tk.yes_best_ask,
       tk.no_best_bid,
@@ -134,8 +130,8 @@ function toRows(ticks: MarketTick[], signalWeight: number): Row[] {
   return out;
 }
 
-export function PriceChart({ data, session, signalWeight = 10 }: Props) {
-  const rows = useMemo(() => toRows(data, signalWeight), [data, signalWeight]);
+export function PriceChart({ data, session }: Props) {
+  const rows = useMemo(() => toRows(data), [data]);
 
   if (!session) return null;
   const ticks = timeTicks(session);

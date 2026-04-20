@@ -8,7 +8,6 @@ import {
 } from "@/components/ui/card";
 import type { LucideIcon } from "lucide-react";
 import {
-  Activity,
   CircleDollarSign,
   Clock,
   Radio,
@@ -41,11 +40,6 @@ export function BotSettingsCards({ bot }: { bot: BotRow }) {
       icon: CircleDollarSign,
     },
     {
-      label: "Signal weight",
-      value: bot.signal_weight.toFixed(1),
-      icon: Activity,
-    },
-    {
       label: "RTDS",
       value: rtdsLabel,
       icon: Radio,
@@ -68,7 +62,7 @@ export function BotSettingsCards({ bot }: { bot: BotRow }) {
   ];
 
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-7">
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
       {cards.map(({ label, value, icon: Icon }) => (
         <Card key={label} size="sm" className="!gap-2 !py-3">
           <CardHeader className="!px-2.5">

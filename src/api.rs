@@ -66,7 +66,6 @@ struct CreateBotReq {
     strategy: Strategy,
     run_mode: RunMode,
     order_usdc: f64,
-    signal_weight: f64,
     #[serde(default = "default_min_price")]
     min_price: f64,
     #[serde(default = "default_max_price")]
@@ -148,7 +147,6 @@ async fn create_bot(
         strategy: req.strategy,
         run_mode: req.run_mode,
         order_usdc: req.order_usdc,
-        signal_weight: req.signal_weight,
         min_price: req.min_price,
         max_price: req.max_price,
         cooldown_threshold: req.cooldown_threshold,
@@ -171,7 +169,6 @@ struct UpdateBotReq {
     name: String,
     run_mode: RunMode,
     order_usdc: f64,
-    signal_weight: f64,
     #[serde(default = "default_min_price")]
     min_price: f64,
     #[serde(default = "default_max_price")]
@@ -211,7 +208,6 @@ async fn update_bot(
         name: req.name,
         run_mode: req.run_mode,
         order_usdc: req.order_usdc,
-        signal_weight: req.signal_weight,
         min_price: req.min_price,
         max_price: req.max_price,
         cooldown_threshold: req.cooldown_threshold,
@@ -491,7 +487,6 @@ fn bot_row_to_json(r: db::BotRow) -> Result<Value, AppError> {
         "strategy": r.strategy,
         "run_mode": r.run_mode,
         "order_usdc": r.order_usdc,
-        "signal_weight": r.signal_weight,
         "min_price": r.min_price,
         "max_price": r.max_price,
         "cooldown_threshold": r.cooldown_threshold,

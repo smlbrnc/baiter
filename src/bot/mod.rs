@@ -28,8 +28,8 @@ pub async fn run() -> Result<(), AppError> {
     ipc::log_line(
         &bot_id.to_string(),
         format!(
-            "Bot started — strategy={:?} mode={:?} order_usdc={} signal_weight={}",
-            ctx.cfg.strategy, ctx.cfg.run_mode, ctx.cfg.order_usdc, ctx.cfg.signal_weight,
+            "Bot started — strategy={:?} mode={:?} order_usdc={}",
+            ctx.cfg.strategy, ctx.cfg.run_mode, ctx.cfg.order_usdc,
         ),
     );
     ipc::emit(&FrontendEvent::BotStarted {

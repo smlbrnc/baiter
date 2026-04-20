@@ -32,13 +32,13 @@ struct TickLogCtx {
     prev_state: HarvestState,
     post_state: HarvestState,
     decision: Decision,
-    signal_score: f64,
-    es: f64,
+    composite: f64,
     snap: StateLogSnapshot,
 }
 
-/// Strateji çağrısı + decision execute. Composite sinyal akışı:
-/// `RTDS window_delta_score + Binance signal_score → effective_composite → sess.tick`.
+/// Strateji çağrısı + decision execute. Sinyal akışı:
+/// `RTDS window_delta + Binance → composite_score → sess.tick`.
+/// Composite hem OpenDual fiyatını hem averaging size çarpanını sürer.
 pub async fn tick(ctx: &Ctx, sess: &mut MarketSession) {
     let binance_score = ctx.signal_state.read().await.signal_score;
     let window_score = if ctx.cfg.strategy_params.rtds_enabled_or_default() {
@@ -56,10 +56,8 @@ pub async fn tick(ctx: &Ctx, sess: &mut MarketSession) {
         binance_score,
         ctx.cfg.strategy_params.window_delta_weight_or_default(),
     );
-    let es = rtds::effective_composite(composite, ctx.cfg.signal_weight);
-    let signal_score = composite;
     let prev_state = sess.harvest_state;
-    let decision = sess.tick(&ctx.cfg, now_ms(), es);
+    let decision = sess.tick(&ctx.cfg, now_ms(), composite);
     let bot_id = ctx.bot_id;
     let post_state = sess.harvest_state;
     let snap = StateLogSnapshot {
@@ -77,8 +75,7 @@ pub async fn tick(ctx: &Ctx, sess: &mut MarketSession) {
         prev_state,
         post_state,
         decision,
-        signal_score,
-        es,
+        composite,
         snap,
     };
 
@@ -118,7 +115,7 @@ pub async fn tick(ctx: &Ctx, sess: &mut MarketSession) {
         log_state_transition(&log_ctx);
         log_cancel_request(&log_ctx.decision, &log_ctx.label);
         log_cancel_responses(&out.canceled, &log_ctx.label);
-        log_placements(&out, log_ctx.signal_score, log_ctx.es, &log_ctx.label);
+        log_placements(&out, log_ctx.composite, &log_ctx.label);
         emit_order_events(log_ctx.bot_id, &out);
     });
 }
@@ -155,14 +152,12 @@ fn log_state_transition(c: &TickLogCtx) {
         prev_state: prev,
         post_state: post,
         decision,
-        signal_score,
-        es,
+        composite,
         label,
         snap,
         ..
     } = c;
-    let signal_score = *signal_score;
-    let es = *es;
+    let composite = *composite;
     let label = label.as_str();
     match (*prev, *post) {
         (HarvestState::Pending, HarvestState::OpenDual { deadline_ms }) => {
@@ -180,7 +175,7 @@ fn log_state_transition(c: &TickLogCtx) {
                 ipc::log_line(
                     label,
                     format!(
-                        "🎯 OpenDual signal_score={signal_score:.2} effective_score={es:.2} → up_bid={up:.2} down_bid={down:.2} deadline={deadline_ms}ms"
+                        "🎯 OpenDual composite={composite:.2} → up_bid={up:.2} down_bid={down:.2} deadline={deadline_ms}ms"
                     ),
                 );
             }
@@ -288,13 +283,13 @@ fn log_cancel_responses(canceled: &[CancelResponse], label: &str) {
     }
 }
 
-fn log_placements(out: &ExecuteOutput, signal_score: f64, es: f64, label: &str) {
+fn log_placements(out: &ExecuteOutput, composite: f64, label: &str) {
     for ex in &out.placed {
         let status = if ex.filled { "matched" } else { "live" };
         ipc::log_line(
             label,
             format!(
-                "✅ orderType={} side={} outcome={} size={} price={} | status={status} | reason={} | signal={signal_score:.2}(eff {es:.2})",
+                "✅ orderType={} side={} outcome={} size={} price={} | status={status} | reason={} | composite={composite:.2}",
                 ex.planned.order_type.as_str(),
                 ex.planned.side.as_str(),
                 ex.planned.outcome.as_str(),

@@ -19,7 +19,6 @@ fn dryrun_cfg() -> BotConfig {
         strategy: Strategy::Harvest,
         run_mode: RunMode::Dryrun,
         order_usdc: 5.0,
-        signal_weight: 0.0,
         min_price: 0.05,
         max_price: 0.95,
         cooldown_threshold: 30_000,
@@ -145,8 +144,7 @@ async fn open_dual_high_signal_skews_by_market_spread() {
     //         no_bid=0.46,  no_ask=0.50  (spread=0.04)
     // delta=+1 → up_bid = yes_ask + spread = 0.56 (agresif taker)
     //            down_bid = no_ask - spread = 0.46 (no_bid seviyesinde, pasif maker)
-    let mut cfg = dryrun_cfg();
-    cfg.signal_weight = 10.0;
+    let cfg = dryrun_cfg();
     let mut sess = session(&cfg);
     sess.yes_best_bid = 0.48;
     sess.yes_best_ask = 0.52;

@@ -183,21 +183,13 @@ export function BotList({
               <p className="text-muted-foreground text-[10px] font-medium tracking-wide uppercase">
                 Settings
               </p>
-              <dl className="grid grid-cols-1 gap-2 @sm:grid-cols-2 @sm:gap-x-4">
+              <dl className="grid grid-cols-1 gap-2">
                 <div className="flex items-baseline justify-between gap-3 sm:block sm:space-y-0">
                   <dt className="text-muted-foreground text-[11px] sm:text-xs">
                     Order (USDC)
                   </dt>
                   <dd className="font-mono text-foreground text-right text-xs font-medium tabular-nums sm:text-left sm:text-sm">
                     ${b.order_usdc.toFixed(2)}
-                  </dd>
-                </div>
-                <div className="flex items-baseline justify-between gap-3 sm:block sm:space-y-0">
-                  <dt className="text-muted-foreground text-[11px] sm:text-xs">
-                    Signal weight
-                  </dt>
-                  <dd className="font-mono text-foreground text-right text-xs font-medium tabular-nums sm:text-left sm:text-sm">
-                    {b.signal_weight}
                   </dd>
                 </div>
               </dl>

@@ -35,7 +35,6 @@ export interface BotRow {
   strategy: Strategy;
   run_mode: RunMode;
   order_usdc: number;
-  signal_weight: number;
   min_price: number;
   max_price: number;
   cooldown_threshold: number;
@@ -259,7 +258,6 @@ export interface CreateBotReq {
   strategy: Strategy;
   run_mode: RunMode;
   order_usdc: number;
-  signal_weight: number;
   min_price: number;
   max_price: number;
   cooldown_threshold: number;
@@ -279,7 +277,6 @@ export interface UpdateBotReq {
   name: string;
   run_mode: RunMode;
   order_usdc: number;
-  signal_weight: number;
   min_price: number;
   max_price: number;
   cooldown_threshold: number;

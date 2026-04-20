@@ -11,9 +11,7 @@
 
 use std::time::Duration;
 
-use baiter_pro::rtds::{
-    self, composite_score, effective_composite, interval_scale, window_delta_score,
-};
+use baiter_pro::rtds::{self, composite_score, interval_scale, window_delta_score};
 use baiter_pro::time::now_ms;
 
 #[tokio::main]
@@ -100,7 +98,6 @@ async fn main() {
         let wd_score = window_delta_score(delta_bps, scale);
         // Demonstration: Binance nötr (5.0) kabul → composite = 0.7*wd + 0.3*5
         let comp = composite_score(wd_score, 5.0, 0.70);
-        let eff = effective_composite(comp, 10.0);
 
         let open_str = match open {
             Some(p) => format!("{p:>10.2}"),
@@ -116,7 +113,7 @@ async fn main() {
         println!(
             "[{conn}] price={current:>10.2} open={open_str} open_ts={open_ts_str:>14} \
              delta={delta_bps:>+7.2}bps wd_score={wd_score:>5.2} composite={comp:>5.2} \
-             eff={eff:>5.2} ticks={tick_count:>3} last_age={age_ms:>5}ms win_start={win_start}"
+             ticks={tick_count:>3} last_age={age_ms:>5}ms win_start={win_start}"
         );
     }
 

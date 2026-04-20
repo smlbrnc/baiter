@@ -109,7 +109,8 @@ impl MarketSession {
         MarketPnL::from_metrics(&self.metrics, self.yes_best_bid, self.no_best_bid)
     }
 
-    /// Tek tick — strateji'ye karar ver. `effective_score` composite sinyal (5.0 = nötr).
+    /// Tek tick — strateji'ye karar ver. Çağıran composite_score'u (5.0 = nötr) doğrudan
+    /// geçer; OpenDual fiyatı ve averaging size çarpanı bu skoru kullanır.
     pub fn tick(&mut self, cfg: &BotConfig, now_ms_v: u64, effective_score: f64) -> Decision {
         match cfg.strategy {
             Strategy::Harvest => {
@@ -125,7 +126,6 @@ impl MarketSession {
                     no_best_ask: self.no_best_ask,
                     api_min_order_size: self.api_min_order_size,
                     order_usdc: cfg.order_usdc,
-                    signal_weight: cfg.signal_weight,
                     effective_score,
                     zone,
                     now_ms: now_ms_v,
@@ -218,7 +218,6 @@ mod tests {
             strategy: Strategy::Harvest,
             run_mode,
             order_usdc: 5.0,
-            signal_weight: 0.0,
             min_price: 0.05,
             max_price: 0.95,
             cooldown_threshold: 30_000,

@@ -219,14 +219,13 @@ export default function MarketDetailPage() {
         <PnLWidget pnl={pnlHistory[pnlHistory.length - 1] ?? null} />
       </div>
 
-      <PriceChart data={ticks} session={sessionRange} signalWeight={bot?.signal_weight ?? 10} />
+      <PriceChart data={ticks} session={sessionRange} />
       <SpreadSignalChart data={ticks} session={sessionRange} />
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2 lg:items-stretch">
         <BinanceSignalPanel
-                  data={ticks}
-                  signalWeight={bot?.signal_weight ?? 10}
-                  strategyParams={bot?.strategy_params ?? null}
-                />
+          data={ticks}
+          strategyParams={bot?.strategy_params ?? null}
+        />
         <AvgSumChart data={pnlHistory} session={sessionRange} />
       </div>
 

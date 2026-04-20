@@ -16,7 +16,6 @@ pub struct BotRow {
     pub strategy: String,
     pub run_mode: String,
     pub order_usdc: f64,
-    pub signal_weight: f64,
     pub min_price: f64,
     pub max_price: f64,
     pub cooldown_threshold: i64,
@@ -46,7 +45,6 @@ impl BotRow {
             strategy,
             run_mode,
             order_usdc: self.order_usdc,
-            signal_weight: self.signal_weight,
             min_price: self.min_price,
             max_price: self.max_price,
             cooldown_threshold: self.cooldown_threshold as u64,
@@ -65,7 +63,6 @@ impl<'r> sqlx::FromRow<'r, sqlx::sqlite::SqliteRow> for BotRow {
             strategy: row.try_get("strategy")?,
             run_mode: row.try_get("run_mode")?,
             order_usdc: row.try_get("order_usdc")?,
-            signal_weight: row.try_get("signal_weight")?,
             min_price: row.try_get("min_price")?,
             max_price: row.try_get("max_price")?,
             cooldown_threshold: row.try_get("cooldown_threshold")?,
@@ -91,17 +88,16 @@ pub async fn insert_bot(pool: &SqlitePool, cfg: &BotConfig) -> Result<i64, AppEr
     let params = serde_json::to_string(&cfg.strategy_params)?;
 
     let row = sqlx::query(
-        "INSERT INTO bots (name, slug_pattern, strategy, run_mode, order_usdc, signal_weight, \
+        "INSERT INTO bots (name, slug_pattern, strategy, run_mode, order_usdc, \
          min_price, max_price, cooldown_threshold, start_offset, strategy_params, \
          state, created_at_ms, updated_at_ms) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'STOPPED', ?, ?) RETURNING id",
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'STOPPED', ?, ?) RETURNING id",
     )
     .bind(&cfg.name)
     .bind(&cfg.slug_pattern)
     .bind(&strategy)
     .bind(&run_mode)
     .bind(cfg.order_usdc)
-    .bind(cfg.signal_weight)
     .bind(cfg.min_price)
     .bind(cfg.max_price)
     .bind(cfg.cooldown_threshold as i64)
@@ -115,7 +111,7 @@ pub async fn insert_bot(pool: &SqlitePool, cfg: &BotConfig) -> Result<i64, AppEr
 }
 
 const SELECT_BOT: &str =
-    "SELECT id, name, slug_pattern, strategy, run_mode, order_usdc, signal_weight, \
+    "SELECT id, name, slug_pattern, strategy, run_mode, order_usdc, \
      min_price, max_price, cooldown_threshold, start_offset, strategy_params, \
      state, last_active_ms, created_at_ms, updated_at_ms FROM bots";
 
@@ -160,7 +156,6 @@ pub struct BotUpdate {
     pub name: String,
     pub run_mode: RunMode,
     pub order_usdc: f64,
-    pub signal_weight: f64,
     pub min_price: f64,
     pub max_price: f64,
     pub cooldown_threshold: u64,
@@ -179,14 +174,13 @@ pub async fn update_bot(pool: &SqlitePool, bot_id: i64, upd: &BotUpdate) -> Resu
 
     sqlx::query(
         "UPDATE bots SET name = ?, run_mode = ?, \
-         order_usdc = ?, signal_weight = ?, min_price = ?, max_price = ?, \
+         order_usdc = ?, min_price = ?, max_price = ?, \
          cooldown_threshold = ?, start_offset = ?, strategy_params = ?, \
          updated_at_ms = ? WHERE id = ?",
     )
     .bind(&upd.name)
     .bind(&run_mode)
     .bind(upd.order_usdc)
-    .bind(upd.signal_weight)
     .bind(upd.min_price)
     .bind(upd.max_price)
     .bind(upd.cooldown_threshold as i64)

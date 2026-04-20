@@ -24,12 +24,13 @@ import {
  *     composite = w_window × window_delta_score + (1−w_window) × binance_score
  *     (w_window = strategy_params.window_delta_weight, default 0.70)
  *
- *   Frontend yalnızca composite'i signal_weight ile ölçekler:
- *     effective_score = 5 + (composite − 5) × (signal_weight / 10)
- *     delta           = (es − 5) / 5   → [−1, +1]
+ *   OpenDual fiyatı ham composite'e bağlıdır:
+ *     delta    = (composite − 5) / 5   → [−1, +1]
+ *     up_bid   = clamp(snap(yes_ask + delta × yes_spread), MIN, MAX)
+ *     down_bid = clamp(snap(no_ask  − delta × no_spread),  MIN, MAX)
  *
- *   up_bid   = clamp(snap(yes_ask + delta × yes_spread), MIN, MAX)
- *   down_bid = clamp(snap(no_ask  − delta × no_spread),  MIN, MAX)
+ *   Averaging size çarpanı (`HarvestContext::signal_multiplier`) da composite'e
+ *   göre tier seçer; ek bir gate yok.
  */
 const TICK = 0.01;
 const MIN_PRICE = 0.05;
@@ -40,21 +41,18 @@ const snap = (p: number) => Math.round(p / TICK) * TICK;
 const clampPrice = (p: number) => Math.min(MAX_PRICE, Math.max(MIN_PRICE, snap(p)));
 
 function dualPrices(
-  signalScore: number,
-  signalWeight: number,
+  composite: number,
   yesBid: number,
   yesAsk: number,
   noBid: number,
   noAsk: number,
 ) {
-  const es = 5 + (signalScore - 5) * (signalWeight / 10);
-  const delta = (es - 5) / 5;
+  const delta = (composite - 5) / 5;
   const yesSpread = Math.max(0, yesAsk - yesBid);
   const noSpread  = Math.max(0, noAsk  - noBid);
   return {
     upBid:   clampPrice(yesAsk + delta * yesSpread),
     downBid: clampPrice(noAsk  - delta * noSpread),
-    es,
     delta,
   };
 }
@@ -65,7 +63,6 @@ const signalSide = (s: number): SignalSide =>
 
 interface Props {
   data: MarketTick[];
-  signalWeight: number;
   strategyParams?: StrategyParams | null;
 }
 
@@ -149,7 +146,7 @@ function PriceRow({
 }
 
 /* ─── Panel ─────────────────────────────────────────────── */
-export function BinanceSignalPanel({ data, signalWeight, strategyParams }: Props) {
+export function BinanceSignalPanel({ data, strategyParams }: Props) {
   const sp = strategyParams ?? {};
   const rtdsEnabled = sp.rtds_enabled ?? STRATEGY_PARAMS_DEFAULTS.rtds_enabled;
   const windowWeight = sp.window_delta_weight ?? STRATEGY_PARAMS_DEFAULTS.window_delta_weight;
@@ -159,9 +156,8 @@ export function BinanceSignalPanel({ data, signalWeight, strategyParams }: Props
     const last = data[data.length - 1]!;
     // signal_score in DB = composite (backend: w×window_delta + (1-w)×binance)
     const composite = last.signal_score;
-    const { upBid, downBid, es, delta } = dualPrices(
+    const { upBid, downBid, delta } = dualPrices(
       composite,
-      signalWeight,
       last.yes_best_bid,
       last.yes_best_ask,
       last.no_best_bid,
@@ -176,12 +172,11 @@ export function BinanceSignalPanel({ data, signalWeight, strategyParams }: Props
       side: signalSide(composite),
       upBid,
       downBid,
-      es,
       delta,
       yesAsk: last.yes_best_ask,
       noAsk:  last.no_best_ask,
     };
-  }, [data, signalWeight]);
+  }, [data]);
 
   const pos = d ? d.bar >= 0 : true;
   const thumbColor = pos ? "#4ade80" : "#f87171";
@@ -245,19 +240,15 @@ export function BinanceSignalPanel({ data, signalWeight, strategyParams }: Props
               </div>
             </div>
 
-            {/* Meta */}
+            {/* Meta — composite + δ (OpenDual fiyatına direkt yansır) */}
             <div className="text-muted-foreground/60 flex items-center justify-between font-mono text-[9px] tabular-nums">
               <span>
                 cmp{" "}
                 <span className="text-muted-foreground">{d.composite.toFixed(2)}</span>
               </span>
               <span>
-                w_sig{" "}
-                <span className="text-muted-foreground">{signalWeight.toFixed(0)}</span>
-              </span>
-              <span>
-                eff{" "}
-                <span className="text-muted-foreground">{d.es.toFixed(2)}</span>
+                δ{" "}
+                <span className="text-muted-foreground">{d.delta.toFixed(2)}</span>
               </span>
             </div>
 

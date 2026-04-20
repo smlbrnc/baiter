@@ -50,11 +50,6 @@ pub fn new_shared_state() -> SharedSignalState {
     Arc::new(RwLock::new(BinanceSignalState::default()))
 }
 
-/// `effective_score = 5 + (signal_score - 5) * (signal_weight / 10)` (§14.3).
-pub fn effective_score(signal_score: f64, signal_weight: f64) -> f64 {
-    5.0 + (signal_score - 5.0) * (signal_weight / 10.0)
-}
-
 /// CVD kayan penceresi market aralığına göre (§14.2).
 fn cvd_window_secs(interval: Interval) -> u64 {
     match interval {
@@ -331,22 +326,6 @@ async fn connect_stream(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn effective_score_zero_weight_returns_neutral() {
-        assert!((effective_score(8.0, 0.0) - 5.0).abs() < 1e-9);
-        assert!((effective_score(2.0, 0.0) - 5.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn effective_score_full_weight_returns_raw() {
-        assert!((effective_score(8.0, 10.0) - 8.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn effective_score_half_weight() {
-        assert!((effective_score(8.0, 5.0) - 6.5).abs() < 1e-9);
-    }
 
     #[test]
     fn signal_computer_warmup() {
