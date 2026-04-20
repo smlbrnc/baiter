@@ -64,6 +64,10 @@ pub struct MarketSession {
     pub max_price: f64,
     /// Averaging cooldown (ms) — strateji ctx'lerine geçirilir.
     pub cooldown_threshold: u64,
+    /// CLOB `GET /fee-rate?token_id=YES` sonucu (basis points). Pencere açılırken
+    /// Live modda bir kez fetch edilir; DryRun'da 0. `LiveExecutor::place`
+    /// `BuildArgs.fee_rate_bps`'e geçirir — server'ın `mbf`'i ile eşleşmezse 400.
+    pub fee_rate_bps: u32,
     /// `📚 Market book ready` logu basıldı mı?
     pub book_ready_logged: bool,
 }
@@ -95,6 +99,7 @@ impl MarketSession {
             min_price: cfg.min_price,
             max_price: cfg.max_price,
             cooldown_threshold: cfg.cooldown_threshold,
+            fee_rate_bps: 0,
             book_ready_logged: false,
         }
     }

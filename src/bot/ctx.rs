@@ -124,6 +124,10 @@ async fn load_and_validate_cfg(pool: &SqlitePool, bot_id: i64) -> Result<BotConf
 }
 
 /// Live modda credentials zorunludur ve `signature_type`/`funder` doğrulanır.
+///
+/// Çözümleme sırası: önce `bot_credentials` (bota özel), yoksa
+/// `global_credentials` (Settings sayfasında kaydedilen, NOT NULL alanlarla
+/// `From` impl'i üzerinden trivial dönüşüm). İkisi de yoksa `MissingCredentials`.
 async fn load_validated_creds(
     pool: &SqlitePool,
     bot_id: i64,
@@ -132,10 +136,20 @@ async fn load_validated_creds(
     if run_mode != RunMode::Live {
         return Ok(None);
     }
-    let c = db::get_credentials(pool, bot_id)
-        .await?
-        .ok_or(AppError::MissingCredentials { bot_id })?;
-    // Polymarket EIP-712: yalnızca 0 (EOA), 1 (POLY_PROXY), 2 (POLY_GNOSIS_SAFE).
+    let c = match db::get_credentials(pool, bot_id).await? {
+        Some(c) => c,
+        None => db::get_global_credentials(pool)
+            .await?
+            .ok_or(AppError::MissingCredentials { bot_id })?
+            .into(),
+    };
+    validate_signature_type(bot_id, &c)?;
+    Ok(Some(c))
+}
+
+/// Polymarket EIP-712: 0 (EOA), 1 (POLY_PROXY), 2 (POLY_GNOSIS_SAFE).
+/// 1|2 için `funder` (proxy/safe adresi) zorunlu — order'da `maker` olarak kullanılır.
+fn validate_signature_type(bot_id: i64, c: &Credentials) -> Result<(), AppError> {
     if !matches!(c.signature_type, 0..=2) {
         return Err(AppError::Config(format!(
             "bot {bot_id}: signature_type {} geçersiz (0|1|2 olmalı)",
@@ -148,7 +162,7 @@ async fn load_validated_creds(
             c.signature_type
         )));
     }
-    Ok(Some(c))
+    Ok(())
 }
 
 /// Credentials varsa Live executor + paylaşımlı `ClobClient` döner; aksi halde

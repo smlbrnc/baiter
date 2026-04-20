@@ -246,14 +246,20 @@ export type FrontendEvent =
       ts_ms: number;
     };
 
-export interface Credentials {
-  poly_address: string;
-  poly_api_key: string;
-  poly_passphrase: string;
-  poly_secret: string;
-  polygon_private_key: string;
+/**
+ * Polymarket kimlik girişi — kullanıcı yalnızca PK + signature_type +
+ * (funder) verir. Backend Polymarket'ten L1 EIP-712 ile
+ * `apiKey/secret/passphrase` türetir ve tam credential'ı saklar.
+ */
+export interface CredentialsInput {
+  /** Polygon EOA private key (`0x...` veya çıplak hex). */
+  private_key: string;
+  /** 0 = EOA, 1 = POLY_PROXY, 2 = POLY_GNOSIS_SAFE. */
   signature_type: number;
+  /** `signature_type ∈ {1,2}` ise zorunlu (proxy/safe adresi). */
   funder?: string | null;
+  /** EIP-712 nonce (Polymarket tek nonce kullanır). Default 0. */
+  nonce?: number;
 }
 
 export interface CreateBotReq {
@@ -267,7 +273,7 @@ export interface CreateBotReq {
   cooldown_threshold: number;
   start_offset: number;
   strategy_params?: StrategyParams;
-  credentials?: Credentials;
+  credentials?: CredentialsInput;
   auto_start?: boolean;
 }
 
@@ -286,7 +292,21 @@ export interface UpdateBotReq {
   cooldown_threshold: number;
   start_offset: number;
   strategy_params?: StrategyParams;
-  credentials?: Credentials;
+  credentials?: CredentialsInput;
+}
+
+/**
+ * GET /api/settings/credentials yanıtı — display only.
+ * Hassas alanlar (PK, L2 secret, apiKey, passphrase) hiçbir zaman
+ * döndürülmez; yalnızca türetilmiş `poly_address`, sig_type, funder
+ * meta'sı ve "kayıt var mı?" durumu döner.
+ */
+export interface GlobalCredentials {
+  poly_address: string | null;
+  signature_type: number;
+  funder: string | null;
+  has_credentials: boolean;
+  updated_at_ms: number | null;
 }
 
 /** `StrategyParams` default'ları (`config::StrategyParams::*_or_default`). */

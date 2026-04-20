@@ -18,11 +18,68 @@ use tokio_stream::wrappers::BroadcastStream;
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::config::{BotConfig, Credentials, StrategyParams};
-use crate::db::{self, BotUpdate};
+use crate::db::{self, BotUpdate, GlobalCredentials};
 use crate::error::AppError;
+use crate::polymarket::auth as polymarket_auth;
 use crate::polymarket::GammaClient;
 use crate::supervisor::{self, AppState};
 use crate::types::{RunMode, Strategy};
+
+/// Frontend, kullanıcıdan yalnızca `(private_key, signature_type, funder?)`
+/// alır; backend Polymarket'ten L1 EIP-712 ile `apiKey/secret/passphrase`
+/// türetip tam `Credentials`'i kurar. Bu sayede UI'da hassas alanların
+/// (PK + L2 secret) ayrı ayrı gezdirilmesine gerek kalmaz.
+#[derive(Debug, Clone, Deserialize)]
+struct CredentialsInput {
+    /// Polygon EOA private key (`0x...` veya çıplak hex). Asla cevap döndürülmez.
+    private_key: String,
+    /// 0 = EOA, 1 = POLY_PROXY, 2 = POLY_GNOSIS_SAFE.
+    signature_type: i32,
+    /// `signature_type ∈ {1,2}` ise zorunlu (proxy/safe adresi).
+    #[serde(default)]
+    funder: Option<String>,
+    /// EIP-712 nonce — Polymarket tek nonce kullanır. Frontend her zaman gönderir.
+    #[serde(default)]
+    nonce: u64,
+}
+
+impl CredentialsInput {
+    /// PK + funder validasyonu, L1 derive çağrısı, tam `Credentials` kurulumu.
+    async fn into_credentials(
+        self,
+        http: &reqwest::Client,
+        clob_base_url: &str,
+    ) -> Result<Credentials, AppError> {
+        let pk = self.private_key.trim();
+        if pk.is_empty() {
+            return Err(AppError::Config("private_key gerekli".into()));
+        }
+        if !(0..=2).contains(&self.signature_type) {
+            return Err(AppError::Config(format!(
+                "signature_type {} desteklenmiyor (0|1|2)",
+                self.signature_type
+            )));
+        }
+        let funder = self.funder.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        if matches!(self.signature_type, 1 | 2) && funder.is_none() {
+            return Err(AppError::Config(format!(
+                "signature_type={} için funder zorunlu",
+                self.signature_type
+            )));
+        }
+        let derived =
+            polymarket_auth::derive_api_key(http, clob_base_url, pk, self.nonce).await?;
+        Ok(Credentials {
+            poly_address: derived.signer_address,
+            poly_api_key: derived.api_key,
+            poly_passphrase: derived.passphrase,
+            poly_secret: derived.secret,
+            polygon_private_key: pk.to_string(),
+            signature_type: self.signature_type,
+            funder,
+        })
+    }
+}
 
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
@@ -44,6 +101,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/api/bots/{id}/sessions/{slug}/trades",
             get(session_trades),
+        )
+        .route(
+            "/api/settings/credentials",
+            get(get_settings_credentials).put(put_settings_credentials),
         )
         .route("/api/events", get(events_sse))
         .layer(
@@ -77,7 +138,7 @@ struct CreateBotReq {
     #[serde(default)]
     strategy_params: StrategyParams,
     #[serde(default)]
-    credentials: Option<Credentials>,
+    credentials: Option<CredentialsInput>,
     #[serde(default)]
     auto_start: bool,
 }
@@ -154,7 +215,9 @@ async fn create_bot(
         strategy_params: req.strategy_params,
     };
     let id = db::insert_bot(&state.pool, &cfg).await?;
-    if let Some(creds) = req.credentials {
+    if let Some(input) = req.credentials {
+        let http = reqwest::Client::new();
+        let creds = input.into_credentials(&http, &state.env.clob_base_url).await?;
         db::upsert_credentials(&state.pool, id, &creds).await?;
     }
     if req.auto_start {
@@ -180,7 +243,7 @@ struct UpdateBotReq {
     #[serde(default)]
     strategy_params: StrategyParams,
     #[serde(default)]
-    credentials: Option<Credentials>,
+    credentials: Option<CredentialsInput>,
 }
 
 async fn update_bot(
@@ -215,7 +278,9 @@ async fn update_bot(
         strategy_params: req.strategy_params,
     };
     db::update_bot(&state.pool, id, &upd).await?;
-    if let Some(creds) = req.credentials {
+    if let Some(input) = req.credentials {
+        let http = reqwest::Client::new();
+        let creds = input.into_credentials(&http, &state.env.clob_base_url).await?;
         db::upsert_credentials(&state.pool, id, &creds).await?;
     }
     let updated = db::get_bot(&state.pool, id)
@@ -451,6 +516,75 @@ async fn session_trades(
         db::trades::trades_for_session(&state.pool, session.session_id, q.since_ms, q.limit)
             .await?;
     Ok(Json(trades))
+}
+
+// Settings — global (singleton) Polymarket kimlik bilgileri.
+//
+// Kullanıcı UI'da yalnızca `(private_key, signature_type, funder?)` girer;
+// PUT backend'de Polymarket'ten L1 EIP-712 ile `apiKey/secret/passphrase`
+// türetir ve tam credential'ı global_credentials tablosuna yazar.
+// GET ise hassas alanları döndürmez — sadece "kaydedildi mi" durumunu ve
+// türetilmiş `poly_address` ile `(signature_type, funder)` meta'sını verir.
+
+/// `GET /api/settings/credentials` cevabı. Hassas alanlar (PK, secret, apiKey,
+/// passphrase) kasıtlı olarak yok — sadece "kayıt var mı?" + display meta.
+///
+/// Kayıt yoksa `has_credentials=false`, diğer alanlar boş/sıfır default.
+#[derive(Debug, Serialize)]
+struct SettingsCredentialsResp {
+    /// L1 imzayı atan EOA adresi. Kayıt yoksa boş string.
+    poly_address: String,
+    signature_type: i32,
+    funder: Option<String>,
+    has_credentials: bool,
+    /// Son güncelleme epoch ms. Kayıt yoksa 0.
+    updated_at_ms: i64,
+}
+
+async fn get_settings_credentials(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<SettingsCredentialsResp>, AppError> {
+    let resp = match db::get_global_credentials(&state.pool).await? {
+        Some(c) => SettingsCredentialsResp {
+            poly_address: c.poly_address,
+            signature_type: c.signature_type,
+            funder: c.funder,
+            has_credentials: true,
+            updated_at_ms: c.updated_at_ms,
+        },
+        None => SettingsCredentialsResp {
+            poly_address: String::new(),
+            signature_type: 0,
+            funder: None,
+            has_credentials: false,
+            updated_at_ms: 0,
+        },
+    };
+    Ok(Json(resp))
+}
+
+async fn put_settings_credentials(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<CredentialsInput>,
+) -> Result<StatusCode, AppError> {
+    let http = reqwest::Client::new();
+    let creds = req.into_credentials(&http, &state.env.clob_base_url).await?;
+    db::upsert_global_credentials(
+        &state.pool,
+        &GlobalCredentials {
+            poly_address: creds.poly_address,
+            poly_api_key: creds.poly_api_key,
+            poly_passphrase: creds.poly_passphrase,
+            poly_secret: creds.poly_secret,
+            polygon_private_key: creds.polygon_private_key,
+            signature_type: creds.signature_type,
+            funder: creds.funder,
+            // upsert overwrite eder (now_ms() yazar); sadece tip için 0 default.
+            updated_at_ms: 0,
+        },
+    )
+    .await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 async fn events_sse(

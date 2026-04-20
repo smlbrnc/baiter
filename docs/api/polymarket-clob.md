@@ -871,14 +871,22 @@ Bir order'ın market making rewards için skoru olup olmadığını döndürür.
 
 ### Send Heartbeat
 
-#### `POST /heartbeat`
-Connection'ı canlı tutar (özellikle long-running session için).
+#### `POST /heartbeats`
+Aktif session'ı canlı tutar. Polymarket bir kullanıcıdan ~10sn içinde
+heartbeat almazsa o kullanıcının **tüm açık emirleri otomatik iptal edilir**
+(market maker / otomatik sistemler için kritik).
+
+> **Path uyarısı:** Endpoint **çoğul** `/heartbeats`'tir; `/heartbeat`
+> (tekil) **404** döner. SDK referansı: `py-clob-client.post_heartbeat`,
+> `polymarket-client-sdk` (Rust) `start_heartbeats`.
 
 ```bash
-curl -X POST "https://clob.polymarket.com/heartbeat" \
+curl -X POST "https://clob.polymarket.com/heartbeats" \
   -H "POLY_ADDRESS: ..." -H "POLY_API_KEY: ..." \
   -H "POLY_PASSPHRASE: ..." -H "POLY_SIGNATURE: ..." -H "POLY_TIMESTAMP: ..."
 ```
+
+**Response:** `{ "status": "ok" }` (200).
 
 ---
 
@@ -1593,7 +1601,7 @@ pub async fn run_market_stream(asset_ids: Vec<String>) -> anyhow::Result<()> {
 7. **Signature type:** Yeni kullanıcılar için `GNOSIS_SAFE` (2). EOA (0) sadece doğrudan Metamask trader'lar için.
 8. **`outcome_prices`, `clob_token_ids` parsing** — String-encoded array, `serde_json::from_str` ile parse et.
 9. **6 ondalık sabit matematik (USDC.e + share):** Zincir / EIP-712 order struct’ında tutarlar genelde **1e6** ölçeklidir. Tipik binary limit order (SDK’sız elle kuruyorsanız — **neg_risk / farklı exchange** için resmi şema ve `polymarket-client-sdk` kaynak koduna bakın): **BUY** için USDC ödeyen taraf ≈ `size * price * 1e6`, outcome alan taraf ≈ `size * 1e6`; **SELL** için verilen share ≈ `size * 1e6`, alınan USDC ≈ `size * price * 1e6`. Yanlış eşleme çoğu zaman zincirde reddedilir veya beklenmeyen ekonomi üretir; üretimde **SDK order builder** tercih edilir.
-10. **Heartbeat:** Long-running session için `POST /heartbeat` periyodik gönder (özellikle market making için kritik).
+10. **Heartbeat:** Long-running session için `POST /heartbeats` (çoğul!) periyodik gönder. ~10sn içinde heartbeat gelmezse Polymarket o kullanıcının tüm açık emirlerini otomatik iptal eder — market making için kritik.
 
 ### Tipik Trade Workflow
 

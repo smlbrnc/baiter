@@ -255,7 +255,7 @@ Kullanıcı yeni bot oluştururken **hangi event/metin (ör. “BTC 15dk”)** v
 
 ### Kimlik ve cüzdan
 
-- **Bot başına (Live):** Polymarket kimlik bilgisi **yalnızca** `bot_credentials` satırından okunur (`src/bot/ctx.rs::load_validated_creds`). Kayıt yoksa `AppError::MissingCredentials`.
+- **Live kimlik çözümleme:** `src/bot/ctx.rs::load_validated_creds` önce `bot_credentials` (bota özel) satırını okur; yoksa `global_credentials` (Settings sayfasında türetilen tek satırlık singleton) fallback'i devreye girer. İkisi de yoksa `AppError::MissingCredentials`.
 - **DryRun:** Credential gerekmez; CLOB çağrıları simülatöre gider.
 - **Çoklu bot:** Her bot için ayrı credential satırı üretimde zorunlu sayılır (aynı anahtarla çoklu süreç çakışması riski).
 
@@ -1643,9 +1643,9 @@ Sistem davranışını değiştiren tüm ayar değerleri **çevre değişkenleri
 | `GAMMA_BASE_URL` | `https://gamma-api.polymarket.com` | Market keşif REST base URL |
 | `CLOB_BASE_URL` | `https://clob.polymarket.com` | CLOB REST base URL; staging için `https://clob-staging.polymarket.com` |
 | `POLYGON_CHAIN_ID` | `137` | EIP-712 domain chain ID (Polygon mainnet) |
-| `POLY_ADDRESS` / `POLY_API_KEY` / … | — | **Bot süreci tarafından okunmaz** (`.env.example` notu / gelecek araçlar). Live kimlik yalnız `bot_credentials`. |
+| `POLY_ADDRESS` / `POLY_API_KEY` / … | — | **Bot süreci tarafından okunmaz**. Live kimlik SQLite'tan: önce `bot_credentials`, yoksa `global_credentials`. |
 
-**Kimlik çözümleme:** `RunMode::Live` → `db::get_credentials` zorunlu; yoksa `AppError::MissingCredentials` (`src/bot/ctx.rs`).
+**Kimlik çözümleme:** `RunMode::Live` → `db::get_credentials(bot_id)` ilk denenir; `None` ise `db::get_global_credentials()` fallback'e düşer; ikisi de boşsa `AppError::MissingCredentials` (`src/bot/ctx.rs`).
 
 **Runtime path override:** Docker, systemd veya farklı deployment senaryolarında `DB_PATH`, `BOT_BINARY`, `HEARTBEAT_DIR` override edilebilir; kod bu path'leri varsayılan yerine environment'tan okur.
 

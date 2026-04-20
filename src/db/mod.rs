@@ -15,6 +15,7 @@ pub mod markets;
 pub mod orders;
 pub mod pnl;
 pub mod sessions;
+pub mod settings;
 pub mod ticks;
 pub mod trades;
 
@@ -30,6 +31,7 @@ pub use sessions::{
     latest_session_for_bot, set_rtds_window_open, update_market_session_meta,
     upsert_market_session, SessionSummary,
 };
+pub use settings::{get_global_credentials, upsert_global_credentials, GlobalCredentials};
 pub use ticks::MarketTick;
 pub use trades::{upsert_trade, TradeRecord};
 

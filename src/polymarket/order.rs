@@ -6,31 +6,34 @@
 //! - **signature_type** 0/1/2: EOA / POLY_PROXY / POLY_GNOSIS_SAFE.
 //!   - 0: `maker == signer == EOA`.
 //!   - 1/2: `signer = EOA`, `maker = funder` (proxy / safe).
+//! - **feeRateBps** marketten markete değişir; CLOB `GET /fee-rate` ile çekilir
+//!   ve `BuildArgs.fee_rate_bps` üzerinden geçirilir. 0 göndermek market'in
+//!   beklediği `mbf`'ten farklı olduğu sürece 400 döner.
 //!
 //! `taker` her zaman `0x0` (public order book).
 
 use std::str::FromStr;
 
-use alloy::primitives::{Address, U256};
+use alloy::primitives::{address, Address, U256};
 use alloy::signers::local::PrivateKeySigner;
 use alloy::signers::Signer;
 use alloy::sol_types::{eip712_domain, SolStruct};
-use rand::Rng;
+use rand::RngExt;
 use serde_json::{json, Value};
 
 use crate::config::Credentials;
 use crate::error::AppError;
-use crate::time::now_secs;
+use crate::time::{now_ms, now_secs};
 use crate::types::Side;
 
 /// USDC + CTF token decimal'ı (her ikisi de 6).
 const TOKEN_DECIMALS: u32 = 6;
 
 /// Polymarket CTF Exchange (standart) verifying_contract — Polygon mainnet.
-const CTF_EXCHANGE: &str = "0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E";
+const CTF_EXCHANGE: Address = address!("0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E");
 
 /// NegRisk CTF Exchange (negRisk markets) verifying_contract — Polygon mainnet.
-const NEG_RISK_CTF_EXCHANGE: &str = "0xC5d563A36AE78145C45a50134d48A1215220f80a";
+const NEG_RISK_CTF_EXCHANGE: Address = address!("0xC5d563A36AE78145C45a50134d48A1215220f80a");
 
 alloy::sol! {
     /// Polymarket CTF Exchange `Order` (EIP-712 typed data).
@@ -62,10 +65,13 @@ pub struct BuildArgs<'a> {
     /// 0 = GTC (süresiz). >0 = GTD unix-saniye.
     pub expiration_secs: u64,
     pub neg_risk: bool,
+    /// Maker fee rate (basis points). CLOB `GET /fee-rate?token_id=...`'den.
+    /// 0 göndermek market'in `mbf`'ine eşit değilse server 400 döner.
+    pub fee_rate_bps: u32,
 }
 
 /// `neg_risk`'e göre verifying_contract adresi.
-pub fn verifying_contract(neg_risk: bool) -> &'static str {
+pub fn verifying_contract(neg_risk: bool) -> Address {
     if neg_risk {
         NEG_RISK_CTF_EXCHANGE
     } else {
@@ -112,7 +118,7 @@ pub fn build_order(args: &BuildArgs<'_>) -> Result<Order, AppError> {
         .map_err(|e| AppError::Auth(format!("token_id parse: {e}")))?;
 
     Ok(Order {
-        salt: random_salt(),
+        salt: order_salt(),
         maker: maker_addr,
         signer: signer_addr,
         taker: Address::ZERO,
@@ -121,7 +127,7 @@ pub fn build_order(args: &BuildArgs<'_>) -> Result<Order, AppError> {
         takerAmount: U256::from(taker_amount),
         expiration: U256::from(args.expiration_secs),
         nonce: U256::ZERO,
-        feeRateBps: U256::ZERO,
+        feeRateBps: U256::from(args.fee_rate_bps),
         side: side_byte,
         signatureType: args.creds.signature_type as u8,
     })
@@ -140,14 +146,11 @@ pub async fn sign_order(
         .parse()
         .map_err(|e| AppError::Auth(format!("private key parse: {e}")))?;
 
-    let verifying = Address::from_str(verifying_contract(neg_risk))
-        .map_err(|e| AppError::Auth(format!("verifying_contract parse: {e}")))?;
-
     let domain = eip712_domain! {
         name: "Polymarket CTF Exchange",
         version: "1",
         chain_id: chain_id,
-        verifying_contract: verifying,
+        verifying_contract: verifying_contract(neg_risk),
     };
 
     let hash = order.eip712_signing_hash(&domain);
@@ -159,13 +162,23 @@ pub async fn sign_order(
 }
 
 /// CLOB `POST /order` body'sinin `order` alanı için JSON serileştirme.
+///
+/// Şema (resmi): [docs.polymarket.com/api-reference/trade/post-a-new-order](https://docs.polymarket.com/api-reference/trade/post-a-new-order).
+/// - `salt` **integer** — küçük (int64'e sığar) — `order_salt()` üretir.
+/// - Adresler **lowercase hex** (`{:#x}`) — py-clob-client paritesi.
+/// - Tutarlar (`makerAmount`/`takerAmount`/`tokenId`/`expiration`/`nonce`/`feeRateBps`) string — uint256 fixed-math.
+/// - `side` "BUY"/"SELL" string, `signatureType` int (0|1|2).
 pub fn order_to_json(order: &Order, signature_hex: &str) -> Value {
     let side_str = if order.side == 0 { "BUY" } else { "SELL" };
+    let salt: u64 = order
+        .salt
+        .try_into()
+        .expect("salt fits in u64 by construction (order_salt)");
     json!({
-        "salt": order.salt.to_string(),
-        "maker": format!("{:?}", order.maker),
-        "signer": format!("{:?}", order.signer),
-        "taker": format!("{:?}", order.taker),
+        "salt": salt,
+        "maker": format!("{:#x}", order.maker),
+        "signer": format!("{:#x}", order.signer),
+        "taker": format!("{:#x}", order.taker),
         "tokenId": order.tokenId.to_string(),
         "makerAmount": order.makerAmount.to_string(),
         "takerAmount": order.takerAmount.to_string(),
@@ -195,10 +208,18 @@ fn signer_address(private_key_hex: &str) -> Result<Address, AppError> {
     Ok(signer.address())
 }
 
-fn random_salt() -> U256 {
-    let mut bytes = [0u8; 32];
-    rand::rng().fill_bytes(&mut bytes);
-    U256::from_be_bytes(bytes)
+/// Polymarket SDK paritesi: küçük, ms-tabanlı, çağrı başına benzersiz salt.
+///
+/// - TS `clob-order-utils`: `Math.round(Math.random() * Date.now())` — int64'e sığar.
+/// - python-order-utils: `round(time.time())`.
+///
+/// 256-bit random salt göndermek Polymarket Go server'ında int64 overflow yapar
+/// (400 Bad Request). Burada `now_ms() ⊗ random()` formülüyle 64-bit'e sığan
+/// yarı-rastgele bir değer üretiyoruz.
+fn order_salt() -> U256 {
+    let now = now_ms();
+    let r: u64 = rand::rng().random_range(0..now.max(1));
+    U256::from(r)
 }
 
 #[cfg(test)]
@@ -220,6 +241,19 @@ mod tests {
         }
     }
 
+    fn args(creds: &Credentials, side: Side) -> BuildArgs<'_> {
+        BuildArgs {
+            creds,
+            token_id: "1",
+            side,
+            size: 10.0,
+            price: 0.50,
+            expiration_secs: 0,
+            neg_risk: false,
+            fee_rate_bps: 30,
+        }
+    }
+
     #[test]
     fn verifying_contract_swaps_on_neg_risk() {
         assert_ne!(verifying_contract(true), verifying_contract(false));
@@ -228,35 +262,18 @@ mod tests {
     #[test]
     fn build_order_buy_uses_usdc_for_maker_amount() {
         let creds = fake_creds();
-        let order = build_order(&BuildArgs {
-            creds: &creds,
-            token_id: "1",
-            side: Side::Buy,
-            size: 10.0,
-            price: 0.50,
-            expiration_secs: 0,
-            neg_risk: false,
-        })
-        .unwrap();
+        let order = build_order(&args(&creds, Side::Buy)).unwrap();
         // 10 * 0.50 = 5 USDC = 5_000_000 (6 decimals).
         assert_eq!(order.makerAmount, U256::from(5_000_000u64));
         assert_eq!(order.takerAmount, U256::from(10_000_000u64));
         assert_eq!(order.side, 0);
+        assert_eq!(order.feeRateBps, U256::from(30u64));
     }
 
     #[test]
     fn build_order_sell_swaps_amounts() {
         let creds = fake_creds();
-        let order = build_order(&BuildArgs {
-            creds: &creds,
-            token_id: "1",
-            side: Side::Sell,
-            size: 10.0,
-            price: 0.50,
-            expiration_secs: 0,
-            neg_risk: false,
-        })
-        .unwrap();
+        let order = build_order(&args(&creds, Side::Sell)).unwrap();
         assert_eq!(order.makerAmount, U256::from(10_000_000u64));
         assert_eq!(order.takerAmount, U256::from(5_000_000u64));
         assert_eq!(order.side, 1);
@@ -265,16 +282,7 @@ mod tests {
     #[tokio::test]
     async fn sign_order_returns_hex_signature() {
         let creds = fake_creds();
-        let order = build_order(&BuildArgs {
-            creds: &creds,
-            token_id: "1",
-            side: Side::Buy,
-            size: 10.0,
-            price: 0.50,
-            expiration_secs: 0,
-            neg_risk: false,
-        })
-        .unwrap();
+        let order = build_order(&args(&creds, Side::Buy)).unwrap();
         let sig = sign_order(&order, &creds, 137, false).await.unwrap();
         assert!(sig.starts_with("0x"));
         assert_eq!(sig.len(), 2 + 65 * 2); // 0x + 65 byte hex
@@ -289,5 +297,36 @@ mod tests {
     fn expiration_gtd_is_now_plus_timeout() {
         let exp = expiration_for("GTD", 60);
         assert!(exp >= now_secs());
+    }
+
+    /// Polymarket OpenAPI: `salt` JSON **integer**, `side` "BUY"/"SELL" string,
+    /// `signatureType` int. Diğer uint256 alanları string. 256-bit random salt
+    /// göndermek Go server'ında int64 overflow yapar — bu testle korunur.
+    /// `feeRateBps` "30" (string) — `BuildArgs.fee_rate_bps` doğru geçiyor mu?
+    #[test]
+    fn order_to_json_matches_openapi_shape() {
+        let creds = fake_creds();
+        let order = build_order(&args(&creds, Side::Buy)).unwrap();
+        let body = order_to_json(&order, "0xdeadbeef");
+        assert!(body["salt"].is_number(), "salt must be JSON number");
+        assert!(body["salt"].as_u64().unwrap() <= i64::MAX as u64);
+        assert_eq!(body["side"], "BUY");
+        assert_eq!(body["signatureType"], 0);
+        assert_eq!(body["feeRateBps"], "30");
+        for k in [
+            "tokenId",
+            "makerAmount",
+            "takerAmount",
+            "expiration",
+            "nonce",
+            "feeRateBps",
+        ] {
+            assert!(body[k].is_string(), "{k} must be JSON string");
+        }
+        // Adresler lowercase hex (py-clob-client paritesi).
+        let maker = body["maker"].as_str().unwrap();
+        assert!(maker.starts_with("0x"));
+        assert_eq!(maker, maker.to_lowercase());
+        assert_eq!(body["signature"], "0xdeadbeef");
     }
 }

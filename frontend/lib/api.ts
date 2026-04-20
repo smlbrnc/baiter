@@ -1,6 +1,8 @@
 import type {
   BotRow,
   CreateBotReq,
+  CredentialsInput,
+  GlobalCredentials,
   LogRow,
   MarketTick,
   PnLSnapshot,
@@ -81,4 +83,14 @@ export const api = {
     req<TradeRow[]>(
       `/bots/${id}/sessions/${slug}/trades?${historyQs(sinceMs, limit)}`,
     ),
+
+  settings: {
+    getCredentials: () =>
+      req<GlobalCredentials>("/settings/credentials"),
+    updateCredentials: (body: CredentialsInput) =>
+      req<void>("/settings/credentials", {
+        method: "PUT",
+        body: JSON.stringify(body),
+      }),
+  },
 };

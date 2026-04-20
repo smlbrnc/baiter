@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import type { LucideIcon } from "lucide-react";
-import { Activity, Bot, Keyboard, LayoutDashboard, Plus } from "lucide-react";
+import { Activity, Bot, Keyboard, LayoutDashboard, Plus, Settings2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const NAV: Array<{
@@ -23,6 +23,12 @@ const NAV: Array<{
     label: "Yeni Bot",
     icon: Plus,
     match: (p) => p.startsWith("/bots/new"),
+  },
+  {
+    href: "/settings",
+    label: "Ayarlar",
+    icon: Settings2,
+    match: (p) => p.startsWith("/settings"),
   },
 ];
 

@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 use tokio::time::{interval as tokio_interval, sleep};
 
 use crate::db;
-use crate::engine::MarketSession;
+use crate::engine::{Executor, MarketSession};
 use crate::error::AppError;
 use crate::ipc::{self, FrontendEvent};
 use crate::polymarket::{run_market_ws, run_user_ws, PolymarketEvent};
@@ -103,6 +103,21 @@ async fn prepare_window(
         no_token_id: no_id.clone(),
     });
 
+    // Live modda CLOB'dan maker fee rate'i çek. Marketten markete değişir
+    // (5dk btc-updown şu an 1000 bps = %10); hardcoded 0 göndermek 400 verir.
+    // DryRun'da gereksiz network turu — atlıyoruz, simülatör fee'siz.
+    let fee_rate_bps = match &ctx.executor {
+        Executor::Live(live) => {
+            let bps = live.client.fetch_fee_rate_bps(&yes_id).await?;
+            ipc::log_line(
+                label,
+                format!("💸 Maker fee rate: {bps} bps ({:.2}%)", bps as f64 / 100.0),
+            );
+            bps
+        }
+        Executor::DryRun(_) => 0,
+    };
+
     Ok(MarketSession {
         yes_token_id: yes_id,
         no_token_id: no_id,
@@ -113,6 +128,7 @@ async fn prepare_window(
         start_ts,
         end_ts,
         market_session_id: session_id,
+        fee_rate_bps,
         ..MarketSession::new(ctx.bot_id, slug.to_slug(), &ctx.cfg)
     })
 }

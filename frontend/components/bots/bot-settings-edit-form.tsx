@@ -1,18 +1,17 @@
 "use client";
 
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 import { CheckCircle2, Save } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import { api } from "@/lib/api";
-import type {
-  BotRow,
-  Credentials,
-  CreateBotReq,
-  UpdateBotReq,
-} from "@/lib/types";
+import type { BotRow, CreateBotReq, UpdateBotReq } from "@/lib/types";
 import { CARD_SHELL_CLASS } from "@/lib/ui-constants";
-import { BotFormCredentialsSection } from "@/components/bots/bot-form-credentials-section";
+import {
+  BotFormCredentialsSection,
+  EMPTY_BOT_CREDS,
+  type BotCredsState,
+} from "@/components/bots/bot-form-credentials-section";
 import {
   BotFormNameField,
   BotFormRunModeField,
@@ -36,25 +35,24 @@ export function BotSettingsEditForm({ bot, onUpdated }: Props) {
 
   const [form, setForm] = useState<CreateBotReq>(() => botToForm(bot));
   const [includeCreds, setIncludeCreds] = useState(false);
-  const [creds, setCreds] = useState<{
-    poly_address: string;
-    poly_api_key: string;
-    poly_passphrase: string;
-    poly_secret: string;
-    polygon_private_key: string;
-    signature_type: 0 | 1 | 2;
-    funder?: string;
-  }>({
-    poly_address: "",
-    poly_api_key: "",
-    poly_passphrase: "",
-    poly_secret: "",
-    polygon_private_key: "",
-    signature_type: 0,
-  });
+  const [creds, setCreds] = useState<BotCredsState>(EMPTY_BOT_CREDS);
   const [submitting, setSubmitting] = useState(false);
   const [savedAt, setSavedAt] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [hasGlobalCreds, setHasGlobalCreds] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void api.settings
+      .getCredentials()
+      .then((data) => {
+        if (!cancelled) setHasGlobalCreds(data.has_credentials);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const onSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -74,22 +72,31 @@ export function BotSettingsEditForm({ bot, onUpdated }: Props) {
       );
       return;
     }
-    if (form.run_mode === "live" && !includeCreds && !hasExistingLiveCreds(bot)) {
-      // Mevcut credentials varlığından emin değiliz; yine de kullanıcıya uyarı.
+    if (
+      form.run_mode === "live" &&
+      !includeCreds &&
+      !hasGlobalCreds &&
+      !hasExistingLiveCreds(bot)
+    ) {
       setError(
-        "Live moda geçiyorsan Polymarket kimlik bilgilerini de gir.",
+        "Live moda geçmek için Ayarlar'da global kimlik kaydet veya bu bot için ayrı kimlik gir.",
       );
       return;
     }
-    if (
-      includeCreds &&
-      (creds.signature_type === 1 || creds.signature_type === 2) &&
-      !creds.funder?.trim()
-    ) {
-      setError(
-        `signature_type=${creds.signature_type} için FUNDER (proxy/safe) adresi zorunludur.`,
-      );
-      return;
+    if (includeCreds) {
+      if (!creds.private_key.trim()) {
+        setError("Bota özel kimlik için private key gerekli.");
+        return;
+      }
+      if (
+        (creds.signature_type === 1 || creds.signature_type === 2) &&
+        !creds.funder.trim()
+      ) {
+        setError(
+          `signature_type=${creds.signature_type} için FUNDER (proxy/safe) adresi zorunludur.`,
+        );
+        return;
+      }
     }
     setSubmitting(true);
     try {
@@ -105,11 +112,14 @@ export function BotSettingsEditForm({ bot, onUpdated }: Props) {
         strategy_params: form.strategy_params,
       };
       if (includeCreds) {
-        const credsBody: Credentials = {
-          ...creds,
-          funder: creds.funder?.trim() || null,
+        const requiresFunder =
+          creds.signature_type === 1 || creds.signature_type === 2;
+        body.credentials = {
+          private_key: creds.private_key.trim(),
+          signature_type: creds.signature_type,
+          funder: requiresFunder ? creds.funder.trim() : null,
+          nonce: Number.isFinite(creds.nonce) ? creds.nonce : 0,
         };
-        body.credentials = credsBody;
       }
       const updated = await api.updateBot(bot.id, body);
       setSavedAt(Date.now());

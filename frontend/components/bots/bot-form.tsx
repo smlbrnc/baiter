@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useCallback, useState } from "react";
+import { FormEvent, useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Separator } from "@/components/ui/separator";
 import { api } from "@/lib/api";
@@ -12,7 +12,11 @@ import {
   DEFAULT_MARKET,
   defaultBotDisplayName,
 } from "@/components/bots/bot-form-constants";
-import { BotFormCredentialsSection } from "@/components/bots/bot-form-credentials-section";
+import {
+  BotFormCredentialsSection,
+  EMPTY_BOT_CREDS,
+  type BotCredsState,
+} from "@/components/bots/bot-form-credentials-section";
 import { BotFormHeader } from "@/components/bots/bot-form-header";
 import { BotFormMarketSection } from "@/components/bots/bot-form-market-section";
 import { BotFormSettingsSection } from "@/components/bots/bot-form-settings-section";
@@ -56,23 +60,22 @@ export function BotForm() {
   };
 
   const [includeCreds, setIncludeCreds] = useState(false);
-  const [creds, setCreds] = useState<{
-    poly_address: string;
-    poly_api_key: string;
-    poly_passphrase: string;
-    poly_secret: string;
-    polygon_private_key: string;
-    signature_type: 0 | 1 | 2;
-    funder?: string;
-  }>({
-    poly_address: "",
-    poly_api_key: "",
-    poly_passphrase: "",
-    poly_secret: "",
-    polygon_private_key: "",
-    signature_type: 0,
-  });
+  const [creds, setCreds] = useState<BotCredsState>(EMPTY_BOT_CREDS);
   const [submitting, setSubmitting] = useState(false);
+  const [hasGlobalCreds, setHasGlobalCreds] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    void api.settings
+      .getCredentials()
+      .then((data) => {
+        if (!cancelled) setHasGlobalCreds(data.has_credentials);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const heroAssetMeta = ASSETS.find((a) => a.id === asset) ?? ASSETS[0];
   const heroIntervalMeta =
@@ -95,21 +98,26 @@ export function BotForm() {
       );
       return;
     }
-    if (form.run_mode === "live" && !includeCreds) {
+    if (form.run_mode === "live" && !includeCreds && !hasGlobalCreds) {
       window.alert(
-        "Live mod için Polymarket kimlik bilgileri (signature_type + private key) zorunludur.",
+        "Live mod için Ayarlar'da global kimlik kaydet veya bu bot için ayrı kimlik gir.",
       );
       return;
     }
-    if (
-      includeCreds &&
-      (creds.signature_type === 1 || creds.signature_type === 2) &&
-      !creds.funder?.trim()
-    ) {
-      window.alert(
-        `signature_type=${creds.signature_type} için FUNDER (proxy/safe) adresi zorunludur.`,
-      );
-      return;
+    if (includeCreds) {
+      if (!creds.private_key.trim()) {
+        window.alert("Bota özel kimlik için private key gerekli.");
+        return;
+      }
+      if (
+        (creds.signature_type === 1 || creds.signature_type === 2) &&
+        !creds.funder.trim()
+      ) {
+        window.alert(
+          `signature_type=${creds.signature_type} için FUNDER (proxy/safe) adresi zorunludur.`,
+        );
+        return;
+      }
     }
     setSubmitting(true);
     try {
@@ -128,9 +136,13 @@ export function BotForm() {
         cooldown_threshold: cooldown,
       };
       if (includeCreds) {
+        const requiresFunder =
+          creds.signature_type === 1 || creds.signature_type === 2;
         body.credentials = {
-          ...creds,
-          funder: creds.funder?.trim() || null,
+          private_key: creds.private_key.trim(),
+          signature_type: creds.signature_type,
+          funder: requiresFunder ? creds.funder.trim() : null,
+          nonce: Number.isFinite(creds.nonce) ? creds.nonce : 0,
         };
       }
       const { id } = await api.createBot(body);

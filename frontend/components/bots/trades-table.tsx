@@ -50,9 +50,14 @@ export function TradesTable({
   });
 
   const { up, down } = useMemo(() => {
+    // `upsert_trade` aynı trade_id için status değişince ts_ms'i de günceller;
+    // delta-poll (ts_ms > lastTs) aynı kaydı tekrar getirebilir. Map ile son
+    // sürümü tut → React `key={t.trade_id}` çakışması önlenir.
+    const latest = new Map<string, TradeRow>();
+    for (const t of trades) latest.set(t.trade_id, t);
     const u: TradeRow[] = [];
     const d: TradeRow[] = [];
-    for (const t of trades) {
+    for (const t of latest.values()) {
       const dir = normalizeOutcome(t.outcome);
       if (dir === "UP") u.push(t);
       else if (dir === "DOWN") d.push(t);
