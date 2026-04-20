@@ -32,6 +32,9 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const profitLockPct =
     params.harvest_profit_lock_pct ??
     STRATEGY_PARAMS_DEFAULTS.harvest_profit_lock_pct;
+  const lookaheadSecs =
+    params.signal_lookahead_secs ??
+    STRATEGY_PARAMS_DEFAULTS.signal_lookahead_secs;
 
   return (
     <div className="space-y-3">
@@ -51,23 +54,42 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
           tooltip="Açıkken bot, tek bir bağlantı üzerinden Chainlink BTC/ETH/SOL/XRP fiyat akışını dinler ve pencere boyunca biriken yön bilgisini composite skora yansıtır. Kapalıyken window skoru sabit 5.0 (nötr) kalır; composite doğal olarak Binance sinyaline düşer. Default: açık."
         />
 
-        <Field
-          label="Window delta ağırlığı"
-          tooltip="Composite skoru = w·window_delta_score + (1−w)·binance_score. 0.70 → window_delta dominant; 0.00 → yalnız Binance; 1.00 → yalnız RTDS. RTDS kapalı ya da feed kopuk ise window skoru 5.0 (nötr) döner ve composite Binance ağırlığına kayar."
-          hint="0.00 – 1.00 (default 0.70). 0 = yalnız Binance, 1 = yalnız RTDS."
-        >
-          <Input
-            type="number"
-            step="0.05"
-            min="0"
-            max="1"
-            value={windowWeight}
-            onChange={(e) =>
-              patch({ window_delta_weight: Number(e.target.value) })
-            }
-            disabled={!rtdsEnabled}
-          />
-        </Field>
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <Field
+            label="Window delta ağırlığı"
+            tooltip="Composite skoru = w·window_delta_score + (1−w)·binance_score. 0.70 → window_delta dominant; 0.00 → yalnız Binance; 1.00 → yalnız RTDS. RTDS kapalı ya da feed kopuk ise window skoru 5.0 (nötr) döner ve composite Binance ağırlığına kayar."
+            hint="0.00 – 1.00 (default 0.70)."
+          >
+            <Input
+              type="number"
+              step="0.05"
+              min="0"
+              max="1"
+              value={windowWeight}
+              onChange={(e) =>
+                patch({ window_delta_weight: Number(e.target.value) })
+              }
+              disabled={!rtdsEnabled}
+            />
+          </Field>
+          <Field
+            label="Sinyal ileri-bakış (sn)"
+            tooltip="RTDS son 5 sn'lik fiyat hızını (bps/sn) bu süreyle çarpıp window_delta'ya ekler → sinyal projeksiyonu. 3 sn → 'şu anki trend 3 sn sonra ne olur' tahmini. 0 → projeksiyon kapalı (eski davranış); kümülatif window_delta tek başına kullanılır. Yüksek değer (>5) gürültüye duyarlılık artırır."
+            hint="0 – 30 sn (default 3.0). RTDS kapalı ise etkisiz."
+          >
+            <Input
+              type="number"
+              step="0.5"
+              min="0"
+              max="30"
+              value={lookaheadSecs}
+              onChange={(e) =>
+                patch({ signal_lookahead_secs: Number(e.target.value) })
+              }
+              disabled={!rtdsEnabled}
+            />
+          </Field>
+        </div>
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field

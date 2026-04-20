@@ -116,6 +116,11 @@ pub struct StrategyParams {
     /// Composite ağırlığı — window_delta payı. `None` → default `0.70`.
     #[serde(default)]
     pub window_delta_weight: Option<f64>,
+    /// Sinyal projeksiyon ileri-bakış süresi (sn). `tick.rs` velocity'yi bu
+    /// süreyle çarpıp `window_delta_bps`'e ekler → 3-4 sn ileri tahmin.
+    /// `None` → default `3.0`. `0.0` → projeksiyon kapalı (eski davranış).
+    #[serde(default)]
+    pub signal_lookahead_secs: Option<f64>,
 }
 
 impl StrategyParams {
@@ -138,6 +143,11 @@ impl StrategyParams {
     /// `[0, 1]`'e clamp; default `0.70`.
     pub fn window_delta_weight_or_default(&self) -> f64 {
         self.window_delta_weight.unwrap_or(0.70).clamp(0.0, 1.0)
+    }
+
+    /// `[0, 30]` sn'ye clamp; default `3.0`. Üst sınır spike koruması.
+    pub fn signal_lookahead_secs_or_default(&self) -> f64 {
+        self.signal_lookahead_secs.unwrap_or(3.0).clamp(0.0, 30.0)
     }
 }
 

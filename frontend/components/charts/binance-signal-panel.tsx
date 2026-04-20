@@ -18,16 +18,17 @@ import {
   SIGNAL_PAIR_HEADER_CLASS,
 } from "@/lib/chart-utils";
 
-/* ─── Signal formula (mirrors src/bot/tick.rs + src/rtds.rs) ───
+/* ─── Signal formula (mirrors src/bot/tick.rs + src/strategy/harvest/dual.rs) ───
  *
  *   DB'deki signal_score = composite (backend hesaplar):
  *     composite = w_window × window_delta_score + (1−w_window) × binance_score
  *     (w_window = strategy_params.window_delta_weight, default 0.70)
  *
- *   OpenDual fiyatı ham composite'e bağlıdır:
- *     delta    = (composite − 5) / 5   → [−1, +1]
- *     up_bid   = clamp(snap(yes_ask + delta × yes_spread), MIN, MAX)
- *     down_bid = clamp(snap(no_ask  − delta × no_spread),  MIN, MAX)
+ *   OpenDual fiyatı composite'i doğrudan hedef olasılığa eşler (orderbook bağımsız):
+ *     up_price   = clamp(snap(composite / 10),       MIN, MAX)
+ *     down_price = clamp(snap(1 − composite / 10),   MIN, MAX)
+ *
+ *   composite=5 → 0.50/0.50; composite=10 → 0.95/0.05; composite=0 → 0.05/0.95.
  *
  *   Averaging size çarpanı (`HarvestContext::signal_multiplier`) da composite'e
  *   göre tier seçer; ek bir gate yok.
@@ -40,20 +41,13 @@ const NEUTRAL_EPS = 0.15;
 const snap = (p: number) => Math.round(p / TICK) * TICK;
 const clampPrice = (p: number) => Math.min(MAX_PRICE, Math.max(MIN_PRICE, snap(p)));
 
-function dualPrices(
-  composite: number,
-  yesBid: number,
-  yesAsk: number,
-  noBid: number,
-  noAsk: number,
-) {
-  const delta = (composite - 5) / 5;
-  const yesSpread = Math.max(0, yesAsk - yesBid);
-  const noSpread  = Math.max(0, noAsk  - noBid);
+function dualPrices(composite: number) {
+  const upRaw = Math.max(0, Math.min(1, composite / 10));
+  const downRaw = 1 - upRaw;
   return {
-    upBid:   clampPrice(yesAsk + delta * yesSpread),
-    downBid: clampPrice(noAsk  - delta * noSpread),
-    delta,
+    upBid: clampPrice(upRaw),
+    downBid: clampPrice(downRaw),
+    delta: (composite - 5) / 5,
   };
 }
 
@@ -156,13 +150,7 @@ export function BinanceSignalPanel({ data, strategyParams }: Props) {
     const last = data[data.length - 1]!;
     // signal_score in DB = composite (backend: w×window_delta + (1-w)×binance)
     const composite = last.signal_score;
-    const { upBid, downBid, delta } = dualPrices(
-      composite,
-      last.yes_best_bid,
-      last.yes_best_ask,
-      last.no_best_bid,
-      last.no_best_ask,
-    );
+    const { upBid, downBid, delta } = dualPrices(composite);
     const bar = (composite - 5) * 2; // [0,10] → [-10,+10] for display
     const pct = Math.max(0, Math.min(100, ((bar + 10) / 20) * 100));
     return {

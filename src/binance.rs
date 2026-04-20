@@ -81,6 +81,9 @@ struct TradeEntry {
 
 const NEUTRAL: f64 = 5.0;
 const MAX_STATS: usize = 300;
+/// OFI history yeterince dolduktan sonra absolute kalibrasyon devreye girer.
+/// 30 trade'lik kısa warmup yeterli (CVD window'ı şekillendirmek için).
+const WARMUP_TRADES: usize = 30;
 const HAWKES_KAPPA: f64 = 0.1;
 
 /// aggTrade işleyici — sliding-window CVD + BSI + OFI + signal_score (§14.2-14.3).
@@ -161,26 +164,38 @@ impl SignalComputer {
 
     pub fn snapshot(&self) -> (f64, f64, f64, f64, bool) {
         let ofi = self.current_ofi();
-        let warmup = self.ofi_history.len() < MAX_STATS;
+        // Warmup: cvd window dolana kadar (yaklaşık MAX_WARMUP_TRADES) nötr ver.
+        let warmup = self.ofi_history.len() < WARMUP_TRADES;
         let signal_score = if warmup {
             NEUTRAL
         } else {
-            let n = self.ofi_history.len() as f64;
-            let mean = self.ofi_history.iter().sum::<f64>() / n;
-            let var = self
-                .ofi_history
-                .iter()
-                .map(|x| (x - mean).powi(2))
-                .sum::<f64>()
-                / n;
-            let std = var.sqrt().max(1e-9);
-            let z = ((ofi - mean) / std).clamp(-3.0, 3.0);
-            // z ∈ [-3, 3] → [0, 10] (0.1 step).
-            ((z + 3.0) / 6.0 * 100.0).round() / 10.0
+            ofi_to_score(ofi)
         };
 
         (self.cvd, self.bsi, ofi, signal_score, warmup)
     }
+}
+
+/// OFI (`[−1, +1]`) → `[0, 10]` skoru (5.0 = nötr) — **absolute** kalibrasyon.
+/// z-score normalize'ın aksine sürekli yönlü hareket sırasında saturasyona
+/// gider, mean-revert etmez. Tier'lar BTC/ETH futures aggTrade dağılımına göre
+/// kalibre edildi (|ofi|≈0.30 = "güçlü", |ofi|≈0.50 = "ekstrem").
+#[inline]
+pub fn ofi_to_score(ofi: f64) -> f64 {
+    let d = ofi.abs().min(1.0);
+    let sgn = ofi.signum();
+    let score_delta = if d < 0.05 {
+        d * 8.0 // 0.00..0.05 → 0.00..0.40
+    } else if d < 0.15 {
+        0.40 + (d - 0.05) * 11.0 // 0.05..0.15 → 0.40..1.50
+    } else if d < 0.30 {
+        1.50 + (d - 0.15) * 10.0 // 0.15..0.30 → 1.50..3.00
+    } else if d < 0.50 {
+        3.00 + (d - 0.30) * 9.0 // 0.30..0.50 → 3.00..4.80
+    } else {
+        4.80 + (d - 0.50) * 0.4 // 0.50..1.00 → 4.80..5.00
+    };
+    (5.0 + sgn * score_delta).clamp(0.0, 10.0)
 }
 
 /// aggTrade frame'leri arasında izin verilen maksimum sessizlik.
@@ -346,5 +361,44 @@ mod tests {
         // 62s sonra ilk trade düşmeli (cutoff = 62000 - 60000 = 2000).
         c.ingest(62_000, 1.0, true);
         assert!((c.cvd - (5.0 - 10.0 + 1.0)).abs() < 1e-9);
+    }
+
+    #[test]
+    fn ofi_to_score_neutral() {
+        assert!((ofi_to_score(0.0) - 5.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn ofi_to_score_symmetry() {
+        for ofi in [0.05, 0.15, 0.30, 0.50, 0.80, 1.0] {
+            let up = ofi_to_score(ofi);
+            let down = ofi_to_score(-ofi);
+            assert!(
+                (up + down - 10.0).abs() < 1e-9,
+                "ofi={ofi} up={up} down={down}"
+            );
+        }
+    }
+
+    #[test]
+    fn ofi_to_score_monotonic_and_calibrated() {
+        // Sürekli artan OFI → sürekli artan skor (z-score'un mean-revert sorunu yok)
+        let s_noise = ofi_to_score(0.05);
+        let s_weak = ofi_to_score(0.15);
+        let s_mod = ofi_to_score(0.30);
+        let s_strong = ofi_to_score(0.50);
+        let s_extreme = ofi_to_score(0.80);
+        assert!(s_noise < s_weak && s_weak < s_mod && s_mod < s_strong && s_strong < s_extreme);
+        // Hedef kalibrasyon (BTC futures aggTrade için):
+        assert!((s_weak - 6.5).abs() < 0.05, "ofi=0.15 → {s_weak}");
+        assert!((s_mod - 8.0).abs() < 0.05, "ofi=0.30 → {s_mod}");
+        assert!((s_strong - 9.8).abs() < 0.05, "ofi=0.50 → {s_strong}");
+    }
+
+    #[test]
+    fn ofi_to_score_clamps_at_extremes() {
+        assert!((ofi_to_score(1.0) - 10.0).abs() < 1e-9);
+        assert!(ofi_to_score(-1.0).abs() < 1e-9);
+        assert!((ofi_to_score(2.0) - 10.0).abs() < 1e-9);
     }
 }

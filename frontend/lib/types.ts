@@ -26,6 +26,12 @@ export interface StrategyParams {
    * Default 0.70 (window_delta dominant).
    */
   window_delta_weight?: number | null;
+  /**
+   * Sinyal projeksiyon ileri-bakış süresi (sn, 0–30). Backend RTDS velocity'yi
+   * bu süreyle çarpıp window_delta'ya ekler → 3-4 sn ileri tahmin.
+   * Default 3.0. 0 → projeksiyon kapalı (eski davranış).
+   */
+  signal_lookahead_secs?: number | null;
 }
 
 export interface BotRow {
@@ -291,4 +297,5 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   harvest_profit_lock_pct: 0.02,
   rtds_enabled: true,
   window_delta_weight: 0.7,
+  signal_lookahead_secs: 3.0,
 } as const;

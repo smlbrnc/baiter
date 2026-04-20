@@ -1,6 +1,7 @@
 //! Polymarket RTDS Chainlink feed — `Arc<RwLock<RtdsState>>` ile strateji
 //! katmanına anlık fiyat + window delta sinyali yayar.
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -12,6 +13,10 @@ use tokio_tungstenite::tungstenite::{Message, Utf8Bytes};
 
 use crate::ipc;
 use crate::time::now_ms;
+
+/// Velocity hesabında kullanılan kayar pencere (ms). Polymarket Chainlink RTDS
+/// genellikle saniyede 1-2 tick yayar; 5 sn'lik pencere ~5-10 sample biriktirir.
+const VELOCITY_WINDOW_MS: u64 = 5_000;
 
 /// RTDS task'ının strateji katmanına açtığı anlık durum.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -26,10 +31,18 @@ pub struct RtdsState {
     pub window_start_ts_ms: u64,
     /// `(current − open) / open × 10_000` (bps); open `None` iken `0.0`.
     pub window_delta_bps: f64,
+    /// Son `VELOCITY_WINDOW_MS` üzerindeki ortalama fiyat değişim hızı (bps/sn).
+    /// `tick.rs` bu değeri `lookahead_secs` ile çarpıp `window_delta_bps`'e
+    /// ekleyerek 3-4 sn ileriyi tahmin eder (linear extrapolation).
+    pub recent_velocity_bps_per_sec: f64,
     /// Son tick unix ms — stale/zombie bağlantı tespiti için.
     pub last_tick_ms: u64,
     /// WS bağlantısı aktif mi.
     pub connected: bool,
+    /// Velocity hesabı için (ts_ms, price) kayar penceresi. `Serialize` skip
+    /// (transient state).
+    #[serde(skip)]
+    pub recent_samples: VecDeque<(u64, f64)>,
 }
 
 pub type SharedRtdsState = Arc<RwLock<RtdsState>>;
@@ -39,13 +52,29 @@ pub fn new_shared_state() -> SharedRtdsState {
 }
 
 /// Pencere sınırını güncelle — `window_open_*` ve `delta` sıfırlanır;
-/// `current_price`/`last_tick_ms` canlı feed için korunur.
+/// `current_price`/`last_tick_ms`/velocity bilgileri canlı feed için korunur.
 pub async fn reset_window(state: &SharedRtdsState, window_start_ts_ms: u64) {
     let mut s = state.write().await;
     s.window_open_price = None;
     s.window_open_ts_ms = None;
     s.window_start_ts_ms = window_start_ts_ms;
     s.window_delta_bps = 0.0;
+}
+
+/// `recent_samples`'tan velocity hesapla (en eski → en yeni). Yetersiz örnek
+/// (tek nokta veya 0.5 sn altı) → 0.0.
+fn compute_velocity(samples: &VecDeque<(u64, f64)>) -> f64 {
+    if samples.len() < 2 {
+        return 0.0;
+    }
+    let (t0, p0) = *samples.front().expect("non-empty");
+    let (t1, p1) = *samples.back().expect("non-empty");
+    let dt_sec = (t1.saturating_sub(t0)) as f64 / 1000.0;
+    if dt_sec < 0.5 || p0 <= 0.0 {
+        return 0.0;
+    }
+    let bps_change = (p1 - p0) / p0 * 10_000.0;
+    bps_change / dt_sec
 }
 
 /// `window_delta_bps` → `[0, 10]` skor (`5.0` = nötr). Piecewise linear; 5-dk
@@ -292,7 +321,24 @@ async fn handle_text(text: &str, symbol: &str, state: &SharedRtdsState, label: &
     let mut s = state.write().await;
     let was_none = s.window_open_price.is_none();
     s.current_price = payload.value;
-    s.last_tick_ms = now_ms();
+    let now = now_ms();
+    s.last_tick_ms = now;
+
+    // Velocity penceresi: ts kendine ait → payload.timestamp tercih, yoksa now.
+    let sample_ts = if payload.timestamp > 0 {
+        payload.timestamp
+    } else {
+        now
+    };
+    s.recent_samples.push_back((sample_ts, payload.value));
+    let cutoff = sample_ts.saturating_sub(VELOCITY_WINDOW_MS);
+    while let Some(&(t, _)) = s.recent_samples.front() {
+        if t >= cutoff {
+            break;
+        }
+        s.recent_samples.pop_front();
+    }
+    s.recent_velocity_bps_per_sec = compute_velocity(&s.recent_samples);
 
     if was_none && payload.timestamp > 0 && payload.timestamp >= s.window_start_ts_ms {
         s.window_open_price = Some(payload.value);
@@ -375,6 +421,41 @@ mod tests {
     fn window_delta_score_clamps() {
         assert!((window_delta_score(1e6, 1.0) - 10.0).abs() < 1e-6);
         assert!(window_delta_score(-1e6, 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn compute_velocity_empty_or_single() {
+        let mut q: VecDeque<(u64, f64)> = VecDeque::new();
+        assert_eq!(compute_velocity(&q), 0.0);
+        q.push_back((1_000, 67_000.0));
+        assert_eq!(compute_velocity(&q), 0.0);
+    }
+
+    #[test]
+    fn compute_velocity_linear_rise() {
+        // 5 sn'de 67_000 → 67_067 = +10 bps → 2 bps/sn
+        let mut q: VecDeque<(u64, f64)> = VecDeque::new();
+        q.push_back((0, 67_000.0));
+        q.push_back((5_000, 67_067.0));
+        let v = compute_velocity(&q);
+        assert!((v - 2.0).abs() < 0.01, "v={v}");
+    }
+
+    #[test]
+    fn compute_velocity_negative() {
+        let mut q: VecDeque<(u64, f64)> = VecDeque::new();
+        q.push_back((0, 67_000.0));
+        q.push_back((4_000, 66_960.0)); // -40 → -5.97 bps in 4s = -1.49 bps/s
+        let v = compute_velocity(&q);
+        assert!(v < 0.0 && (v + 1.49).abs() < 0.05, "v={v}");
+    }
+
+    #[test]
+    fn compute_velocity_too_short_returns_zero() {
+        let mut q: VecDeque<(u64, f64)> = VecDeque::new();
+        q.push_back((0, 67_000.0));
+        q.push_back((100, 67_010.0)); // 0.1 sn → atla
+        assert_eq!(compute_velocity(&q), 0.0);
     }
 
     #[test]

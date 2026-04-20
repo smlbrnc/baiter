@@ -37,37 +37,26 @@ import {
 } from "@/lib/chart-utils";
 
 /* ─── Bot bid formula (mirrors src/strategy/harvest/dual.rs) ─────────────
- *   delta = (composite − 5) / 5    → [−1, +1]
- *   (composite = backend signal_score; ham composite skor)
+ *   composite = backend signal_score (RTDS + Binance harmanı; 5 = nötr)
  *
- *   yes_spread = max(0, yes_ask − yes_bid)   ← Polymarket WS anlık spread
- *   no_spread  = max(0, no_ask  − no_bid)
- *   upBotBid   = clamp(snap(yes_ask + delta × yes_spread), MIN, MAX)
- *   downBotBid = clamp(snap(no_ask  − delta × no_spread),  MIN, MAX)
+ *   Doğrudan olasılık eşlemesi (orderbook bağımsız):
+ *     up_price   = clamp(snap(composite / 10),       MIN, MAX)
+ *     down_price = clamp(snap(1 − composite / 10),   MIN, MAX)
  *
- *   - delta=0 (nötr): up=yes_ask, down=no_ask → ikisi de taker eşiğinde.
- *   - delta=+1: up agresif taker, down pasif maker (no_bid).
- *   - delta=−1: up pasif maker (yes_bid), down agresif taker.
- *   - 1−up simetrisi YOK; her taraf bağımsız.
+ *   composite=5 → 0.50/0.50; composite=10 → 0.95/0.05; composite=0 → 0.05/0.95.
+ *   1 − up = down simetrisi (clamp sınırları dışında bozulabilir).
  */
 const TICK = 0.01;
 const MIN_PRICE = 0.05;
 const MAX_PRICE = 0.95;
 const snap = (p: number) => Math.round(p / TICK) * TICK;
 const clampPrice = (p: number) => Math.min(MAX_PRICE, Math.max(MIN_PRICE, snap(p)));
-function botBids(
-  composite: number,
-  yesBid: number,
-  yesAsk: number,
-  noBid: number,
-  noAsk: number,
-) {
-  const delta = (composite - 5) / 5;
-  const yesSpread = Math.max(0, yesAsk - yesBid);
-  const noSpread  = Math.max(0, noAsk  - noBid);
+function botBids(composite: number) {
+  const upRaw = Math.max(0, Math.min(1, composite / 10));
+  const downRaw = 1 - upRaw;
   return {
-    upBotBid:   clampPrice(yesAsk + delta * yesSpread),
-    downBotBid: clampPrice(noAsk  - delta * noSpread),
+    upBotBid: clampPrice(upRaw),
+    downBotBid: clampPrice(downRaw),
   };
 }
 
@@ -105,13 +94,7 @@ function toRows(ticks: MarketTick[]): Row[] {
   const out: Row[] = [];
   for (const tk of ticks) {
     const t = Math.floor(tk.ts_ms / 1000);
-    const { upBotBid, downBotBid } = botBids(
-      tk.signal_score,
-      tk.yes_best_bid,
-      tk.yes_best_ask,
-      tk.no_best_bid,
-      tk.no_best_ask,
-    );
+    const { upBotBid, downBotBid } = botBids(tk.signal_score);
     const row: Row = {
       t,
       yesBid: tk.yes_best_bid,

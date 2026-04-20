@@ -6,33 +6,29 @@ use crate::types::Outcome;
 use super::cancel_ids;
 use super::state::{HarvestContext, HarvestState};
 
-const SCORE_NEUTRAL: f64 = 5.0;
-const INV_NEUTRAL: f64 = 1.0 / SCORE_NEUTRAL;
-
-/// OpenDual bid'leri. `yes` ve `no` parametreleri `(bid, ask)` tuple'ı.
+/// OpenDual bid'leri — composite skoru doğrudan hedef olasılığa eşler.
+/// Orderbook'tan bağımsız, tamamen sinyale göre fiyatlandırma.
 ///
-/// - `δ = (effective_score − 5) / 5 ∈ [−1, +1]`
-/// - `up_bid   = clamp(snap(yes_ask + δ · (yes_ask − yes_bid)), min, max)`
-/// - `down_bid = clamp(snap(no_ask  − δ · (no_ask  − no_bid)),  min, max)`
+/// - `up_price   = clamp(snap(composite / 10),       min, max)`
+/// - `down_price = clamp(snap(1 − composite / 10),   min, max)`
 ///
-/// δ=0 → ikisi de ask'ta (taker eşiği). δ=±1 → bir taraf agresif taker, diğer pasif maker.
+/// composite=5 (nötr) → 0.50/0.50.
+/// composite=10 (full UP) → 0.95/0.05 (clamp ile sınırlı).
+/// composite=0 (full DOWN) → 0.05/0.95.
+///
+/// Sonuç: market fiyatına göre kayma değil, sinyalin söylediği "olasılık" kadar bid.
+/// Sinyal yönünde fiyat market'in ötesindeyse taker (anında dolar);
+/// karşı yönde fiyat market'in altındaysa pasif (sinyal doğrulanırsa dolar).
 #[inline]
 pub fn dual_prices(
     effective_score: f64,
-    yes: (f64, f64),
-    no: (f64, f64),
     tick_size: f64,
     min_price: f64,
     max_price: f64,
 ) -> (f64, f64) {
-    let (yes_bid, yes_ask) = yes;
-    let (no_bid, no_ask) = no;
     let inv_tick = tick_size.recip();
-    let delta = (effective_score - SCORE_NEUTRAL) * INV_NEUTRAL;
-    let yes_spread = (yes_ask - yes_bid).max(0.0);
-    let no_spread = (no_ask - no_bid).max(0.0);
-    let up_raw = yes_ask + delta * yes_spread;
-    let down_raw = no_ask - delta * no_spread;
+    let up_raw = (effective_score / 10.0).clamp(0.0, 1.0);
+    let down_raw = 1.0 - up_raw;
     let up = ((up_raw * inv_tick).round() * tick_size).clamp(min_price, max_price);
     let down = ((down_raw * inv_tick).round() * tick_size).clamp(min_price, max_price);
     (up, down)
@@ -46,8 +42,6 @@ pub fn open_dual(ctx: &HarvestContext) -> (HarvestState, Decision) {
 
     let (up_bid, down_bid) = dual_prices(
         ctx.effective_score,
-        (ctx.yes_best_bid, ctx.yes_best_ask),
-        (ctx.no_best_bid, ctx.no_best_ask),
         ctx.tick_size,
         ctx.min_price,
         ctx.max_price,

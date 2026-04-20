@@ -37,17 +37,19 @@ struct TickLogCtx {
 }
 
 /// Strateji çağrısı + decision execute. Sinyal akışı:
-/// `RTDS window_delta + Binance → composite_score → sess.tick`.
+/// `RTDS (window_delta + lookahead × velocity) + Binance(absolute OFI)
+///   → composite_score → sess.tick`.
 /// Composite hem OpenDual fiyatını hem averaging size çarpanını sürer.
 pub async fn tick(ctx: &Ctx, sess: &mut MarketSession) {
     let binance_score = ctx.signal_state.read().await.signal_score;
     let window_score = if ctx.cfg.strategy_params.rtds_enabled_or_default() {
         let rtds_snap = ctx.rtds_state.read().await;
         let interval_secs = sess.end_ts.saturating_sub(sess.start_ts);
-        rtds::window_delta_score(
-            rtds_snap.window_delta_bps,
-            rtds::interval_scale(interval_secs),
-        )
+        // Linear extrapolation: 3 sn sonraki bps ≈ kümülatif + velocity × dt.
+        let lookahead = ctx.cfg.strategy_params.signal_lookahead_secs_or_default();
+        let projected_bps =
+            rtds_snap.window_delta_bps + rtds_snap.recent_velocity_bps_per_sec * lookahead;
+        rtds::window_delta_score(projected_bps, rtds::interval_scale(interval_secs))
     } else {
         5.0
     };
@@ -172,10 +174,11 @@ fn log_state_transition(c: &TickLogCtx) {
                     .find(|o| matches!(o.outcome, Outcome::Down))
                     .map(|o| o.price)
                     .unwrap_or(0.0);
+                let delta = (composite - 5.0) / 5.0;
                 ipc::log_line(
                     label,
                     format!(
-                        "🎯 OpenDual composite={composite:.2} → up_bid={up:.2} down_bid={down:.2} deadline={deadline_ms}ms"
+                        "🎯 OpenDual composite={composite:.2} δ={delta:+.3} → up_bid={up:.2} down_bid={down:.2} deadline={deadline_ms}ms"
                     ),
                 );
             }
@@ -284,12 +287,15 @@ fn log_cancel_responses(canceled: &[CancelResponse], label: &str) {
 }
 
 fn log_placements(out: &ExecuteOutput, composite: f64, label: &str) {
+    // δ = (composite − 5) / 5 ∈ [−1, +1] — OpenDual fiyatının ask'ten kaymasını üreten faktör.
+    // Averaging emirlerinde fiyat best_bid'den verilir; δ bilgi amaçlıdır (size_mult'i besler).
+    let delta = (composite - 5.0) / 5.0;
     for ex in &out.placed {
         let status = if ex.filled { "matched" } else { "live" };
         ipc::log_line(
             label,
             format!(
-                "✅ orderType={} side={} outcome={} size={} price={} | status={status} | reason={} | composite={composite:.2}",
+                "✅ orderType={} side={} outcome={} size={} price={} | status={status} | reason={} | composite={composite:.2} δ={delta:+.3}",
                 ex.planned.order_type.as_str(),
                 ex.planned.side.as_str(),
                 ex.planned.outcome.as_str(),

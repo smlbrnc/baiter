@@ -139,11 +139,9 @@ async fn stop_trade_zone_blocks_new_orders() {
 }
 
 #[tokio::test]
-async fn open_dual_high_signal_skews_by_market_spread() {
-    // Market: yes_bid=0.48, yes_ask=0.52 (spread=0.04)
-    //         no_bid=0.46,  no_ask=0.50  (spread=0.04)
-    // delta=+1 → up_bid = yes_ask + spread = 0.56 (agresif taker)
-    //            down_bid = no_ask - spread = 0.46 (no_bid seviyesinde, pasif maker)
+async fn open_dual_signal_drives_price_directly() {
+    // Yeni formül: composite=10 → up=clamp(1.00)=0.95, down=clamp(0.00)=0.05.
+    // Orderbook'tan bağımsız — book ne olursa olsun aynı fiyat çıkar.
     let cfg = dryrun_cfg();
     let mut sess = session(&cfg);
     sess.yes_best_bid = 0.48;
@@ -155,8 +153,8 @@ async fn open_dual_high_signal_skews_by_market_spread() {
         baiter_pro::strategy::Decision::PlaceOrders(orders) => {
             let up = orders.iter().find(|o| o.outcome == Outcome::Up).unwrap();
             let down = orders.iter().find(|o| o.outcome == Outcome::Down).unwrap();
-            assert!((up.price - 0.56).abs() < 1e-9, "up_bid={}", up.price);
-            assert!((down.price - 0.46).abs() < 1e-9, "down_bid={}", down.price);
+            assert!((up.price - 0.95).abs() < 1e-9, "up_bid={}", up.price);
+            assert!((down.price - 0.05).abs() < 1e-9, "down_bid={}", down.price);
         }
         _ => panic!("expected PlaceOrders"),
     }
