@@ -1,15 +1,15 @@
-//! Harvest stratejisinin DryRun ucuna uçtan uca akış testi.
+//! Harvest v2 DryRun entegrasyon testleri.
 //!
-//! Mock market + fake WS event stream → Harvest FSM → Simulator → PnL hesabı.
+//! Mock market + Simulator fill pipeline → Harvest FSM state transitions.
 
 use baiter_pro::config::{BotConfig, StrategyParams};
-use baiter_pro::engine::{execute, Executor, MarketSession, Simulator};
+use baiter_pro::engine::{execute, simulate_passive_fills, Executor, MarketSession, Simulator};
 use baiter_pro::strategy::harvest::HarvestState;
-use baiter_pro::strategy::OpenOrder;
+use baiter_pro::strategy::{Decision, OpenOrder};
 use baiter_pro::time::now_ms;
+use baiter_pro::types::{Outcome, RunMode, Side, Strategy};
 
-const COOLDOWN_THRESHOLD: u64 = 30_000;
-use baiter_pro::types::{Outcome, RunMode, Strategy};
+const COOLDOWN: u64 = 30_000;
 
 fn dryrun_cfg() -> BotConfig {
     BotConfig {
@@ -21,12 +21,9 @@ fn dryrun_cfg() -> BotConfig {
         order_usdc: 5.0,
         min_price: 0.05,
         max_price: 0.95,
-        cooldown_threshold: 30_000,
+        cooldown_threshold: COOLDOWN,
         start_offset: 0,
-        strategy_params: StrategyParams {
-            harvest_dual_timeout: Some(5_000),
-            ..Default::default()
-        },
+        strategy_params: StrategyParams::default(),
     }
 }
 
@@ -40,308 +37,288 @@ fn session(cfg: &BotConfig) -> MarketSession {
     s.end_ts = s.start_ts + 300;
     s.yes_best_bid = 0.50;
     s.yes_best_ask = 0.50;
-    s.no_best_bid = 0.50;
-    s.no_best_ask = 0.50;
+    s.no_best_bid = 0.48;
+    s.no_best_ask = 0.48;
     s
 }
 
 #[tokio::test]
-async fn open_dual_fills_both_legs_transitions_to_double_leg() {
+async fn harvest_v2_open_pair_places_opener_and_hedge() {
     let cfg = dryrun_cfg();
     let mut sess = session(&cfg);
     let exec = Executor::DryRun(Simulator);
 
-    let dec = sess.tick(&cfg, now_ms(), 5.0);
-    let filled = execute(&mut sess, &exec, dec).await.unwrap();
-    assert_eq!(filled.placed.len(), 2, "OpenDual iki emir gönderilmeli");
-    assert!(matches!(sess.harvest_state, HarvestState::OpenDual { .. }));
-    assert!(filled.placed.iter().all(|e| e.filled));
+    let dec = sess.tick(&cfg, now_ms(), 5.0, true);
+    let out = execute(&mut sess, &exec, dec).await.unwrap();
+    assert_eq!(out.placed.len(), 2, "OpenPair opener + hedge");
+    assert_eq!(sess.harvest_state, HarvestState::OpenPair);
+    assert!(
+        out.placed
+            .iter()
+            .any(|e| e.planned.reason.starts_with("harvest_v2:open:"))
+    );
+    assert!(
+        out.placed
+            .iter()
+            .any(|e| e.planned.reason.starts_with("harvest_v2:hedge:"))
+    );
+}
+
+#[tokio::test]
+async fn harvest_v2_open_pair_both_fill_transitions_to_pair_complete() {
+    let cfg = dryrun_cfg();
+    let mut sess = session(&cfg);
+    let exec = Executor::DryRun(Simulator);
+
+    let dec = sess.tick(&cfg, now_ms(), 5.0, true);
+    let _ = execute(&mut sess, &exec, dec).await.unwrap();
     assert!(sess.metrics.shares_yes > 0.0 && sess.metrics.shares_no > 0.0);
 
-    let dec = sess.tick(&cfg, now_ms(), 5.0);
+    let dec = sess.tick(&cfg, now_ms(), 5.0, true);
     let _ = execute(&mut sess, &exec, dec).await.unwrap();
-    assert_eq!(sess.harvest_state, HarvestState::DoubleLeg);
+    assert_eq!(sess.harvest_state, HarvestState::PairComplete);
 
-    let pnl = sess.pnl();
-    let expected = 10.0 - (0.50 * 10.0 * 2.0 + 0.50 * 10.0 * 0.0002 * 2.0);
-    assert!(
-        (pnl.pnl_if_up - expected).abs() < 1e-6,
-        "pnl_if_up={} expected={}",
-        pnl.pnl_if_up,
-        expected
-    );
-    assert!((pnl.pnl_if_down - expected).abs() < 1e-6);
-}
-
-#[tokio::test]
-async fn double_leg_no_averaging_until_price_falls() {
-    // Dual fill → DoubleLeg. Price aynı kaldığında averaging tetiklenmemeli.
-    let cfg = dryrun_cfg();
-    let mut sess = session(&cfg);
-    let exec = Executor::DryRun(Simulator);
-
-    let dec = sess.tick(&cfg, now_ms(), 5.0);
-    execute(&mut sess, &exec, dec).await.unwrap();
-    let dec = sess.tick(&cfg, now_ms(), 5.0);
-    execute(&mut sess, &exec, dec).await.unwrap();
-    assert_eq!(sess.harvest_state, HarvestState::DoubleLeg);
-
-    sess.no_best_ask = 0.55;
-    sess.yes_best_bid = 0.50; // last_fill_price_yes = 0.50; best_bid = 0.50 → price_fell=false
-    let dec = sess.tick(&cfg, now_ms(), 5.0);
-    let filled = execute(&mut sess, &exec, dec).await.unwrap();
-    assert!(filled.placed.is_empty(), "averaging tetiklememeli");
-    assert_eq!(sess.harvest_state, HarvestState::DoubleLeg);
-}
-
-#[tokio::test]
-async fn dryrun_and_live_share_same_decision_pipeline() {
-    let mut cfg_live = dryrun_cfg();
-    cfg_live.run_mode = RunMode::Live;
-    let mut cfg_dry = dryrun_cfg();
-    cfg_dry.run_mode = RunMode::Dryrun;
-
-    let mut s_live = session(&cfg_live);
-    let mut s_dry = session(&cfg_dry);
-
-    let ts = now_ms();
-    let d_live = s_live.tick(&cfg_live, ts, 5.0);
-    let d_dry = s_dry.tick(&cfg_dry, ts, 5.0);
-
-    match (d_live, d_dry) {
-        (
-            baiter_pro::strategy::Decision::PlaceOrders(a),
-            baiter_pro::strategy::Decision::PlaceOrders(b),
-        ) => {
-            assert_eq!(a.len(), b.len());
-            for (oa, ob) in a.iter().zip(b.iter()) {
-                assert_eq!(oa.outcome, ob.outcome);
-                assert!((oa.price - ob.price).abs() < 1e-9);
-                assert!((oa.size - ob.size).abs() < 1e-9);
-            }
-        }
-        _ => panic!("both modes should produce PlaceOrders at T=0"),
-    }
-}
-
-#[tokio::test]
-async fn stop_trade_zone_blocks_new_orders() {
-    let cfg = dryrun_cfg();
-    let mut sess = session(&cfg);
-    let now = now_ms() / 1000;
-    sess.start_ts = now.saturating_sub(297);
-    sess.end_ts = now + 3;
-    let exec = Executor::DryRun(Simulator);
-
-    let dec = sess.tick(&cfg, now_ms(), 5.0);
-    let filled = execute(&mut sess, &exec, dec).await.unwrap();
-    assert!(filled.placed.is_empty(), "StopTrade bölgesinde yeni emir olmamalı");
-}
-
-#[tokio::test]
-async fn open_dual_signal_drives_price_directly() {
-    // Yeni formül: composite=10 → up=clamp(1.00)=0.95, down=clamp(0.00)=0.05.
-    // Orderbook'tan bağımsız — book ne olursa olsun aynı fiyat çıkar.
-    let cfg = dryrun_cfg();
-    let mut sess = session(&cfg);
-    sess.yes_best_bid = 0.48;
-    sess.yes_best_ask = 0.52;
-    sess.no_best_bid = 0.46;
-    sess.no_best_ask = 0.50;
-    let dec = sess.tick(&cfg, now_ms(), 10.0);
-    match dec {
-        baiter_pro::strategy::Decision::PlaceOrders(orders) => {
-            let up = orders.iter().find(|o| o.outcome == Outcome::Up).unwrap();
-            let down = orders.iter().find(|o| o.outcome == Outcome::Down).unwrap();
-            assert!((up.price - 0.95).abs() < 1e-9, "up_bid={}", up.price);
-            assert!((down.price - 0.05).abs() < 1e-9, "down_bid={}", down.price);
-        }
-        _ => panic!("expected PlaceOrders"),
-    }
-}
-
-#[tokio::test]
-async fn open_dual_skipped_when_book_quotes_missing() {
-    let cfg = dryrun_cfg();
-    let mut sess = session(&cfg);
-    sess.yes_best_bid = 0.0;
-    sess.no_best_bid = 0.0;
-    let dec = sess.tick(&cfg, now_ms(), 5.0);
-    assert!(matches!(dec, baiter_pro::strategy::Decision::NoOp));
-    assert_eq!(sess.harvest_state, HarvestState::Pending);
-}
-
-#[tokio::test]
-async fn passive_fills_match_when_book_crosses() {
-    // Ask'ı max_price (0.95) üstüne çek → bid'ler max_price'a clamp olur, ikisi de
-    // ask'ın altında kalır (maker). Ardından yes_ask düşürülünce UP fill olur.
-    let cfg = dryrun_cfg();
-    let mut sess = session(&cfg);
-    sess.yes_best_ask = 0.99;
-    sess.no_best_ask = 0.99;
-    let exec = Executor::DryRun(Simulator);
-
-    let dec = sess.tick(&cfg, now_ms(), 5.0);
-    let out = execute(&mut sess, &exec, dec).await.unwrap();
-    assert!(out.placed.iter().all(|e| !e.filled));
-    assert_eq!(sess.open_orders.len(), 2);
-
-    sess.yes_best_ask = 0.50;
-    let filled = baiter_pro::engine::simulate_passive_fills(&mut sess);
-    assert_eq!(filled.len(), 1, "yalnız UP tarafı doldu");
-    assert_eq!(filled[0].planned.outcome, Outcome::Up);
-    assert!((filled[0].fill_price.unwrap() - 0.50).abs() < 1e-9);
-    assert_eq!(sess.open_orders.len(), 1, "DOWN tarafı hâlâ live");
-    assert!(sess.metrics.shares_yes > 0.0);
-}
-
-#[tokio::test]
-async fn open_dual_timeout_no_fill_reopens() {
-    // Ask'ı max_price üstüne çek → bid'ler clamp ile ask altında kalır → fill olmaz.
-    let cfg = dryrun_cfg();
-    let mut sess = session(&cfg);
-    sess.yes_best_ask = 0.99;
-    sess.no_best_ask = 0.99;
-    let exec = Executor::DryRun(Simulator);
-
-    let t0 = now_ms();
-    let dec = sess.tick(&cfg, t0, 5.0);
-    let out = execute(&mut sess, &exec, dec).await.unwrap();
-    assert_eq!(out.placed.len(), 2);
-    assert!(out.placed.iter().all(|e| !e.filled));
-    assert!(matches!(sess.harvest_state, HarvestState::OpenDual { .. }));
-    assert_eq!(sess.open_orders.len(), 2);
-
-    let t1 = t0 + 6_000;
-    let dec = sess.tick(&cfg, t1, 5.0);
-    let out = execute(&mut sess, &exec, dec).await.unwrap();
-    assert_eq!(sess.harvest_state, HarvestState::Pending);
-    assert_eq!(out.canceled.len(), 2);
-    assert_eq!(sess.open_orders.len(), 0, "open_orders temizlenmiş olmalı");
-}
-
-#[tokio::test]
-async fn single_leg_branch_when_only_yes_fills_in_book() {
-    let cfg = dryrun_cfg();
-    let mut sess = session(&cfg);
-    sess.metrics.ingest_fill(Outcome::Up, 0.55, 10.0, 0.0);
-    let t0 = now_ms();
-    sess.harvest_state = HarvestState::OpenDual { deadline_ms: t0 };
-    sess.open_orders.push(OpenOrder {
-        id: "no_open".into(),
-        outcome: Outcome::Down,
-        side: baiter_pro::types::Side::Buy,
-        price: 0.50,
-        size: 10.0,
-        reason: "harvest:open_dual:no".into(),
-        placed_at_ms: t0,
-    });
-
-    let dec = sess.tick(&cfg, t0 + 1, 5.0);
-    assert!(
-        matches!(
-            sess.harvest_state,
-            HarvestState::SingleLeg {
-                filled_side: Outcome::Up,
-                ..
-            }
-        ),
-        "yalnız YES dolmuş + timeout → SingleLeg{{Up}}"
-    );
-    matches!(dec, baiter_pro::strategy::Decision::CancelOrders(_));
-}
-
-#[tokio::test]
-async fn averaging_fires_when_price_falls_after_cooldown() {
-    let cfg = dryrun_cfg();
-    let mut sess = session(&cfg);
-    sess.metrics.ingest_fill(Outcome::Up, 0.50, 10.0, 0.0); // last_fill_price_yes=0.50
-    sess.harvest_state = HarvestState::SingleLeg {
-        filled_side: Outcome::Up,
-        entered_at_ms: 0,
-    };
-    sess.last_averaging_ms = 0;
-    sess.yes_best_bid = 0.45;
-    sess.no_best_ask = 0.55;
-
-    let dec = sess.tick(&cfg, COOLDOWN_THRESHOLD + 1, 5.0);
-    match dec {
-        baiter_pro::strategy::Decision::PlaceOrders(orders) => {
-            assert_eq!(orders.len(), 1);
-            assert_eq!(orders[0].outcome, Outcome::Up);
-            assert!((orders[0].price - 0.45).abs() < 1e-9);
-        }
-        _ => panic!("expected averaging GTC"),
-    }
-}
-
-#[tokio::test]
-async fn dryrun_dual_then_double_leg_to_done() {
-    // Senaryo:
-    // 1) Pending → OpenDual: dual fill (her iki taraf 0.50).
-    // 2) DoubleLeg: avg_yes=0.50, avg_no=0.50, avg_sum=1.00.
-    // 3) Manuel olarak avg değerlerini düşürmek için ek fill ingest et:
-    //    YES'e 0.45×10 ekle → avg_yes=0.475; NO'ya 0.45×10 ekle → avg_no=0.475.
-    //    avg_sum=0.95 ≤ 0.98 → Done + NoOp.
-    let cfg = dryrun_cfg();
-    let mut sess = session(&cfg);
-    let exec = Executor::DryRun(Simulator);
-
-    // 1) Pending → OpenDual + dual fill
-    let dec = sess.tick(&cfg, now_ms(), 5.0);
+    let dec = sess.tick(&cfg, now_ms(), 5.0, true);
     let _ = execute(&mut sess, &exec, dec).await.unwrap();
-    let dec = sess.tick(&cfg, now_ms(), 5.0);
-    let _ = execute(&mut sess, &exec, dec).await.unwrap();
-    assert_eq!(sess.harvest_state, HarvestState::DoubleLeg);
-
-    // 2) Avg'leri düşürmek için averaging fill simüle et.
-    sess.metrics.ingest_fill(Outcome::Up, 0.45, 10.0, 0.0);
-    sess.metrics.ingest_fill(Outcome::Down, 0.45, 10.0, 0.0);
-    let avg_sum = sess.metrics.avg_yes + sess.metrics.avg_no;
-    assert!(avg_sum < 0.98, "avg_sum={avg_sum} eşik altına inmiş olmalı");
-
-    // 3) DoubleLeg ProfitLock → Done.
-    let dec = sess.tick(&cfg, now_ms() + 10, 5.0);
-    assert!(matches!(dec, baiter_pro::strategy::Decision::NoOp));
     assert_eq!(sess.harvest_state, HarvestState::Done);
 }
 
 #[tokio::test]
-async fn dryrun_double_leg_avg_sum_ok_with_imbalance_emits_close_gtc() {
-    // 1) Pending → OpenDual: dual fill 10/10 @ 0.50 → DoubleLeg.
-    // 2) YES'e ek 10 fill @ 0.45 (averaging simülasyonu) → shares_yes=20,
-    //    avg_yes=0.475, avg_no=0.50, avg_sum=0.975 ≤ 0.98, imbalance=+10.
-    // 3) Tick: avg_sum_ok + imbalance>api_min → eksik=Down GTC size=10.
+async fn harvest_v2_open_pair_single_leg_fill_becomes_position_open() {
     let cfg = dryrun_cfg();
     let mut sess = session(&cfg);
+    // yes_ask=0.50 → Up taker fill. no_ask yüksek → hedge live (maker) kalır.
+    sess.no_best_ask = 0.95;
     let exec = Executor::DryRun(Simulator);
 
-    let dec = sess.tick(&cfg, now_ms(), 5.0);
-    let _ = execute(&mut sess, &exec, dec).await.unwrap();
-    let dec = sess.tick(&cfg, now_ms(), 5.0);
-    let _ = execute(&mut sess, &exec, dec).await.unwrap();
-    assert_eq!(sess.harvest_state, HarvestState::DoubleLeg);
+    let dec = sess.tick(&cfg, now_ms(), 5.0, true);
+    let out = execute(&mut sess, &exec, dec).await.unwrap();
+    assert_eq!(out.placed.len(), 2);
+    let filled: Vec<_> = out.placed.iter().filter(|e| e.filled).collect();
+    assert_eq!(filled.len(), 1);
+    assert_eq!(filled[0].planned.outcome, Outcome::Up);
+    assert_eq!(sess.open_orders.len(), 1, "hedge live kalmalı");
+    assert_eq!(sess.harvest_state, HarvestState::OpenPair);
 
-    sess.metrics.ingest_fill(Outcome::Up, 0.45, 10.0, 0.0);
-    let avg_sum = sess.metrics.avg_yes + sess.metrics.avg_no;
-    assert!(avg_sum <= 0.98, "avg_sum={avg_sum}");
-    assert!((sess.metrics.imbalance - 10.0).abs() < 1e-9);
-
-    // last_averaging_ms cooldown bypass: ts'i ileri al.
-    let t = now_ms() + COOLDOWN_THRESHOLD + 1_000;
-    let dec = sess.tick(&cfg, t, 5.0);
-    match dec {
-        baiter_pro::strategy::Decision::PlaceOrders(orders) => {
-            assert_eq!(orders.len(), 1);
-            assert_eq!(orders[0].outcome, Outcome::Down);
-            assert!(
-                (orders[0].size - 10.0).abs() < 1e-9,
-                "size={}",
-                orders[0].size
-            );
-            assert!((orders[0].price - 0.50).abs() < 1e-9);
+    let dec = sess.tick(&cfg, now_ms() + 1, 5.0, true);
+    let _ = execute(&mut sess, &exec, dec).await.unwrap();
+    assert_eq!(
+        sess.harvest_state,
+        HarvestState::PositionOpen {
+            filled_side: Outcome::Up
         }
-        other => panic!("expected single Down PlaceOrders, got {:?}", other),
+    );
+}
+
+#[tokio::test]
+async fn harvest_v2_stop_trade_cancels_all_open_orders() {
+    let cfg = dryrun_cfg();
+    let mut sess = session(&cfg);
+    // Elle PositionOpen senaryosu kur: shares_yes fill + hedge kitapta.
+    sess.metrics
+        .ingest_fill(Outcome::Up, 0.50, 10.0, 0.0);
+    sess.harvest_state = HarvestState::PositionOpen {
+        filled_side: Outcome::Up,
+    };
+    sess.open_orders.push(OpenOrder {
+        id: "hedge-1".into(),
+        outcome: Outcome::Down,
+        side: Side::Buy,
+        price: 0.48,
+        size: 10.0,
+        reason: "harvest_v2:hedge:down".into(),
+        placed_at_ms: now_ms(),
+    });
+    // StopTrade zone'a sok.
+    let now = now_ms() / 1000;
+    sess.start_ts = now.saturating_sub(297);
+    sess.end_ts = now + 3;
+
+    let exec = Executor::DryRun(Simulator);
+    let dec = sess.tick(&cfg, now_ms(), 5.0, true);
+    let out = execute(&mut sess, &exec, dec).await.unwrap();
+    assert_eq!(sess.harvest_state, HarvestState::Done);
+    assert_eq!(out.canceled.len(), 1);
+    assert!(sess.open_orders.is_empty());
+}
+
+#[tokio::test]
+async fn harvest_v2_normal_trade_avg_down_places_bid_when_ask_below_avg() {
+    let cfg = dryrun_cfg();
+    let mut sess = session(&cfg);
+    // Manuel PositionOpen: shares_yes=10 @ 0.50, hedge kitapta @ 0.48.
+    sess.metrics
+        .ingest_fill(Outcome::Up, 0.50, 10.0, 0.0);
+    sess.harvest_state = HarvestState::PositionOpen {
+        filled_side: Outcome::Up,
+    };
+    sess.open_orders.push(OpenOrder {
+        id: "hedge-1".into(),
+        outcome: Outcome::Down,
+        side: Side::Buy,
+        price: 0.48,
+        size: 10.0,
+        reason: "harvest_v2:hedge:down".into(),
+        placed_at_ms: 0,
+    });
+    sess.yes_best_bid = 0.46;
+    sess.yes_best_ask = 0.47;
+    sess.last_averaging_ms = 0;
+
+    let t = now_ms() + COOLDOWN + 1_000;
+    let dec = sess.tick(&cfg, t, 5.0, true);
+    let orders = match dec {
+        Decision::PlaceOrders(o) => o,
+        other => panic!("expected PlaceOrders, got {:?}", other),
+    };
+    assert_eq!(orders.len(), 1);
+    assert_eq!(orders[0].outcome, Outcome::Up);
+    assert!(orders[0].reason.starts_with("harvest_v2:avg_down:"));
+    assert!((orders[0].price - 0.46).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn harvest_v2_agg_trade_pyramid_same_side_with_signal() {
+    let cfg = dryrun_cfg();
+    let mut sess = session(&cfg);
+    sess.metrics
+        .ingest_fill(Outcome::Up, 0.55, 10.0, 0.0);
+    sess.harvest_state = HarvestState::PositionOpen {
+        filled_side: Outcome::Up,
+    };
+    sess.open_orders.push(OpenOrder {
+        id: "hedge-1".into(),
+        outcome: Outcome::Down,
+        side: Side::Buy,
+        price: 0.43,
+        size: 10.0,
+        reason: "harvest_v2:hedge:down".into(),
+        placed_at_ms: 0,
+    });
+    sess.yes_best_bid = 0.60;
+    sess.yes_best_ask = 0.62;
+    // AggTrade zone: ~%50-90 pencere.
+    let now_s = now_ms() / 1000;
+    sess.start_ts = now_s.saturating_sub(150);
+    sess.end_ts = now_s + 150;
+    sess.last_averaging_ms = 0;
+
+    let t = now_ms() + COOLDOWN + 1_000;
+    let dec = sess.tick(&cfg, t, 8.0, true);
+    let orders = match dec {
+        Decision::PlaceOrders(o) => o,
+        other => panic!("expected PlaceOrders, got {:?}", other),
+    };
+    assert_eq!(orders.len(), 1);
+    assert_eq!(orders[0].outcome, Outcome::Up);
+    assert!(orders[0].reason.starts_with("harvest_v2:pyramid:"));
+}
+
+#[tokio::test]
+async fn harvest_v2_avg_down_match_triggers_hedge_reprice() {
+    let cfg = dryrun_cfg();
+    let mut sess = session(&cfg);
+    // shares_yes=10 @ 0.50 + avg-down 10 @ 0.45 → avg_yes=0.475
+    sess.metrics
+        .ingest_fill(Outcome::Up, 0.50, 10.0, 0.0);
+    sess.metrics
+        .ingest_fill(Outcome::Up, 0.45, 10.0, 0.0);
+    sess.harvest_state = HarvestState::PositionOpen {
+        filled_side: Outcome::Up,
+    };
+    // Hedge eski fiyatıyla kitapta (0.48): target = 0.98-0.475 = 0.505 → drift.
+    sess.open_orders.push(OpenOrder {
+        id: "hedge-old".into(),
+        outcome: Outcome::Down,
+        side: Side::Buy,
+        price: 0.48,
+        size: 10.0,
+        reason: "harvest_v2:hedge:down".into(),
+        placed_at_ms: 0,
+    });
+
+    let dec = sess.tick(&cfg, now_ms(), 5.0, true);
+    assert_eq!(
+        sess.harvest_state,
+        HarvestState::HedgeUpdating {
+            filled_side: Outcome::Up
+        }
+    );
+    match dec {
+        Decision::CancelOrders(ids) => assert_eq!(ids, vec!["hedge-old".to_string()]),
+        other => panic!("expected CancelOrders, got {:?}", other),
     }
-    assert_eq!(sess.harvest_state, HarvestState::DoubleLeg);
+}
+
+#[tokio::test]
+async fn harvest_v2_hedge_passive_fill_completes_pair() {
+    let cfg = dryrun_cfg();
+    let mut sess = session(&cfg);
+    // OpenPair'den tek leg filled, hedge live.
+    sess.no_best_ask = 0.95;
+    let exec = Executor::DryRun(Simulator);
+    let dec = sess.tick(&cfg, now_ms(), 5.0, true);
+    let _ = execute(&mut sess, &exec, dec).await.unwrap();
+    assert_eq!(sess.open_orders.len(), 1, "hedge live");
+
+    // monitor → PositionOpen{Up}
+    let dec = sess.tick(&cfg, now_ms() + 1, 5.0, true);
+    let _ = execute(&mut sess, &exec, dec).await.unwrap();
+    assert_eq!(
+        sess.harvest_state,
+        HarvestState::PositionOpen {
+            filled_side: Outcome::Up
+        }
+    );
+
+    // Book hedge'i crossle: no_ask 0.48'e indi → passive fill.
+    sess.no_best_ask = 0.48;
+    let filled = simulate_passive_fills(&mut sess);
+    assert_eq!(filled.len(), 1);
+    assert_eq!(filled[0].planned.outcome, Outcome::Down);
+    assert!(sess.open_orders.is_empty());
+
+    // Sonraki tick → PairComplete.
+    let dec = sess.tick(&cfg, now_ms() + 2, 5.0, true);
+    assert_eq!(sess.harvest_state, HarvestState::PairComplete);
+    assert!(matches!(dec, Decision::NoOp));
+}
+
+#[tokio::test]
+async fn harvest_v2_pending_blocks_opener_when_signal_not_ready() {
+    // doc §3, §5: RTDS aktif iken window_open_price daha yakalanmadıysa
+    // (signal_ready = false), Pending NoOp döner ve harvest_state Pending'de
+    // kalır. Bot bir sonraki tick'te (RTDS event'i geldikten sonra) tekrar dener.
+    let cfg = dryrun_cfg();
+    let mut sess = session(&cfg);
+
+    let dec = sess.tick(&cfg, now_ms(), 5.0, false);
+    assert_eq!(sess.harvest_state, HarvestState::Pending);
+    assert!(matches!(dec, Decision::NoOp));
+    assert!(sess.open_orders.is_empty());
+
+    let dec = sess.tick(&cfg, now_ms() + 1, 5.0, true);
+    assert_eq!(sess.harvest_state, HarvestState::OpenPair);
+    assert!(matches!(dec, Decision::PlaceOrders(_)));
+}
+
+#[tokio::test]
+async fn harvest_v2_composite_low_signal_opens_down_taker() {
+    let cfg = dryrun_cfg();
+    let mut sess = session(&cfg);
+    let dec = sess.tick(&cfg, now_ms(), 0.0, true);
+    let orders = match dec {
+        Decision::PlaceOrders(o) => o,
+        other => panic!("expected PlaceOrders, got {:?}", other),
+    };
+    let open = orders
+        .iter()
+        .find(|o| o.reason.starts_with("harvest_v2:open:"))
+        .unwrap();
+    let hedge = orders
+        .iter()
+        .find(|o| o.reason.starts_with("harvest_v2:hedge:"))
+        .unwrap();
+    assert_eq!(open.outcome, Outcome::Down);
+    assert_eq!(hedge.outcome, Outcome::Up);
 }

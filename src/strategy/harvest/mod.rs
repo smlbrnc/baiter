@@ -1,18 +1,17 @@
-//! Harvest strategy — sinyal güdümlü dual açılış + averaging FSM.
+//! Harvest v2 — bölge bazlı dual davranış FSM (OpenPair → PositionOpen →
+//! HedgeUpdating → PairComplete → Done).
 //!
-//! `Pending → OpenDual{deadline} → {SingleLeg | DoubleLeg} → Done`.
-//! Detay: [docs/strategies.md §2](../../../docs/strategies.md).
+//! Spesifikasyon: [docs/harvest-v2.md](../../../../docs/harvest-v2.md).
 
-use crate::strategy::{Decision, DecisionEngine, OpenOrder, PlannedOrder};
+use crate::strategy::{Decision, DecisionEngine, OpenOrder};
+use crate::time::MarketZone;
 
-pub mod double;
-pub mod dual;
-pub mod profit_lock;
-pub mod single;
+pub mod hedge_update;
+pub mod open_pair;
+pub mod position_open;
 pub mod state;
 
-pub use dual::dual_prices;
-pub use state::{HarvestContext, HarvestState, MAX_POSITION_SIZE};
+pub use state::{is_averaging_like, HarvestContext, HarvestState};
 
 pub struct HarvestEngine;
 
@@ -25,8 +24,7 @@ impl DecisionEngine for HarvestEngine {
     }
 }
 
-/// Açık emirler için `CancelOrders` veya `NoOp`.
-pub(crate) fn cancel_ids(open_orders: &[OpenOrder]) -> Decision {
+pub(crate) fn cancel_all(open_orders: &[OpenOrder]) -> Decision {
     if open_orders.is_empty() {
         Decision::NoOp
     } else {
@@ -34,26 +32,25 @@ pub(crate) fn cancel_ids(open_orders: &[OpenOrder]) -> Decision {
     }
 }
 
-/// (place, cancel) listelerinden tek bir `Decision` türetir.
-fn merge_decision(place: Vec<PlannedOrder>, cancel: Vec<String>) -> Decision {
-    match (place.is_empty(), cancel.is_empty()) {
-        (true, true) => Decision::NoOp,
-        (false, true) => Decision::PlaceOrders(place),
-        (true, false) => Decision::CancelOrders(cancel),
-        (false, false) => Decision::Batch { cancel, place },
+pub(crate) fn decide(state: HarvestState, ctx: &HarvestContext) -> (HarvestState, Decision) {
+    if matches!(ctx.zone, MarketZone::StopTrade) {
+        return stop_trade(state, ctx);
+    }
+    match state {
+        HarvestState::Pending => open_pair::pending(ctx),
+        HarvestState::OpenPair => open_pair::monitor(ctx),
+        HarvestState::PositionOpen { filled_side } => position_open::handle(filled_side, ctx),
+        HarvestState::HedgeUpdating { filled_side } => hedge_update::handle(filled_side, ctx),
+        HarvestState::PairComplete => (HarvestState::Done, cancel_all(ctx.open_orders)),
+        HarvestState::Done => (HarvestState::Done, Decision::NoOp),
     }
 }
 
-pub(crate) fn decide(state: HarvestState, ctx: &HarvestContext) -> (HarvestState, Decision) {
+/// Doc §6/§13: StopTrade bölgesinde yeni emir yok; kalanlar iptal, state `Done`.
+fn stop_trade(state: HarvestState, ctx: &HarvestContext) -> (HarvestState, Decision) {
     match state {
-        HarvestState::Pending => dual::open_dual(ctx),
-        HarvestState::OpenDual { deadline_ms } => dual::evaluate_open_dual(ctx, deadline_ms),
-        HarvestState::SingleLeg {
-            filled_side,
-            entered_at_ms,
-        } => single::single_leg(filled_side, entered_at_ms, ctx),
-        HarvestState::DoubleLeg => double::double_leg(ctx),
-        HarvestState::ProfitLock | HarvestState::Done => (HarvestState::Done, Decision::NoOp),
+        HarvestState::Done => (HarvestState::Done, Decision::NoOp),
+        _ => (HarvestState::Done, cancel_all(ctx.open_orders)),
     }
 }
 

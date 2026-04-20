@@ -6,7 +6,7 @@
 //! Referans: [docs/bot-platform-mimari.md §13 §16](../../../docs/bot-platform-mimari.md).
 
 use crate::config::BotConfig;
-use crate::strategy::harvest::{HarvestContext, HarvestEngine, HarvestState, MAX_POSITION_SIZE};
+use crate::strategy::harvest::{HarvestContext, HarvestEngine, HarvestState};
 use crate::strategy::metrics::{MarketPnL, StrategyMetrics};
 use crate::strategy::{Decision, DecisionEngine, OpenOrder, PlannedOrder};
 use crate::time::{zone_pct, MarketZone};
@@ -109,14 +109,20 @@ impl MarketSession {
         MarketPnL::from_metrics(&self.metrics, self.yes_best_bid, self.no_best_bid)
     }
 
-    /// Tek tick — strateji'ye karar ver. Çağıran composite_score'u (5.0 = nötr) doğrudan
-    /// geçer; OpenDual fiyatı ve averaging size çarpanı bu skoru kullanır.
-    pub fn tick(&mut self, cfg: &BotConfig, now_ms_v: u64, effective_score: f64) -> Decision {
+    /// Tek tick — strateji'ye karar ver. Çağıran composite skorunu (5.0 = nötr)
+    /// doğrudan geçer; Harvest v2 opener fiyatı ve pyramid `delta`sı bu skoru
+    /// kullanır (doc §3, §5).
+    pub fn tick(
+        &mut self,
+        cfg: &BotConfig,
+        now_ms_v: u64,
+        effective_score: f64,
+        signal_ready: bool,
+    ) -> Decision {
         match cfg.strategy {
             Strategy::Harvest => {
                 let zone = self.current_zone(now_ms_v / 1000);
                 let ctx = HarvestContext {
-                    params: &cfg.strategy_params,
                     metrics: &self.metrics,
                     yes_token_id: &self.yes_token_id,
                     no_token_id: &self.no_token_id,
@@ -131,40 +137,19 @@ impl MarketSession {
                     now_ms: now_ms_v,
                     last_averaging_ms: self.last_averaging_ms,
                     tick_size: self.tick_size,
-                    dual_timeout: cfg.strategy_params.harvest_dual_timeout(),
                     open_orders: &self.open_orders,
                     avg_threshold: cfg.strategy_params.harvest_avg_threshold(),
-                    max_position_size: MAX_POSITION_SIZE,
                     min_price: self.min_price,
                     max_price: self.max_price,
                     cooldown_threshold: self.cooldown_threshold,
+                    signal_ready,
                 };
                 let (new_state, decision) =
                     <HarvestEngine as DecisionEngine>::decide(self.harvest_state, &ctx);
                 self.harvest_state = new_state;
-                if matches!(zone, MarketZone::StopTrade) {
-                    filter_stop_trade(decision)
-                } else {
-                    decision
-                }
+                decision
             }
             _ => Decision::NoOp,
-        }
-    }
-}
-
-/// StopTrade: yeni emir üretilmez; yalnız cancel/no-op pass eder.
-fn filter_stop_trade(d: Decision) -> Decision {
-    match d {
-        Decision::NoOp | Decision::Complete => d,
-        Decision::PlaceOrders(_) => Decision::NoOp,
-        Decision::CancelOrders(ids) => Decision::CancelOrders(ids),
-        Decision::Batch { cancel, .. } => {
-            if cancel.is_empty() {
-                Decision::NoOp
-            } else {
-                Decision::CancelOrders(cancel)
-            }
         }
     }
 }
@@ -227,7 +212,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn dryrun_open_dual_creates_two_filled_orders() {
+    async fn pending_tick_places_open_pair_and_fills_both_legs() {
         let cfg = test_cfg(RunMode::Dryrun);
         let mut sess = MarketSession::new(1, "btc-updown-5m-1776420900".into(), &cfg);
         sess.yes_token_id = "yes".into();
@@ -241,12 +226,13 @@ mod tests {
         sess.no_best_bid = 0.48;
         sess.no_best_ask = 0.48;
 
-        let dec = sess.tick(&cfg, now_ms(), 5.0);
+        let dec = sess.tick(&cfg, now_ms(), 5.0, true);
         let exec = Executor::DryRun(Simulator);
         let filled = execute(&mut sess, &exec, dec).await.unwrap();
-        assert_eq!(filled.placed.len(), 2);
+        assert_eq!(filled.placed.len(), 2, "OpenPair opener + hedge");
         assert!(filled.placed.iter().all(|e| e.filled));
         assert!(sess.metrics.shares_yes > 0.0);
         assert!(sess.metrics.shares_no > 0.0);
+        assert_eq!(sess.harvest_state, HarvestState::OpenPair);
     }
 }

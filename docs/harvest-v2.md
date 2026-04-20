@@ -87,7 +87,9 @@ stateDiagram-v2
 
 ## 5. OpenPair (T=0, açılış)
 
-**Tetik:** `Pending` durumu + `yes_best_bid > 0 && no_best_bid > 0`. Quote yoksa `Pending` korunur.
+**Tetik:** `Pending` durumu + `yes_best_bid > 0 && no_best_bid > 0` + **sinyal hazırlığı**. Quote yoksa `Pending` korunur.
+
+**Sinyal hazırlığı (race-condition guard):** RTDS aktif iken `window_open_price` yakalanana kadar `Pending` `NoOp` döner. Pencere değişiminin ilk 0.5–1 sn'sinde RTDS WS payload'ı henüz gelmediği için `window_delta_score` nötr (5.0) çıkar; bu sırada Binance OFI tek başına opener yönünü belirlerse eski pencerenin son momentumu yeni pencerede mean-reversion'a çarpar. Bot bir sonraki tick'te (RTDS event'i set olduktan sonra) opener'ı doğru sinyalle basar. RTDS pasif bot'larda her zaman hazır kabul edilir (`signal_ready = true`).
 
 **Endpoint:** İki ayrı `POST /order` (`Decision::PlaceOrders` iki `PlannedOrder` döner; engine sırayla yürütür — CLOB batch `/orders` kullanılmaz).
 
@@ -121,8 +123,8 @@ hedge_price = clamp(snap(hedge_price_raw), min_price, max_price)
 ```
 
 **Boyut:**
-- Açılan taraf: `size = max(⌈order_usdc / open_price⌉, api_min_order_size)`
-- Hedge: `size = max(⌈order_usdc / hedge_price⌉, api_min_order_size)`
+- Açılan taraf: `open_size = max(⌈order_usdc / open_price⌉, api_min_order_size)`
+- Hedge: `hedge_size = open_size` (pair'i her zaman dengeli aç; opener fill'inde imbalance ≈ 0 ile `PairComplete`'a gidilebilsin)
 
 **Reason etiketleri:**
 - Açılan taraf: `harvest_v2:open:<side>` (örn. `harvest_v2:open:up`)

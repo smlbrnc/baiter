@@ -26,6 +26,7 @@ import {
   CHART_MARGIN_TIGHT,
   CHART_TIME_X_AXIS_LAYOUT,
   fmtTickTime,
+  fmtTooltipTime,
   SECTION_LABEL_CLASS,
   SIGNAL_PAIR_CARD_CLASS,
   SIGNAL_PAIR_CONTENT_CLASS,
@@ -130,7 +131,7 @@ export function AvgSumChart({ data, session }: Props) {
                       "border-border/35 bg-background grid min-w-40 gap-1.5 rounded-md border px-2.5 py-1.5 text-xs shadow-xl",
                     )}
                   >
-                    <div className="font-medium">{fmtTickTime(row.t)}</div>
+                    <div className="font-medium">{fmtTooltipTime(row.t)}</div>
                     <div className="flex justify-between gap-4 leading-none">
                       <span className="text-emerald-700/80 dark:text-emerald-400/90">
                         avg_up

@@ -17,7 +17,7 @@ pub struct StrategyMetrics {
     pub avg_yes: f64,
     /// NO tarafı VWAP.
     pub avg_no: f64,
-    /// `avg_yes + avg_no` — Harvest DoubleLeg ProfitLock eşiği.
+    /// `avg_yes + avg_no` — Harvest PairComplete profit-lock eşiğiyle karşılaştırılır.
     pub avg_sum: f64,
     /// Per-side son MATCHED fill fiyatı — Harvest averaging "price_fell" kaynağı.
     pub last_fill_price_yes: f64,

@@ -29,6 +29,7 @@ import {
   CHART_MARGIN_PRICE,
   CHART_TIME_X_AXIS_LAYOUT,
   fmtTickTime,
+  fmtTooltipTime,
   SECTION_LABEL_CLASS,
   timeTicks,
   ZONE_BOUNDARY_LABELS,
@@ -204,7 +205,7 @@ export function PriceChart({ data, session }: Props) {
                 <ChartTooltipContent
                   labelFormatter={(_v, p) => {
                     const t = p?.[0]?.payload?.t;
-                    return typeof t === "number" ? fmtTickTime(t) : "";
+                    return typeof t === "number" ? fmtTooltipTime(t) : "";
                   }}
                 />
               }

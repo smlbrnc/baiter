@@ -104,10 +104,8 @@ pub struct BotConfig {
 /// Strateji-spesifik parametreler — `bots.strategy_params` JSON sütunundan parse edilir.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StrategyParams {
-    /// Harvest OpenDual fill bekleme süresi (ms; default `5_000`).
-    #[serde(default)]
-    pub harvest_dual_timeout: Option<u64>,
-    /// SingleLeg ProfitLock FAK tetik oranı (örn. `0.05` → `avg_threshold = 0.95`).
+    /// Harvest v2 ProfitLock eşiği oranı (örn. `0.02` → `avg_threshold = 0.98`).
+    /// OpenPair hedge fiyatı ve avg-down referansı (doc §2).
     #[serde(default)]
     pub harvest_profit_lock_pct: Option<f64>,
     /// RTDS Chainlink sinyali aktif mi. `None` → default `true`.
@@ -124,16 +122,12 @@ pub struct StrategyParams {
 }
 
 impl StrategyParams {
-    /// SingleLeg ProfitLock eşiği (`first_leg + hedge_leg ≤ avg_threshold`); default `0.98`.
+    /// Harvest v2 `avg_threshold` (doc §2). `harvest_profit_lock_pct` varsayılanı
+    /// `0.02` → `avg_threshold = 0.98`.
     pub fn harvest_avg_threshold(&self) -> f64 {
         self.harvest_profit_lock_pct
             .map(|p| 1.0 - p.abs())
             .unwrap_or(0.98)
-    }
-
-    /// OpenDual fill bekleme süresi (ms); default `5_000`.
-    pub fn harvest_dual_timeout(&self) -> u64 {
-        self.harvest_dual_timeout.unwrap_or(5_000)
     }
 
     pub fn rtds_enabled_or_default(&self) -> bool {
@@ -177,11 +171,5 @@ mod tests {
             ..Default::default()
         };
         assert!((p.harvest_avg_threshold() - 0.95).abs() < 1e-9);
-    }
-
-    #[test]
-    fn harvest_dual_timeout_default_is_5000() {
-        let p = StrategyParams::default();
-        assert_eq!(p.harvest_dual_timeout(), 5_000);
     }
 }

@@ -12,6 +12,7 @@ use crate::polymarket::order::{
     build_order, expiration_for, order_to_json, sign_order, BuildArgs,
 };
 use crate::polymarket::{CancelResponse, ClobClient};
+use crate::strategy::harvest::is_averaging_like;
 use crate::strategy::{Decision, OpenOrder, PlannedOrder};
 use crate::time::now_ms;
 use crate::types::{Outcome, Side};
@@ -150,7 +151,9 @@ impl LiveExecutor {
             session
                 .metrics
                 .ingest_fill(planned.outcome, planned.price, planned.size, 0.0);
-            session.last_averaging_ms = now_ms();
+            if is_averaging_like(&planned.reason) {
+                session.last_averaging_ms = now_ms();
+            }
         }
         let executed = ExecutedOrder {
             order_id: resp.order_id.clone(),
@@ -234,7 +237,9 @@ impl Simulator {
 
         let fill_size = planned.size;
         apply_dryrun_fill(session, planned.outcome, fill_price, fill_size);
-        session.last_averaging_ms = now_ms();
+        if is_averaging_like(&planned.reason) {
+            session.last_averaging_ms = now_ms();
+        }
 
         ExecutedOrder {
             order_id,
@@ -343,7 +348,7 @@ async fn place_batch<S: OrderSink + ?Sized>(
             continue;
         }
         let executed = exec.place(session, &o).await?;
-        if executed.planned.reason.starts_with("harvest:averaging") {
+        if is_averaging_like(&executed.planned.reason) {
             session.last_averaging_ms = now_ms();
         }
         out.placed.push(executed);

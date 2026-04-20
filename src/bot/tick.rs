@@ -20,8 +20,6 @@ use super::ctx::Ctx;
 struct StateLogSnapshot {
     avg_yes: f64,
     avg_no: f64,
-    yes_best_ask: f64,
-    no_best_ask: f64,
     avg_threshold: f64,
     imbalance: f64,
 }
@@ -39,19 +37,26 @@ struct TickLogCtx {
 /// Strateji çağrısı + decision execute. Sinyal akışı:
 /// `RTDS (window_delta + lookahead × velocity) + Binance(absolute OFI)
 ///   → composite_score → sess.tick`.
-/// Composite hem OpenDual fiyatını hem averaging size çarpanını sürer.
+/// Composite hem OpenPair opener fiyatını hem zona-duyarlı avg/pyramid kararlarını sürer.
 pub async fn tick(ctx: &Ctx, sess: &mut MarketSession) {
     let binance_score = ctx.signal_state.read().await.signal_score;
-    let window_score = if ctx.cfg.strategy_params.rtds_enabled_or_default() {
+    let rtds_enabled = ctx.cfg.strategy_params.rtds_enabled_or_default();
+    let (window_score, signal_ready) = if rtds_enabled {
         let rtds_snap = ctx.rtds_state.read().await;
+        // Sinyal hazırlığı: RTDS aktif iken pencere açılış fiyatı yakalanana
+        // kadar opener basılmaz. Aksi halde yeni pencerenin ilk 0.5-1 sn'sinde
+        // composite skoru tamamen Binance OFI'a düşer ve eski pencerenin son
+        // momentumu opener yönünü belirler (doc §3, §5; bot/tick gate).
+        let ready = rtds_snap.window_open_price.is_some();
         let interval_secs = sess.end_ts.saturating_sub(sess.start_ts);
         // Linear extrapolation: 3 sn sonraki bps ≈ kümülatif + velocity × dt.
         let lookahead = ctx.cfg.strategy_params.signal_lookahead_secs_or_default();
         let projected_bps =
             rtds_snap.window_delta_bps + rtds_snap.recent_velocity_bps_per_sec * lookahead;
-        rtds::window_delta_score(projected_bps, rtds::interval_scale(interval_secs))
+        let score = rtds::window_delta_score(projected_bps, rtds::interval_scale(interval_secs));
+        (score, ready)
     } else {
-        5.0
+        (5.0, true)
     };
     let composite = rtds::composite_score(
         window_score,
@@ -59,14 +64,12 @@ pub async fn tick(ctx: &Ctx, sess: &mut MarketSession) {
         ctx.cfg.strategy_params.window_delta_weight_or_default(),
     );
     let prev_state = sess.harvest_state;
-    let decision = sess.tick(&ctx.cfg, now_ms(), composite);
+    let decision = sess.tick(&ctx.cfg, now_ms(), composite, signal_ready);
     let bot_id = ctx.bot_id;
     let post_state = sess.harvest_state;
     let snap = StateLogSnapshot {
         avg_yes: sess.metrics.avg_yes,
         avg_no: sess.metrics.avg_no,
-        yes_best_ask: sess.yes_best_ask,
-        no_best_ask: sess.no_best_ask,
         avg_threshold: ctx.cfg.strategy_params.harvest_avg_threshold(),
         imbalance: sess.metrics.imbalance,
     };
@@ -148,7 +151,7 @@ fn emit_order_events(bot_id: i64, out: &ExecuteOutput) {
     }
 }
 
-/// §5.2: OpenDual giriş/çıkış + Averaging timeout + ProfitLock geçişleri.
+/// Harvest v2 FSM state transition logu (doc §4).
 fn log_state_transition(c: &TickLogCtx) {
     let TickLogCtx {
         prev_state: prev,
@@ -162,7 +165,7 @@ fn log_state_transition(c: &TickLogCtx) {
     let composite = *composite;
     let label = label.as_str();
     match (*prev, *post) {
-        (HarvestState::Pending, HarvestState::OpenDual { deadline_ms }) => {
+        (HarvestState::Pending, HarvestState::OpenPair) => {
             if let Decision::PlaceOrders(orders) = decision {
                 let up = orders
                     .iter()
@@ -178,83 +181,73 @@ fn log_state_transition(c: &TickLogCtx) {
                 ipc::log_line(
                     label,
                     format!(
-                        "🎯 OpenDual composite={composite:.2} δ={delta:+.3} → up_bid={up:.2} down_bid={down:.2} deadline={deadline_ms}ms"
+                        "🎯 OpenPair composite={composite:.2} δ={delta:+.3} → up={up:.2} down={down:.2}"
                     ),
                 );
             }
         }
-        (HarvestState::OpenDual { .. }, HarvestState::SingleLeg { filled_side, .. }) => {
+        (HarvestState::OpenPair, HarvestState::PositionOpen { filled_side }) => {
             ipc::log_line(
                 label,
                 format!(
-                    "⏰ OpenDual timeout (one_fill={}) → cancelling counter side → SingleLeg",
+                    "🎣 OpenPair single-leg filled (side={}) → PositionOpen",
                     filled_side.as_str()
                 ),
             );
         }
-        (HarvestState::OpenDual { .. }, HarvestState::DoubleLeg) => {
+        (HarvestState::OpenPair, HarvestState::PairComplete) => {
             ipc::log_line(
                 label,
                 format!(
-                    "🔀 OpenDual both filled → DoubleLeg (avg_yes={:.4} avg_no={:.4})",
+                    "🔀 OpenPair both filled → PairComplete (avg_yes={:.4} avg_no={:.4})",
                     snap.avg_yes, snap.avg_no
                 ),
             );
         }
-        (HarvestState::DoubleLeg, HarvestState::DoubleLeg) => {
-            if let Decision::CancelOrders(ids) = decision {
-                ipc::log_line(
-                    label,
-                    format!(
-                        "🔁 DoubleLeg averaging timeout → cancelling {} order(s)",
-                        ids.len()
-                    ),
-                );
-            }
-        }
-        (HarvestState::DoubleLeg, HarvestState::Done) => {
+        (HarvestState::PositionOpen { filled_side }, HarvestState::HedgeUpdating { .. }) => {
             ipc::log_line(
                 label,
                 format!(
-                    "🔒 DoubleLeg ProfitLock: avg_sum={:.4} ≤ threshold({:.2}), imbalance={:+.2} → Done",
-                    snap.avg_yes + snap.avg_no,
+                    "🔁 Hedge drift detected (side={}, avg={:.4}, threshold={:.2}) → HedgeUpdating",
+                    filled_side.as_str(),
+                    match filled_side {
+                        Outcome::Up => snap.avg_yes,
+                        Outcome::Down => snap.avg_no,
+                    },
                     snap.avg_threshold,
+                ),
+            );
+        }
+        (HarvestState::HedgeUpdating { .. }, HarvestState::PositionOpen { filled_side }) => {
+            ipc::log_line(
+                label,
+                format!(
+                    "✳️ Hedge re-priced (side={}, imbalance={:+.2}) → PositionOpen",
+                    filled_side.as_str(),
                     snap.imbalance,
                 ),
             );
         }
-        (HarvestState::OpenDual { .. }, HarvestState::Pending) => {
-            ipc::log_line(label, "⏰ OpenDual timeout (no_fill) → cancelling 2 orders, reopening");
+        (HarvestState::HedgeUpdating { .. }, HarvestState::PairComplete) => {
+            ipc::log_line(label, "🎯 Hedge cancel-race (hedge passive fill) → PairComplete");
         }
-        (HarvestState::SingleLeg { filled_side, .. }, HarvestState::SingleLeg { .. }) => {
-            if let Decision::CancelOrders(ids) = decision {
-                ipc::log_line(
-                    label,
-                    format!(
-                        "🔁 Averaging timeout (side={}) → cancelling {} order(s), will retry",
-                        filled_side.as_str(),
-                        ids.len()
-                    ),
-                );
-            }
-        }
-        (HarvestState::SingleLeg { filled_side, .. }, HarvestState::Done) => {
-            let first_leg = match filled_side {
-                Outcome::Up => snap.avg_yes,
-                Outcome::Down => snap.avg_no,
-            };
-            let hedge_leg = match filled_side {
-                Outcome::Up => snap.no_best_ask,
-                Outcome::Down => snap.yes_best_ask,
-            };
+        (HarvestState::PositionOpen { .. }, HarvestState::PairComplete) => {
             ipc::log_line(
                 label,
                 format!(
-                    "🔒 ProfitLock triggered: first_leg({})={first_leg:.4} + hedge_leg({})={hedge_leg:.4} = {:.4} ≤ threshold({:.2}) → FAK",
-                    filled_side.as_str(),
-                    filled_side.opposite().as_str(),
-                    first_leg + hedge_leg,
+                    "🎯 Hedge passive fill → PairComplete (avg_yes={:.4} avg_no={:.4})",
+                    snap.avg_yes, snap.avg_no
+                ),
+            );
+        }
+        (HarvestState::PairComplete, HarvestState::Done) => {
+            ipc::log_line(
+                label,
+                format!(
+                    "🔒 PairComplete: avg_sum={:.4} threshold={:.2} imbalance={:+.2} → Done",
+                    snap.avg_yes + snap.avg_no,
                     snap.avg_threshold,
+                    snap.imbalance,
                 ),
             );
         }
@@ -287,8 +280,8 @@ fn log_cancel_responses(canceled: &[CancelResponse], label: &str) {
 }
 
 fn log_placements(out: &ExecuteOutput, composite: f64, label: &str) {
-    // δ = (composite − 5) / 5 ∈ [−1, +1] — OpenDual fiyatının ask'ten kaymasını üreten faktör.
-    // Averaging emirlerinde fiyat best_bid'den verilir; δ bilgi amaçlıdır (size_mult'i besler).
+    // δ = (composite − 5) / 5 ∈ [−1, +1] — opener/pyramid fiyatının spread üzerinden ölçeklenmesini üreten faktör.
+    // Avg-down emirlerinde fiyat best_bid'den verilir; δ bilgi amaçlıdır.
     let delta = (composite - 5.0) / 5.0;
     for ex in &out.placed {
         let status = if ex.filled { "matched" } else { "live" };

@@ -12,11 +12,9 @@ export type Strategy = "dutch_book" | "harvest" | "prism";
  * Tüm alanlar opsiyoneldir; `null`/`undefined` → backend `_or_default()` uygular.
  */
 export interface StrategyParams {
-  /** Harvest OpenDual fill bekleme süresi (ms). Default 5000. */
-  harvest_dual_timeout?: number | null;
   /**
-   * SingleLeg ProfitLock FAK tetik oranı (örn. 0.05 → avg_threshold 0.95).
-   * Default 0.02.
+   * Harvest hedge avg_threshold türetmek için kullanılan profit-lock oranı
+   * (örn. 0.02 → avg_threshold 0.98). Default 0.02.
    */
   harvest_profit_lock_pct?: number | null;
   /** RTDS Chainlink window-delta sinyali aktif mi. Default true. */
@@ -293,7 +291,6 @@ export interface UpdateBotReq {
 
 /** `StrategyParams` default'ları (`config::StrategyParams::*_or_default`). */
 export const STRATEGY_PARAMS_DEFAULTS = {
-  harvest_dual_timeout: 5000,
   harvest_profit_lock_pct: 0.02,
   rtds_enabled: true,
   window_delta_weight: 0.7,

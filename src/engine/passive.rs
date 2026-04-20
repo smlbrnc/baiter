@@ -1,5 +1,6 @@
 //! DryRun passive-fill simülatörü.
 
+use crate::strategy::harvest::is_averaging_like;
 use crate::strategy::{OpenOrder, PlannedOrder};
 use crate::time::now_ms;
 use crate::types::{Outcome, OrderType};
@@ -23,7 +24,7 @@ pub fn simulate_passive_fills(session: &mut MarketSession) -> Vec<ExecutedOrder>
         };
         let fill_size = o.size;
         apply_dryrun_fill(session, o.outcome, fill_price, fill_size);
-        if o.reason.starts_with("harvest:averaging") {
+        if is_averaging_like(&o.reason) {
             session.last_averaging_ms = now_ms();
         }
         let token_id = match o.outcome {

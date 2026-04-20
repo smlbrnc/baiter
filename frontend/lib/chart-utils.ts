@@ -53,6 +53,24 @@ export function fmtTickTime(t: number): string {
   return `${v("hour").padStart(2, "0")}:${v("minute")}`;
 }
 
+/**
+ * Unix saniye → `HH:MM:SS` — **America/New_York (ET)** (tooltip için saniye dahil).
+ * X ekseni `fmtTickTime` ile HH:MM kalır; tooltip kullanıcıya tam saniye doğruluğu verir.
+ */
+export function fmtTooltipTime(t: number): string {
+  const d = new Date(t * 1000);
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(d);
+  const v = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((p) => p.type === type)?.value ?? "00";
+  return `${v("hour").padStart(2, "0")}:${v("minute")}:${v("second")}`;
+}
+
 /** Chart / tablo bölüm başlıkları — `BotSettingsCards` `CardDescription` ile aynı ölçü ve stil. */
 export const SECTION_LABEL_CLASS =
   "font-sans text-[10px] font-normal leading-snug tracking-wider text-muted-foreground uppercase";

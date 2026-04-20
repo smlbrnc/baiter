@@ -29,6 +29,7 @@ import {
   CHART_MARGIN_TIGHT,
   CHART_TIME_X_AXIS_LAYOUT,
   fmtTickTime,
+  fmtTooltipTime,
   SECTION_LABEL_CLASS,
   timeTicks,
   type SessionRange,
@@ -132,7 +133,7 @@ export function SpreadSignalChart({ data, session }: Props) {
                 <ChartTooltipContent
                   labelFormatter={(_v, p) => {
                     const t = p?.[0]?.payload?.t;
-                    return typeof t === "number" ? fmtTickTime(t) : "";
+                    return typeof t === "number" ? fmtTooltipTime(t) : "";
                   }}
                 />
               }

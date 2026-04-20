@@ -1,51 +1,52 @@
-//! Harvest FSM durumu, context ve sabitler.
+//! Harvest v2 — state makinesi, ctx ve helper'lar.
+//!
+//! Spesifikasyon: [docs/harvest-v2.md](../../../../docs/harvest-v2.md) §2, §4, §16.
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::StrategyParams;
 use crate::strategy::metrics::StrategyMetrics;
-use crate::strategy::{OpenOrder, ZoneSignalMap};
+use crate::strategy::OpenOrder;
 use crate::time::MarketZone;
 use crate::types::Outcome;
 
-/// SingleLeg averaging tek tarafta tutulabilir maksimum share. Doc §17.
-pub const MAX_POSITION_SIZE: f64 = 100.0;
+/// OpenPair açılış emri — taker/neutral leg (doc §16).
+pub const OPEN_REASON_PREFIX: &str = "harvest_v2:open:";
+/// OpenPair hedge emri + re-price edilen tüm hedge'ler.
+pub const HEDGE_REASON_PREFIX: &str = "harvest_v2:hedge:";
+/// NormalTrade averaging-down GTC (doc §7).
+pub const AVG_DOWN_REASON_PREFIX: &str = "harvest_v2:avg_down:";
+/// AggTrade/FakTrade pyramiding GTC (doc §8).
+pub const PYRAMID_REASON_PREFIX: &str = "harvest_v2:pyramid:";
 
-/// `signal_multiplier` katmanları: `(min_score, up_mult, down_mult)`.
-/// Yüksek eşik önce, ilk eşleşme kazanır.
-const SIGNAL_TIERS: [(f64, f64, f64); 5] = [
-    (8.0, 1.0, 1.3),
-    (6.0, 0.9, 1.1),
-    (4.0, 1.0, 1.0),
-    (2.0, 1.1, 0.9),
-    (f64::NEG_INFINITY, 1.2, 0.7),
-];
+/// `passive.rs`/`executor.rs` cooldown (last_averaging_ms) tetikleyicisi —
+/// yalnız avg-down ve pyramid fill'leri cooldown saatini ileri alır; open/hedge
+/// fill'leri averaging penceresini açmaz (doc §11, §16).
+pub fn is_averaging_like(reason: &str) -> bool {
+    reason.starts_with(AVG_DOWN_REASON_PREFIX) || reason.starts_with(PYRAMID_REASON_PREFIX)
+}
 
-/// Harvest FSM durumu.
+/// Harvest v2 FSM (doc §4).
+///
+/// Persist edilmez — `MarketSession` yeniden oluşturulduğunda `Pending`'ten başlar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "state", rename_all = "snake_case")]
 pub enum HarvestState {
-    /// OpenDual henüz gönderilmedi.
+    /// Book quote bekleniyor; hiç emir atılmadı.
     Pending,
-    /// İki GTC kitapta; `deadline_ms`'e kadar fill bekleniyor.
-    OpenDual { deadline_ms: u64 },
-    /// Tek taraf doldu; averaging döngüsünde. `entered_at_ms` ProfitLock warmup için
-    /// — ilk `cooldown_threshold` boyunca FAK kontrolü pas geçilir.
-    SingleLeg {
-        filled_side: Outcome,
-        #[serde(default)]
-        entered_at_ms: u64,
-    },
-    /// İki taraf da doldu; `avg_yes + avg_no ≤ avg_threshold` + balanced → Done.
-    DoubleLeg,
-    /// Legacy — yeni kod üretmez. `decide` Done'a evolve eder; eski persist'ler
-    /// için Deserialize uyumluluğu.
-    ProfitLock,
+    /// İki GTC (opener + hedge) kitapta.
+    OpenPair,
+    /// Tek leg MATCHED; hedge kitapta; avg-down/pyramid eligible.
+    PositionOpen { filled_side: Outcome },
+    /// Hedge cancel gönderildi, response bekleniyor (transient).
+    HedgeUpdating { filled_side: Outcome },
+    /// Pair kapandı; kalan açık emirler temizlenip `Done`'a geçilir.
+    PairComplete,
     Done,
 }
 
+/// `HarvestEngine::decide` girdi ctx — ownership `MarketSession::tick` tarafından.
 #[derive(Debug, Clone)]
 pub struct HarvestContext<'a> {
-    pub params: &'a StrategyParams,
     pub metrics: &'a StrategyMetrics,
     pub yes_token_id: &'a str,
     pub no_token_id: &'a str,
@@ -55,28 +56,24 @@ pub struct HarvestContext<'a> {
     pub no_best_ask: f64,
     pub api_min_order_size: f64,
     pub order_usdc: f64,
-    /// Composite skor (RTDS + Binance harmanı; 5.0 = nötr).
+    /// Composite skor `[0, 10]`; 5.0 = nötr.
     pub effective_score: f64,
     pub zone: MarketZone,
     pub now_ms: u64,
-    /// Son averaging turu zamanı (ms).
+    /// Son avg-down/pyramid MATCHED zamanı — cooldown referansı.
     pub last_averaging_ms: u64,
-    /// OpenDual fiyatı snap için tick boyutu.
     pub tick_size: f64,
-    /// OpenDual fill bekleme süresi (ms).
-    pub dual_timeout: u64,
-    /// LIVE açık emirler — timeout cancel + notional pos hesabı.
     pub open_orders: &'a [OpenOrder],
-    /// ProfitLock eşiği (örn. 0.98).
+    /// ProfitLock / hedge eşiği (default 0.98).
     pub avg_threshold: f64,
-    /// Tek tarafta tutulabilir maksimum share.
-    pub max_position_size: f64,
-    /// Global emir taban / tavan fiyatı.
     pub min_price: f64,
     pub max_price: f64,
-    /// Averaging cooldown (ms): (1) iki averaging arası min süre,
-    /// (2) açık averaging GTC max yaş, (3) SingleLeg ProfitLock warmup.
     pub cooldown_threshold: u64,
+    /// Sinyal hazır mı? RTDS aktif iken `window_open_price.is_some()`,
+    /// RTDS pasif iken her zaman `true`. `Pending` opener gate'i (doc §3, §5):
+    /// pencere değişiminin ilk 0.5-1 sn'sinde sahte momentum sinyali ile
+    /// opener basılmasını engeller.
+    pub signal_ready: bool,
 }
 
 impl<'a> HarvestContext<'a> {
@@ -101,19 +98,93 @@ impl<'a> HarvestContext<'a> {
         }
     }
 
-    /// Averaging size çarpanı (§14.4 harvest tablosu). Harvest zone aktif değilse 1.0.
-    pub(super) fn signal_multiplier(&self, averaging_side: Outcome) -> f64 {
-        if !ZoneSignalMap::HARVEST.is_active(self.zone) {
-            return 1.0;
+    pub(super) fn spread(&self, side: Outcome) -> f64 {
+        (self.best_ask(side) - self.best_bid(side)).max(0.0)
+    }
+
+    /// Doc §3: `delta(side) = (score − 5) / 5 × spread(side)`.
+    pub(super) fn delta(&self, side: Outcome) -> f64 {
+        (self.effective_score - 5.0) / 5.0 * self.spread(side)
+    }
+
+    pub(super) fn shares(&self, side: Outcome) -> f64 {
+        match side {
+            Outcome::Up => self.metrics.shares_yes,
+            Outcome::Down => self.metrics.shares_no,
         }
-        let s = self.effective_score;
-        let tier = SIGNAL_TIERS
+    }
+
+    pub(super) fn avg_filled(&self, side: Outcome) -> f64 {
+        match side {
+            Outcome::Up => self.metrics.avg_yes,
+            Outcome::Down => self.metrics.avg_no,
+        }
+    }
+
+    pub(super) fn last_fill(&self, side: Outcome) -> f64 {
+        match side {
+            Outcome::Up => self.metrics.last_fill_price_yes,
+            Outcome::Down => self.metrics.last_fill_price_no,
+        }
+    }
+
+    /// Doc §8: pyramiding hedef tarafı — `yes_bid > 0.5` ise UP, aksi DOWN.
+    pub(super) fn rising_side(&self) -> Outcome {
+        if self.yes_best_bid > 0.5 {
+            Outcome::Up
+        } else {
+            Outcome::Down
+        }
+    }
+
+    /// `tick_size` grid'ine snap + `[min_price, max_price]` clamp.
+    pub(super) fn snap_clamp(&self, price: f64) -> f64 {
+        let snapped = (price / self.tick_size).round() * self.tick_size;
+        snapped.clamp(self.min_price, self.max_price)
+    }
+
+    pub(super) fn cooldown_ok(&self) -> bool {
+        self.now_ms.saturating_sub(self.last_averaging_ms) >= self.cooldown_threshold
+    }
+
+    pub(super) fn price_in_band(&self, price: f64) -> bool {
+        price >= self.min_price && price <= self.max_price
+    }
+
+    pub(super) fn hedge_order(&self) -> Option<&OpenOrder> {
+        self.open_orders
             .iter()
-            .find(|(min, _, _)| s >= *min)
-            .expect("NEG_INFINITY tier matches all");
-        match averaging_side {
-            Outcome::Up => tier.1,
-            Outcome::Down => tier.2,
+            .find(|o| o.reason.starts_with(HEDGE_REASON_PREFIX))
+    }
+
+    pub(super) fn has_open_avg(&self, side: Outcome) -> bool {
+        self.open_orders
+            .iter()
+            .any(|o| o.outcome == side && o.reason.starts_with(AVG_DOWN_REASON_PREFIX))
+    }
+
+    pub(super) fn has_open_pyramid(&self, side: Outcome) -> bool {
+        self.open_orders
+            .iter()
+            .any(|o| o.outcome == side && o.reason.starts_with(PYRAMID_REASON_PREFIX))
+    }
+
+    pub(super) fn stale_avg_or_pyramid_ids(&self) -> Vec<String> {
+        self.open_orders
+            .iter()
+            .filter(|o| {
+                (o.reason.starts_with(AVG_DOWN_REASON_PREFIX)
+                    || o.reason.starts_with(PYRAMID_REASON_PREFIX))
+                    && self.now_ms.saturating_sub(o.placed_at_ms) >= self.cooldown_threshold
+            })
+            .map(|o| o.id.clone())
+            .collect()
+    }
+
+    pub(super) fn outcome_str(side: Outcome) -> &'static str {
+        match side {
+            Outcome::Up => "up",
+            Outcome::Down => "down",
         }
     }
 }

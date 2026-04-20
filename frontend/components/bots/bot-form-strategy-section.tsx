@@ -27,8 +27,6 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const rtdsEnabled = params.rtds_enabled ?? STRATEGY_PARAMS_DEFAULTS.rtds_enabled;
   const windowWeight =
     params.window_delta_weight ?? STRATEGY_PARAMS_DEFAULTS.window_delta_weight;
-  const dualTimeout =
-    params.harvest_dual_timeout ?? STRATEGY_PARAMS_DEFAULTS.harvest_dual_timeout;
   const profitLockPct =
     params.harvest_profit_lock_pct ??
     STRATEGY_PARAMS_DEFAULTS.harvest_profit_lock_pct;
@@ -93,23 +91,8 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field
-            label="OpenDual fill timeout (ms)"
-            tooltip="Harvest FSM'in OpenDual aşamasında her iki bacağın dolmasını beklediği maksimum süre. Süre dolunca dolan tarafı tutar (SingleLeg) ya da hiç dolmadıysa iptal edip yeniden dener (Pending). Default: 5 000 ms."
-            hint="Default 5 000 ms = 5 sn."
-          >
-            <Input
-              type="number"
-              step="500"
-              min="500"
-              value={dualTimeout}
-              onChange={(e) =>
-                patch({ harvest_dual_timeout: Number(e.target.value) })
-              }
-            />
-          </Field>
-          <Field
-            label="ProfitLock eşiği (oran)"
-            tooltip="DoubleLeg / SingleLeg ProfitLock tetik oranı. avg_threshold = 1 − pct (örn. 0.02 → 0.98); pozisyonun toplam ortalama maliyeti bu eşiğin altına düşünce FAK ile çıkış emri yollanır. Düşük tutmak çıkışı erken, yüksek tutmak geç tetikler. Default: 0.02."
+            label="Harvest profit-lock oranı"
+            tooltip="Hedge hedef fiyatı için kullanılan eşik. avg_threshold = 1 − pct (örn. 0.02 → 0.98); hedge emir fiyatı = avg_threshold − avg_filled_side olarak türetilir. Düşük tutmak hedge'i avg'ye yakın, yüksek tutmak ise daha karlı (ama daha az dolgun) konuma yerleştirir. Default: 0.02."
             hint="0.00 – 0.50 (default 0.02 → avg_threshold 0.98)."
           >
             <Input
