@@ -3,10 +3,10 @@
 //! ⚡ Kural 1: `decide → execute (POST/DELETE)` arasına sync I/O girmez. Tüm
 //! log/IPC push'lar `execute` döndükten sonra `tokio::spawn` ile arkaplana atılır.
 
-use crate::binance;
 use crate::engine::{execute, ExecuteOutput, MarketSession};
 use crate::ipc::{self, FrontendEvent};
 use crate::polymarket::CancelResponse;
+use crate::rtds;
 use crate::strategy::harvest::HarvestState;
 use crate::strategy::Decision;
 use crate::time::now_ms;
@@ -37,11 +37,27 @@ struct TickLogCtx {
     snap: StateLogSnapshot,
 }
 
-/// Strateji çağrısı + decision execute. `bot/window.rs::run_trading_loop`
-/// içinden event-driven (her WS event sonrası) ve periyodik (1 sn) tetiklenir.
+/// Strateji çağrısı + decision execute. Composite sinyal akışı:
+/// `RTDS window_delta_score + Binance signal_score → effective_composite → sess.tick`.
 pub async fn tick(ctx: &Ctx, sess: &mut MarketSession) {
-    let signal_score = ctx.signal_state.read().await.signal_score;
-    let es = binance::effective_score(signal_score, ctx.cfg.signal_weight);
+    let binance_score = ctx.signal_state.read().await.signal_score;
+    let window_score = if ctx.cfg.strategy_params.rtds_enabled_or_default() {
+        let rtds_snap = ctx.rtds_state.read().await;
+        let interval_secs = sess.end_ts.saturating_sub(sess.start_ts);
+        rtds::window_delta_score(
+            rtds_snap.window_delta_bps,
+            rtds::interval_scale(interval_secs),
+        )
+    } else {
+        5.0
+    };
+    let composite = rtds::composite_score(
+        window_score,
+        binance_score,
+        ctx.cfg.strategy_params.window_delta_weight_or_default(),
+    );
+    let es = rtds::effective_composite(composite, ctx.cfg.signal_weight);
+    let signal_score = composite;
     let prev_state = sess.harvest_state;
     let decision = sess.tick(&ctx.cfg, now_ms(), es);
     let bot_id = ctx.bot_id;

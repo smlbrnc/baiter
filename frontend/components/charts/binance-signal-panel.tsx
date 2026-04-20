@@ -8,7 +8,8 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import type { MarketTick } from "@/lib/types";
+import type { MarketTick, StrategyParams } from "@/lib/types";
+import { STRATEGY_PARAMS_DEFAULTS } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import {
   SECTION_LABEL_CLASS,
@@ -17,20 +18,18 @@ import {
   SIGNAL_PAIR_HEADER_CLASS,
 } from "@/lib/chart-utils";
 
-/* ─── Signal formula (mirrors src/strategy/harvest/dual.rs) ───
- *   effective_score  = 5 + (signal_score − 5) × (weight / 10)
- *   delta            = (es − 5) / 5                  → [−1, +1]
+/* ─── Signal formula (mirrors src/bot/tick.rs + src/rtds.rs) ───
  *
- *   yes_spread = max(0, yes_ask − yes_bid)   ← Polymarket WS anlık spread
- *   no_spread  = max(0, no_ask  − no_bid)
- *   up_bid     = clamp(snap(yes_ask + delta × yes_spread), MIN, MAX)
- *   down_bid   = clamp(snap(no_ask  − delta × no_spread),  MIN, MAX)
+ *   DB'deki signal_score = composite (backend hesaplar):
+ *     composite = w_window × window_delta_score + (1−w_window) × binance_score
+ *     (w_window = strategy_params.window_delta_weight, default 0.70)
  *
- *   - delta=0 (nötr): up_bid=yes_ask, down_bid=no_ask → ikisi de taker eşiğinde.
- *   - delta=+1: up agresif taker (yes_ask + spread), down pasif maker (no_bid).
- *   - delta=−1: up pasif maker (yes_bid),            down agresif taker (no_ask + spread).
- *   - 1−up simetrisi YOK; her taraf bağımsız.
- *   - MIN/MAX_PRICE bot config'ten gelmediği sürece 0.05 / 0.95.
+ *   Frontend yalnızca composite'i signal_weight ile ölçekler:
+ *     effective_score = 5 + (composite − 5) × (signal_weight / 10)
+ *     delta           = (es − 5) / 5   → [−1, +1]
+ *
+ *   up_bid   = clamp(snap(yes_ask + delta × yes_spread), MIN, MAX)
+ *   down_bid = clamp(snap(no_ask  − delta × no_spread),  MIN, MAX)
  */
 const TICK = 0.01;
 const MIN_PRICE = 0.05;
@@ -67,6 +66,7 @@ const signalSide = (s: number): SignalSide =>
 interface Props {
   data: MarketTick[];
   signalWeight: number;
+  strategyParams?: StrategyParams | null;
 }
 
 /* ─── Price row: market ask vs bot bid ──────────────────── */
@@ -149,25 +149,31 @@ function PriceRow({
 }
 
 /* ─── Panel ─────────────────────────────────────────────── */
-export function BinanceSignalPanel({ data, signalWeight }: Props) {
+export function BinanceSignalPanel({ data, signalWeight, strategyParams }: Props) {
+  const sp = strategyParams ?? {};
+  const rtdsEnabled = sp.rtds_enabled ?? STRATEGY_PARAMS_DEFAULTS.rtds_enabled;
+  const windowWeight = sp.window_delta_weight ?? STRATEGY_PARAMS_DEFAULTS.window_delta_weight;
+
   const d = useMemo(() => {
     if (!data.length) return null;
     const last = data[data.length - 1]!;
+    // signal_score in DB = composite (backend: w×window_delta + (1-w)×binance)
+    const composite = last.signal_score;
     const { upBid, downBid, es, delta } = dualPrices(
-      last.signal_score,
+      composite,
       signalWeight,
       last.yes_best_bid,
       last.yes_best_ask,
       last.no_best_bid,
       last.no_best_ask,
     );
-    const composite = (last.signal_score - 5) * 2;
-    const pct = Math.max(0, Math.min(100, ((composite + 10) / 20) * 100));
+    const bar = (composite - 5) * 2; // [0,10] → [-10,+10] for display
+    const pct = Math.max(0, Math.min(100, ((bar + 10) / 20) * 100));
     return {
-      score: last.signal_score,
       composite,
+      bar,
       pct,
-      side: signalSide(last.signal_score),
+      side: signalSide(composite),
       upBid,
       downBid,
       es,
@@ -177,7 +183,7 @@ export function BinanceSignalPanel({ data, signalWeight }: Props) {
     };
   }, [data, signalWeight]);
 
-  const pos = d ? d.composite >= 0 : true;
+  const pos = d ? d.bar >= 0 : true;
   const thumbColor = pos ? "#4ade80" : "#f87171";
 
   return (
@@ -186,7 +192,7 @@ export function BinanceSignalPanel({ data, signalWeight }: Props) {
         <div className="flex min-w-0 items-center gap-1.5">
           <Zap className="text-muted-foreground size-3 shrink-0" />
           <CardTitle className={cn(SECTION_LABEL_CLASS, "normal-case tracking-[0.12em]")}>
-            SİNYAL BİLEŞENLERİ (SON)
+            KOMPOZİT SİNYAL (SON)
           </CardTitle>
         </div>
         {d && (
@@ -216,7 +222,7 @@ export function BinanceSignalPanel({ data, signalWeight }: Props) {
                   className="absolute left-1/2 -translate-x-1/2 text-xs font-bold tabular-nums"
                   style={{ color: thumbColor }}
                 >
-                  {d.composite.toFixed(2)}
+                  {d.bar.toFixed(2)}
                 </span>
                 <span className="text-emerald-400/70">+10</span>
               </div>
@@ -241,9 +247,36 @@ export function BinanceSignalPanel({ data, signalWeight }: Props) {
 
             {/* Meta */}
             <div className="text-muted-foreground/60 flex items-center justify-between font-mono text-[9px] tabular-nums">
-              <span>sig <span className="text-muted-foreground">{d.score.toFixed(2)}</span></span>
-              <span>w <span className="text-muted-foreground">{signalWeight.toFixed(0)}</span></span>
-              <span>eff <span className="text-muted-foreground">{d.es.toFixed(2)}</span></span>
+              <span>
+                cmp{" "}
+                <span className="text-muted-foreground">{d.composite.toFixed(2)}</span>
+              </span>
+              <span>
+                w_sig{" "}
+                <span className="text-muted-foreground">{signalWeight.toFixed(0)}</span>
+              </span>
+              <span>
+                eff{" "}
+                <span className="text-muted-foreground">{d.es.toFixed(2)}</span>
+              </span>
+            </div>
+
+            {/* RTDS config row */}
+            <div className="text-muted-foreground/50 flex items-center justify-between font-mono text-[9px] tabular-nums">
+              <span>
+                rtds{" "}
+                <span className={rtdsEnabled ? "text-emerald-400/80" : "text-muted-foreground"}>
+                  {rtdsEnabled ? "on" : "off"}
+                </span>
+              </span>
+              <span>
+                w_δ{" "}
+                <span className="text-muted-foreground">{windowWeight.toFixed(2)}</span>
+              </span>
+              <span>
+                w_bn{" "}
+                <span className="text-muted-foreground">{(1 - windowWeight).toFixed(2)}</span>
+              </span>
             </div>
 
             {/* Price rows */}

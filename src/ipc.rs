@@ -40,7 +40,6 @@ pub enum FrontendEvent {
         ts_ms: u64,
         reason: String,
     },
-    /// Yeni market penceresi açıldı.
     SessionOpened {
         bot_id: i64,
         slug: String,
@@ -49,14 +48,12 @@ pub enum FrontendEvent {
         yes_token_id: String,
         no_token_id: String,
     },
-    /// Market penceresi çözümlendi (`market_resolved`).
     SessionResolved {
         bot_id: i64,
         slug: String,
         winning_outcome: String,
         ts_ms: u64,
     },
-    /// `status`: `"matched"` (taker fill) veya `"live"` (orderbook'a yerleşti).
     OrderPlaced {
         bot_id: i64,
         order_id: String,
@@ -73,7 +70,6 @@ pub enum FrontendEvent {
         order_id: String,
         ts_ms: u64,
     },
-    /// User WS `trade` MATCHED + sonraki status geçişleri.
     Fill {
         bot_id: i64,
         trade_id: String,
@@ -83,7 +79,6 @@ pub enum FrontendEvent {
         status: String,
         ts_ms: u64,
     },
-    /// Market WS `best_bid_ask` snapshot'ı.
     BestBidAsk {
         bot_id: i64,
         yes_best_bid: f64,
@@ -99,6 +94,13 @@ pub enum FrontendEvent {
         bsi: f64,
         ofi: f64,
         cvd: f64,
+        ts_ms: u64,
+    },
+    RtdsUpdate {
+        bot_id: i64,
+        current_price: f64,
+        window_open_price: Option<f64>,
+        window_delta_bps: f64,
         ts_ms: u64,
     },
     Error {

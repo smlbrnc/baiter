@@ -109,7 +109,7 @@ impl MarketSession {
         MarketPnL::from_metrics(&self.metrics, self.yes_best_bid, self.no_best_bid)
     }
 
-    /// Tek tick — strateji'ye karar ver. `effective_score` Binance sinyali (5.0 = nötr).
+    /// Tek tick — strateji'ye karar ver. `effective_score` composite sinyal (5.0 = nötr).
     pub fn tick(&mut self, cfg: &BotConfig, now_ms_v: u64, effective_score: f64) -> Decision {
         match cfg.strategy {
             Strategy::Harvest => {

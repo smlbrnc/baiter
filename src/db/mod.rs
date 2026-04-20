@@ -1,9 +1,4 @@
-//! SQLite katmanı — alt modüllere bölünmüş.
-//!
-//! WAL mode init'te açılır. `sqlx::query!` compile-time doğrulama yerine
-//! runtime `query_as` / `query` kullanılır (basitlik için).
-//!
-//! Referans: [docs/bot-platform-mimari.md §6-12 §9a §17](../../../docs/bot-platform-mimari.md).
+//! SQLite katmanı (WAL mode, runtime `query_as`). Doc §6-12, §17.
 
 use std::path::Path;
 use std::str::FromStr;
@@ -32,7 +27,8 @@ pub use markets::upsert_market_resolved;
 pub use orders::{upsert_order, OrderRecord};
 pub use pnl::{insert_pnl_snapshot, latest_pnl_for_bot, PnlSnapshot};
 pub use sessions::{
-    latest_session_for_bot, update_market_session_meta, upsert_market_session, SessionSummary,
+    latest_session_for_bot, set_rtds_window_open, update_market_session_meta,
+    upsert_market_session, SessionSummary,
 };
 pub use ticks::MarketTick;
 pub use trades::{upsert_trade, TradeRecord};
@@ -64,11 +60,7 @@ pub async fn run_migrations(pool: &SqlitePool) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Fire-and-forget DB yazımı için tek noktadan helper (§⚡ Kural 4).
-///
-/// Verilen futureı `tokio::spawn` ile arkaplana atar; hata olursa `label`
-/// etiketiyle `tracing::warn` basar. WS/event yolunda bloklamadan kalmak
-/// için kullanılır.
+/// Fire-and-forget DB yazımı (§⚡ Kural 4). Hata `tracing::warn`'e düşer.
 pub fn spawn_db<F, T, E>(label: &'static str, fut: F)
 where
     F: std::future::Future<Output = Result<T, E>> + Send + 'static,

@@ -17,6 +17,10 @@ pub struct RuntimeEnv {
     pub clob_ws_base: String,
     /// EIP-712 imza için zincir id (Polygon mainnet = 137).
     pub polygon_chain_id: u64,
+    pub rtds_ws_url: String,
+    /// Tick boşluğu eşiği (ms); aşıldığında force reconnect (zombie detection).
+    pub rtds_stale_threshold_ms: u64,
+    pub rtds_reconnect_max_backoff_ms: u64,
 }
 
 impl RuntimeEnv {
@@ -34,6 +38,12 @@ impl RuntimeEnv {
                 "wss://ws-subscriptions-clob.polymarket.com/ws",
             ),
             polygon_chain_id: parse_env_or("POLYGON_CHAIN_ID", 137u64)?,
+            rtds_ws_url: env_or("RTDS_WS_URL", "wss://ws-live-data.polymarket.com"),
+            rtds_stale_threshold_ms: parse_env_or("RTDS_STALE_THRESHOLD_MS", 30_000u64)?,
+            rtds_reconnect_max_backoff_ms: parse_env_or(
+                "RTDS_RECONNECT_MAX_BACKOFF_MS",
+                60_000u64,
+            )?,
         })
     }
 }
@@ -83,12 +93,10 @@ pub struct BotConfig {
     pub order_usdc: f64,
     /// 0-10 arası Binance sinyal ağırlığı.
     pub signal_weight: f64,
-    /// Global emir taban fiyatı (default 0.05).
     pub min_price: f64,
-    /// Global emir tavan fiyatı (default 0.95).
     pub max_price: f64,
-    /// Averaging cooldown (ms): (1) iki averaging emri arası min süre,
-    /// (2) açık averaging GTC max yaş. Default `30_000`.
+    /// Averaging cooldown (ms): iki averaging emri arası min süre + açık
+    /// averaging GTC max yaş.
     pub cooldown_threshold: u64,
     /// Pencere ofseti: 0 = aktif, 1 = sonraki.
     pub start_offset: u32,
@@ -104,6 +112,12 @@ pub struct StrategyParams {
     /// SingleLeg ProfitLock FAK tetik oranı (örn. `0.05` → `avg_threshold = 0.95`).
     #[serde(default)]
     pub harvest_profit_lock_pct: Option<f64>,
+    /// RTDS Chainlink sinyali aktif mi. `None` → default `true`.
+    #[serde(default)]
+    pub rtds_enabled: Option<bool>,
+    /// Composite ağırlığı — window_delta payı. `None` → default `0.70`.
+    #[serde(default)]
+    pub window_delta_weight: Option<f64>,
 }
 
 impl StrategyParams {
@@ -117,6 +131,15 @@ impl StrategyParams {
     /// OpenDual fill bekleme süresi (ms); default `5_000`.
     pub fn harvest_dual_timeout(&self) -> u64 {
         self.harvest_dual_timeout.unwrap_or(5_000)
+    }
+
+    pub fn rtds_enabled_or_default(&self) -> bool {
+        self.rtds_enabled.unwrap_or(true)
+    }
+
+    /// `[0, 1]`'e clamp; default `0.70`.
+    pub fn window_delta_weight_or_default(&self) -> f64 {
+        self.window_delta_weight.unwrap_or(0.70).clamp(0.0, 1.0)
     }
 }
 

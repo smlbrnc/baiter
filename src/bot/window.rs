@@ -1,9 +1,4 @@
-//! Tek market penceresinin yönetimi.
-//!
-//! - **T-15 ön hazırlığı (doc §4):** [`wait_for_t_minus_15`] pencere
-//!   başlangıcından 15 sn önce uyandırır; Gamma fetch + book ön-fetch + Market
-//!   WS abonelik kurulumu burada yapılır.
-//! - **T=0:** gerçek trading loop ([`tick`]) başlar.
+//! Tek market penceresinin yönetimi: T-15 ön hazırlık (Gamma + WS), T=0 trading loop.
 
 use std::time::Duration;
 
@@ -16,6 +11,7 @@ use crate::engine::MarketSession;
 use crate::error::AppError;
 use crate::ipc::{self, FrontendEvent};
 use crate::polymarket::{run_market_ws, run_user_ws, PolymarketEvent};
+use crate::rtds;
 use crate::slug::SlugInfo;
 use crate::time::{now_secs, t_minus_15};
 
@@ -53,8 +49,7 @@ pub async fn run_window(
     Ok(result)
 }
 
-/// T-15 ön hazırlığı: Gamma fetch → DB session upsert → MarketSession build →
-/// SessionOpened IPC. WS bağlantısı [`connect_streams`] içinde kurulur.
+/// T-15 ön hazırlığı: Gamma fetch → DB session upsert → MarketSession + SessionOpened IPC.
 async fn prepare_window(
     ctx: &Ctx,
     slug: SlugInfo,
@@ -85,6 +80,8 @@ async fn prepare_window(
         end_ts as i64,
     )
     .await?;
+
+    rtds::reset_window(&ctx.rtds_state, start_ts * 1000).await;
 
     db::sessions::update_market_session_meta(
         &ctx.pool,
@@ -130,8 +127,7 @@ struct WindowStreams {
 /// Market WS + (varsa) User WS task'larını başlatır, mpsc channel kurar.
 fn connect_streams(ctx: &Ctx, session: &MarketSession, label: &str) -> WindowStreams {
     ipc::log_line(label, "🔌 Connecting to Market WebSocket...");
-    // Buffer 2048: yoğun book + user event burst'lerinde drop oranını düşürür;
-    // PolymarketEvent ~200B → ~400KB worst case bellek (ihmal edilebilir).
+    // Buffer 2048: burst'lerde drop'u düşürür (~400KB worst-case bellek).
     let (ev_tx, ev_rx) = mpsc::channel::<PolymarketEvent>(2048);
     let market_ws = tokio::spawn(run_market_ws(
         ctx.env_.clob_ws_base.clone(),
@@ -154,8 +150,7 @@ fn connect_streams(ctx: &Ctx, session: &MarketSession, label: &str) -> WindowStr
     }
 }
 
-/// T=0'a kadar bekle. T-15 hazırlığında biriken WS event'leri trading loop
-/// başladığında işlenir.
+/// T=0'a kadar bekle; T-15 hazırlığında biriken WS event'leri loop başlayınca işlenir.
 async fn wait_for_t_zero(start_ts: u64) {
     let now = now_secs();
     if now < start_ts {
@@ -173,10 +168,7 @@ fn log_loop_start(ctx: &Ctx, label: &str) {
     );
 }
 
-/// Asıl trading döngüsü — `select!` ile WS event / tick / zone / pnl / sinyal.
-///
-/// Dönüş: `None` ⇒ pencere doğal sonu (sonraki window'a geç),
-/// `Some(reason)` ⇒ sigterm/sigint (graceful shutdown).
+/// Trading döngüsü. `None` = pencere bitti, `Some(reason)` = sigterm/sigint.
 async fn run_trading_loop(
     ctx: &Ctx,
     slug: SlugInfo,
@@ -185,13 +177,10 @@ async fn run_trading_loop(
     sigterm: &mut Signal,
     sigint: &mut Signal,
 ) -> Option<&'static str> {
-    // ⚡ Kural 1 — Critical Path Zero Block:
-    //   [WS event] → handle_event(update_best) → tick::tick(decide+execute)
-    // tek select! arm'ında zincirlenir; aralarında bekleme yok.
-    // tick_timer (1 sn) safety net: WS event akışı yokken Binance signal
-    // değişimleri için periyodik fallback.
+    // Critical Path Zero Block: WS event → handle_event → tick aynı select! arm'ında.
     let mut tick_timer = tokio_interval(Duration::from_secs(1));
     let mut frontend_timer = tokio_interval(Duration::from_secs(1));
+    let mut rtds_open_persisted = false;
 
     loop {
         tokio::select! {
@@ -206,6 +195,10 @@ async fn run_trading_loop(
                 zone::emit_frontend_snapshot(ctx, &sess, slug).await;
                 persist::snapshot_pnl(&ctx.pool, &sess);
                 persist::snapshot_tick(ctx, &sess).await;
+                if !rtds_open_persisted && sess.market_session_id > 0 {
+                    rtds_open_persisted =
+                        persist::maybe_persist_rtds_window_open(ctx, &sess).await;
+                }
                 if now_secs() >= sess.end_ts {
                     return None;
                 }
@@ -246,11 +239,7 @@ pub fn next_window(mut slug: SlugInfo) -> SlugInfo {
     slug
 }
 
-/// Pencere başlangıcından **15 sn önce** uyanır (`time::t_minus_15`).
-///
-/// Doc §4: Gamma + book ön-fetch + Market WS abonelik kurulumu T-15'te
-/// başlatılır; gerçek trading loop T=0'da başlar. Bu fonksiyon yalnız
-/// `sleep`'i sinyalle birlikte yönetir.
+/// Pencere başlangıcından 15 sn önce uyanır (doc §4 T-15 hazırlığı).
 async fn wait_for_t_minus_15(
     market_start_ts: u64,
     sigterm: &mut Signal,

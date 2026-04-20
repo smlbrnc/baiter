@@ -29,8 +29,7 @@ pub struct BotRow {
 }
 
 impl BotRow {
-    /// DB satırından tam BotConfig üret. `strategy_params` parse hatası
-    /// sessizce default'a düşmez; `AppError::Config` döner.
+    /// DB satırından `BotConfig` üret. `strategy_params` parse hatası `AppError::Config` döner.
     pub fn to_config(&self) -> Result<BotConfig, AppError> {
         let strategy: Strategy = serde_json::from_str(&format!("\"{}\"", self.strategy))
             .map_err(|e| AppError::Config(format!("strategy parse: {e}")))?;
@@ -38,10 +37,7 @@ impl BotRow {
             .map_err(|e| AppError::Config(format!("run_mode parse: {e}")))?;
         let strategy_params: StrategyParams = serde_json::from_str(&self.strategy_params)
             .map_err(|e| {
-                AppError::Config(format!(
-                    "strategy_params parse (bot={}): {e}",
-                    self.id
-                ))
+                AppError::Config(format!("strategy_params parse (bot={}): {e}", self.id))
             })?;
         Ok(BotConfig {
             id: self.id,
@@ -158,10 +154,7 @@ pub async fn delete_bot(pool: &SqlitePool, bot_id: i64) -> Result<(), AppError> 
     Ok(())
 }
 
-/// `update_bot` için editable alanların gövdesi.
-///
-/// `slug_pattern` ve `strategy` immutable kabul edilir — bot oluşturulurken
-/// belirlenir, sonradan değiştirilmez. Bu yüzden burada da yer almaz.
+/// `update_bot` için editable alanlar. `slug_pattern` ve `strategy` immutable.
 #[derive(Debug, Clone)]
 pub struct BotUpdate {
     pub name: String,
@@ -175,10 +168,8 @@ pub struct BotUpdate {
     pub strategy_params: StrategyParams,
 }
 
-/// Bot ayarlarını güncelle (state, timestamps ve immutable alanlar hariç).
-///
-/// Çağıran taraf bot'un STOPPED olduğunu garanti etmelidir; supervisor koşan
-/// bir process'e güncel ayarları yansıtmaz (yeniden start gerekir).
+/// Bot ayarlarını güncelle. Çağıran taraf STOPPED olduğunu garanti etmeli;
+/// koşan process'e yansımaz (restart gerekir).
 pub async fn update_bot(pool: &SqlitePool, bot_id: i64, upd: &BotUpdate) -> Result<(), AppError> {
     let now = now_ms() as i64;
     let run_mode = serde_json::to_string(&upd.run_mode)?

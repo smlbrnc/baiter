@@ -8,6 +8,10 @@ import { ASSETS, INTERVALS, previewSlug, slugPattern } from "@/lib/market";
 import type { CreateBotReq } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { STRATEGY_OPTIONS } from "@/components/bots/bot-form-constants";
+import {
+  BotFormNameField,
+  BotFormRunModeField,
+} from "@/components/bots/bot-form-fields";
 import { SectionLabel } from "@/components/bots/bot-form-shared";
 
 type Props = {
@@ -34,6 +38,8 @@ export function BotFormMarketSection({
   const slugStored = slugPattern(asset, interval);
   return (
     <div className="space-y-5">
+      <BotFormNameField form={form} setForm={setForm} />
+
       <div>
         <SectionLabel icon={Layers} title="Market" />
         <p className="text-muted-foreground mt-1 text-sm">
@@ -231,6 +237,8 @@ export function BotFormMarketSection({
           </div>
         </div>
       </div>
+
+      <BotFormRunModeField form={form} setForm={setForm} />
     </div>
   );
 }

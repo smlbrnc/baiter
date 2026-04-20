@@ -7,6 +7,27 @@ export type Side = "BUY" | "SELL";
 export type RunMode = "live" | "dryrun";
 export type Strategy = "dutch_book" | "harvest" | "prism";
 
+/**
+ * `bots.strategy_params` JSON sütunu — backend `config::StrategyParams`.
+ * Tüm alanlar opsiyoneldir; `null`/`undefined` → backend `_or_default()` uygular.
+ */
+export interface StrategyParams {
+  /** Harvest OpenDual fill bekleme süresi (ms). Default 5000. */
+  harvest_dual_timeout?: number | null;
+  /**
+   * SingleLeg ProfitLock FAK tetik oranı (örn. 0.05 → avg_threshold 0.95).
+   * Default 0.02.
+   */
+  harvest_profit_lock_pct?: number | null;
+  /** RTDS Chainlink window-delta sinyali aktif mi. Default true. */
+  rtds_enabled?: boolean | null;
+  /**
+   * Composite skorda window_delta payı (0–1). Geri kalan Binance payı.
+   * Default 0.70 (window_delta dominant).
+   */
+  window_delta_weight?: number | null;
+}
+
 export interface BotRow {
   id: number;
   name: string;
@@ -19,7 +40,7 @@ export interface BotRow {
   max_price: number;
   cooldown_threshold: number;
   start_offset: number;
-  strategy_params: Record<string, unknown> | null;
+  strategy_params: StrategyParams | null;
   state: string;
   last_active_ms: number | null;
   created_at_ms: number;
@@ -243,7 +264,7 @@ export interface CreateBotReq {
   max_price: number;
   cooldown_threshold: number;
   start_offset: number;
-  strategy_params?: Record<string, unknown>;
+  strategy_params?: StrategyParams;
   credentials?: Credentials;
   auto_start?: boolean;
 }
@@ -263,6 +284,14 @@ export interface UpdateBotReq {
   max_price: number;
   cooldown_threshold: number;
   start_offset: number;
-  strategy_params?: Record<string, unknown>;
+  strategy_params?: StrategyParams;
   credentials?: Credentials;
 }
+
+/** `StrategyParams` default'ları (`config::StrategyParams::*_or_default`). */
+export const STRATEGY_PARAMS_DEFAULTS = {
+  harvest_dual_timeout: 5000,
+  harvest_profit_lock_pct: 0.02,
+  rtds_enabled: true,
+  window_delta_weight: 0.7,
+} as const;

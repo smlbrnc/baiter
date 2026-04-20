@@ -13,6 +13,7 @@ pub mod engine;
 pub mod error;
 pub mod ipc;
 pub mod polymarket;
+pub mod rtds;
 pub mod slug;
 pub mod strategy;
 pub mod supervisor;

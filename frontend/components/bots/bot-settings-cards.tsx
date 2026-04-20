@@ -11,14 +11,24 @@ import {
   Activity,
   CircleDollarSign,
   Clock,
+  Radio,
   SlidersHorizontal,
   SkipForward,
   Workflow,
 } from "lucide-react";
 import type { BotRow } from "@/lib/types";
+import { STRATEGY_PARAMS_DEFAULTS } from "@/lib/types";
 
 /** Bot ayarlarını yan yana özet kartları (bot detay / market detay sayfaları). */
 export function BotSettingsCards({ bot }: { bot: BotRow }) {
+  const sp = bot.strategy_params ?? {};
+  const rtdsEnabled = sp.rtds_enabled ?? STRATEGY_PARAMS_DEFAULTS.rtds_enabled;
+  const windowWeight =
+    sp.window_delta_weight ?? STRATEGY_PARAMS_DEFAULTS.window_delta_weight;
+  const rtdsLabel = rtdsEnabled
+    ? `On · w=${windowWeight.toFixed(2)}`
+    : "Off";
+
   const cards: { label: string; value: string; icon: LucideIcon }[] = [
     {
       label: "Strategy",
@@ -34,6 +44,11 @@ export function BotSettingsCards({ bot }: { bot: BotRow }) {
       label: "Signal weight",
       value: bot.signal_weight.toFixed(1),
       icon: Activity,
+    },
+    {
+      label: "RTDS",
+      value: rtdsLabel,
+      icon: Radio,
     },
     {
       label: "Cooldown",
@@ -53,7 +68,7 @@ export function BotSettingsCards({ bot }: { bot: BotRow }) {
   ];
 
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-7">
       {cards.map(({ label, value, icon: Icon }) => (
         <Card key={label} size="sm" className="!gap-2 !py-3">
           <CardHeader className="!px-2.5">

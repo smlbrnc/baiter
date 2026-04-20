@@ -34,6 +34,16 @@ impl Asset {
         }
     }
 
+    /// Polymarket RTDS `crypto_prices_chainlink` filter formatı (§3.3).
+    pub fn rtds_symbol(self) -> &'static str {
+        match self {
+            Self::Btc => "btc/usd",
+            Self::Eth => "eth/usd",
+            Self::Sol => "sol/usd",
+            Self::Xrp => "xrp/usd",
+        }
+    }
+
     fn parse(s: &str) -> Option<Self> {
         match s {
             "btc" => Some(Self::Btc),

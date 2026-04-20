@@ -16,6 +16,7 @@ import { BotFormCredentialsSection } from "@/components/bots/bot-form-credential
 import { BotFormHeader } from "@/components/bots/bot-form-header";
 import { BotFormMarketSection } from "@/components/bots/bot-form-market-section";
 import { BotFormSettingsSection } from "@/components/bots/bot-form-settings-section";
+import { BotFormStrategyParamsSection } from "@/components/bots/bot-form-strategy-section";
 
 export function BotForm() {
   const router = useRouter();
@@ -31,7 +32,7 @@ export function BotForm() {
     max_price: 0.95,
     cooldown_threshold: 30000,
     start_offset: 1,
-    auto_start: false,
+    strategy_params: {},
   });
   const [asset, setAsset] = useState<MarketAsset>(DEFAULT_MARKET.asset);
   const [interval, setInterval] = useState<MarketInterval>(
@@ -163,7 +164,10 @@ export function BotForm() {
               pickAsset={pickAsset}
               pickInterval={pickInterval}
             />
-            <BotFormSettingsSection form={form} setForm={setForm} />
+            <div className="space-y-5">
+              <BotFormSettingsSection form={form} setForm={setForm} />
+              <BotFormStrategyParamsSection form={form} setForm={setForm} />
+            </div>
           </div>
         </div>
 

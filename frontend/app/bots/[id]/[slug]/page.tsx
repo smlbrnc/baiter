@@ -225,6 +225,7 @@ export default function MarketDetailPage() {
         <BinanceSignalPanel
                   data={ticks}
                   signalWeight={bot?.signal_weight ?? 10}
+                  strategyParams={bot?.strategy_params ?? null}
                 />
         <AvgSumChart data={pnlHistory} session={sessionRange} />
       </div>

@@ -1,11 +1,5 @@
-//! `market_sessions` tablosu CRUD'u.
-//!
-//! Veri modeli notu: pozisyon agregatları (`cost_basis`, `shares_yes`,
-//! `shares_no`, `fee_total`, `pnl_if_up`, `pnl_if_down`) `market_sessions`
-//! satırına yazılmıyor — yalnızca `pnl_snapshots`'a düşüyor. Bu yüzden
-//! list / detail sorguları en son `pnl_snapshots` satırını LEFT JOIN ile
-//! çekip `COALESCE(..., 0.0)` ile NULL'ları sıfırlar. `realized_pnl`
-//! market resolve sonrası `market_sessions`'a yazıldığı için oradan okunur.
+//! `market_sessions` CRUD. Pozisyon agregatları yalnız `pnl_snapshots`'ta
+//! tutulur; list/detail sorguları `LATEST_PNL_JOIN` ile son satırı çeker.
 
 use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqlitePool};
@@ -79,6 +73,28 @@ pub async fn upsert_market_session(
     Ok(row.get::<i64, _>("id"))
 }
 
+/// İlk RTDS tick'inde pencere açılış snapshot'unu yazar (migration 0010).
+/// Çağırıcı bir flag ile tek-yazım garantisi sağlamalıdır.
+pub async fn set_rtds_window_open(
+    pool: &SqlitePool,
+    session_id: i64,
+    price: f64,
+    ts_ms: i64,
+) -> Result<(), AppError> {
+    let now = now_ms() as i64;
+    sqlx::query(
+        "UPDATE market_sessions SET rtds_window_open_price = ?, \
+         rtds_window_open_ts_ms = ?, updated_at_ms = ? WHERE id = ?",
+    )
+    .bind(price)
+    .bind(ts_ms)
+    .bind(now)
+    .bind(session_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 pub async fn update_market_session_meta(
     pool: &SqlitePool,
     session_id: i64,
@@ -105,10 +121,8 @@ pub async fn update_market_session_meta(
     Ok(())
 }
 
-/// `pnl_snapshots`'tan session başına en son satırı LEFT JOIN eden
-/// SQL fragment'i. Korelasyonlu MAX subquery'si idx_pnl_session_ts
-/// (migration 0009) sayesinde O(log N) index lookup'a düşer.
-/// (alias `s` = market_sessions, `p` = pnl_snapshots).
+/// `pnl_snapshots`'tan en son satırı LEFT JOIN eder. Korelasyonlu MAX
+/// `idx_pnl_session_ts` (migration 0009) sayesinde O(log N).
 const LATEST_PNL_JOIN: &str = "LEFT JOIN pnl_snapshots p \
        ON p.market_session_id = s.id \
       AND p.ts_ms = (SELECT MAX(ts_ms) FROM pnl_snapshots \
@@ -134,8 +148,7 @@ pub async fn latest_session_for_bot(
     }))
 }
 
-/// `/api/bots/:id/sessions` için: bot'un session'ları, en yeniden eskiye,
-/// `limit` + `offset` ile sayfalanmış. Toplam sayı ayrıca
+/// `/api/bots/:id/sessions` — sayfalanmış liste; toplam sayı
 /// [`count_sessions_for_bot`] ile çekilir.
 pub async fn list_sessions_for_bot(
     pool: &SqlitePool,
@@ -143,9 +156,7 @@ pub async fn list_sessions_for_bot(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<SessionListItem>, AppError> {
-    // Önce bot'un sayfalanmış session'larını seç (LIMIT/OFFSET burada),
-    // ardından sadece bu küçük kümeyle JOIN yap. Aksi halde JOIN tüm
-    // session'lar için subquery çalıştırır → büyük botlarda lineer patlar.
+    // CTE: önce sayfa, sonra JOIN — büyük botlarda lineer patlama olmasın.
     let sql = format!(
         "WITH paged AS ( \
              SELECT id, slug, start_ts, end_ts, state, realized_pnl \

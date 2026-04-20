@@ -12,6 +12,7 @@ use crate::db;
 use crate::engine::{Executor, LiveExecutor, Simulator};
 use crate::error::AppError;
 use crate::polymarket::{shared_http_client, ClobClient, GammaClient};
+use crate::rtds::{self, SharedRtdsState};
 use crate::slug::{parse_slug_or_prefix, SlugInfo};
 use crate::types::{RunMode, Strategy};
 
@@ -27,6 +28,8 @@ pub struct Ctx {
     pub creds: Option<Credentials>,
     pub executor: Executor,
     pub signal_state: SharedSignalState,
+    /// RTDS Chainlink feed snapshot'u — disable iken default (nötr) kalır.
+    pub rtds_state: SharedRtdsState,
 }
 
 /// CLI veya `BAITER_BOT_ID` env'inden bot id parse et.
@@ -57,10 +60,7 @@ pub fn parse_bot_id() -> Result<i64, AppError> {
         .map_err(|_| AppError::Config("BAITER_BOT_ID must be integer".into()))
 }
 
-/// `Ctx` + ilk slug + signal handler'ları kur.
-///
-/// Doc §11 sözleşmesi: yalnız `Strategy::Harvest` aktif strateji; diğer
-/// stratejiler için bot başlatma reddedilir.
+/// `Ctx` + ilk slug + signal handler'ları kur. Doc §11: yalnız Harvest aktif.
 pub async fn load(bot_id: i64) -> Result<(Ctx, SlugInfo, Signal, Signal), AppError> {
     let env_ = RuntimeEnv::from_env()?;
     let pool = db::open(&env_.db_path).await?;
@@ -76,12 +76,16 @@ pub async fn load(bot_id: i64) -> Result<(Ctx, SlugInfo, Signal, Signal), AppErr
     let (executor, clob) = build_executor(&http, &env_, &cfg, &pool, creds.as_ref());
 
     let signal_state = new_shared_state();
+    let rtds_state = rtds::new_shared_state();
     spawn_background_tasks(
         bot_id,
         slug,
         env_.heartbeat_dir.clone(),
         signal_state.clone(),
+        rtds_state.clone(),
         clob.as_ref(),
+        &cfg,
+        &env_,
     );
 
     let (sigterm, sigint) = register_signals()?;
@@ -96,6 +100,7 @@ pub async fn load(bot_id: i64) -> Result<(Ctx, SlugInfo, Signal, Signal), AppErr
             creds,
             executor,
             signal_state,
+            rtds_state,
         },
         slug,
         sigterm,
@@ -167,26 +172,47 @@ fn build_executor(
         client: clob.clone(),
         creds: c.clone(),
         chain_id: env_.polygon_chain_id,
-        // ms → s; cooldown_threshold averaging GTC max yaşı için kullanıldığından
-        // GTD timeout'u olarak da onu kullanıyoruz (doc §13).
+        // GTD timeout'u averaging cooldown ile aynı (doc §13); ms → s.
         gtd_timeout_secs: cfg.cooldown_threshold / 1000,
         pool: pool.clone(),
     });
     (exec, Some(clob))
 }
 
-/// Binance signal + heartbeat + (varsa) CLOB heartbeat task'larını arkaplana atar.
+/// Binance signal + RTDS + heartbeat + (varsa) CLOB heartbeat task'larını
+/// arkaplana atar. RTDS yalnız `strategy_params.rtds_enabled` iken başlar.
+#[allow(clippy::too_many_arguments)]
 fn spawn_background_tasks(
     bot_id: i64,
     slug: SlugInfo,
     heartbeat_dir: String,
     signal_state: SharedSignalState,
+    rtds_state: SharedRtdsState,
     clob: Option<&Arc<ClobClient>>,
+    cfg: &BotConfig,
+    env_: &RuntimeEnv,
 ) {
     let symbol = slug.asset.binance_symbol().to_string();
     tokio::spawn(async move {
         binance::run_binance_signal(&symbol, slug.interval, signal_state, bot_id).await;
     });
+    if cfg.strategy_params.rtds_enabled_or_default() {
+        let rtds_symbol = slug.asset.rtds_symbol().to_string();
+        let ws_url = env_.rtds_ws_url.clone();
+        let stale_ms = env_.rtds_stale_threshold_ms;
+        let max_backoff_ms = env_.rtds_reconnect_max_backoff_ms;
+        tokio::spawn(async move {
+            rtds::run_rtds_task(
+                ws_url,
+                rtds_symbol,
+                stale_ms,
+                max_backoff_ms,
+                rtds_state,
+                bot_id,
+            )
+            .await;
+        });
+    }
     tokio::spawn(tasks::heartbeat_task(tasks::heartbeat_path(
         &heartbeat_dir,
         bot_id,

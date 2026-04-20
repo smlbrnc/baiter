@@ -7,6 +7,7 @@ use sqlx::SqlitePool;
 
 use crate::db;
 use crate::engine::{ExecutedOrder, MarketSession, DRYRUN_FEE_RATE};
+use crate::rtds;
 use crate::time::now_ms;
 
 use super::ctx::Ctx;
@@ -38,15 +39,29 @@ pub fn snapshot_pnl(pool: &SqlitePool, sess: &MarketSession) {
     });
 }
 
-/// `market_ticks` tablosuna 1 sn cadence BBA + Binance signal snapshot'ı yazar.
+/// `market_ticks` tablosuna 1 sn cadence BBA + composite signal snapshot'ı yazar.
 pub async fn snapshot_tick(ctx: &Ctx, sess: &MarketSession) {
     if sess.market_session_id == 0 {
         return;
     }
-    let (signal_score, bsi, ofi, cvd) = {
+    let (binance_score, bsi, ofi, cvd) = {
         let snap = ctx.signal_state.read().await;
         (snap.signal_score, snap.bsi, snap.ofi, snap.cvd)
     };
+    let window_score = if ctx.cfg.strategy_params.rtds_enabled_or_default() {
+        let rtds_snap = ctx.rtds_state.read().await;
+        rtds::window_delta_score(
+            rtds_snap.window_delta_bps,
+            rtds::interval_scale(sess.end_ts.saturating_sub(sess.start_ts)),
+        )
+    } else {
+        5.0
+    };
+    let signal_score = rtds::composite_score(
+        window_score,
+        binance_score,
+        ctx.cfg.strategy_params.window_delta_weight_or_default(),
+    );
     let tick = db::MarketTick {
         yes_best_bid: sess.yes_best_bid,
         yes_best_ask: sess.yes_best_ask,
@@ -67,10 +82,27 @@ pub async fn snapshot_tick(ctx: &Ctx, sess: &MarketSession) {
     );
 }
 
-/// DryRun fill → `trades` tablosuna fire-and-forget yazım.
-///
-/// `trader_side`: `"TAKER"` (Simulator immediate match) | `"MAKER"`
-/// (passive `simulate_passive_fills`). `raw_payload.source` debug için saklanır.
+/// RTDS pencere açılışını `market_sessions`'a bir kez yazar (fire-and-forget).
+/// `true` döndüğünde çağırıcı aynı pencerede tekrar çağırmamalı.
+pub async fn maybe_persist_rtds_window_open(ctx: &Ctx, sess: &MarketSession) -> bool {
+    let (price, ts_ms) = {
+        let snap = ctx.rtds_state.read().await;
+        match (snap.window_open_price, snap.window_open_ts_ms) {
+            (Some(p), Some(t)) => (p, t),
+            _ => return false,
+        }
+    };
+    let pool = ctx.pool.clone();
+    let session_id = sess.market_session_id;
+    let ts_ms_i = ts_ms as i64;
+    db::spawn_db("rtds_window_open update", async move {
+        db::sessions::set_rtds_window_open(&pool, session_id, price, ts_ms_i).await
+    });
+    true
+}
+
+/// DryRun fill → `trades` tablosuna fire-and-forget. `trader_side` =
+/// `"TAKER"` (immediate match) | `"MAKER"` (passive fill).
 pub fn persist_dryrun_fill(
     pool: &SqlitePool,
     sess: &MarketSession,

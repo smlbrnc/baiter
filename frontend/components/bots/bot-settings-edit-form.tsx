@@ -13,7 +13,12 @@ import type {
 } from "@/lib/types";
 import { CARD_SHELL_CLASS } from "@/lib/ui-constants";
 import { BotFormCredentialsSection } from "@/components/bots/bot-form-credentials-section";
+import {
+  BotFormNameField,
+  BotFormRunModeField,
+} from "@/components/bots/bot-form-fields";
 import { BotFormSettingsSection } from "@/components/bots/bot-form-settings-section";
+import { BotFormStrategyParamsSection } from "@/components/bots/bot-form-strategy-section";
 
 type Props = {
   bot: BotRow;
@@ -98,6 +103,7 @@ export function BotSettingsEditForm({ bot, onUpdated }: Props) {
         max_price: maxP,
         cooldown_threshold: cooldown,
         start_offset: form.start_offset,
+        strategy_params: form.strategy_params,
       };
       if (includeCreds) {
         const credsBody: Credentials = {
@@ -136,12 +142,11 @@ export function BotSettingsEditForm({ bot, onUpdated }: Props) {
     <form onSubmit={onSubmit}>
       <fieldset disabled={submitting} className="contents">
         <div className={CARD_SHELL_CLASS}>
-          <div className="px-4 py-5 sm:px-6">
-            <BotFormSettingsSection
-              form={form}
-              setForm={setForm}
-              hideAutoStart
-            />
+          <div className="space-y-5 px-4 py-5 sm:px-6">
+            <BotFormNameField form={form} setForm={setForm} />
+            <BotFormSettingsSection form={form} setForm={setForm} />
+            <BotFormRunModeField form={form} setForm={setForm} />
+            <BotFormStrategyParamsSection form={form} setForm={setForm} />
           </div>
 
           <Separator />
@@ -180,7 +185,7 @@ function botToForm(bot: BotRow): CreateBotReq {
     max_price: bot.max_price,
     cooldown_threshold: bot.cooldown_threshold,
     start_offset: bot.start_offset,
-    auto_start: false,
+    strategy_params: bot.strategy_params ?? {},
   };
 }
 
