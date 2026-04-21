@@ -187,14 +187,14 @@ impl ClobClient {
 ///
 /// Spec: <https://docs.polymarket.com/developers/CLOB/orders/create-an-order>
 ///
-/// - `Matched` — karşı taraf REST anında bulundu, fill garanti.
-///   `LiveExecutor::place` `open_orders`'a `size_matched = size` marker
-///   push eder; `metrics` değiştirilmez. Gerçek fill price `planned.price`'tan
-///   farklı olabilir (book best fiyatından dolar) → metrics ingest'i tek
-///   kaynak olarak User WS `trade MATCHED` event'inde yapılır; aynı event'te
-///   `record_fill_and_prune_if_full` marker'ı düşürür.
+/// - `Matched` — karşı taraf REST anında bulundu, **kısmi veya tam** fill.
+///   GTC için kısmi match'te de `status=matched` döner; kalan miktar kitapta
+///   canlı kalır. Yanıt gerçek fill miktarını taşımadığı için
+///   `LiveExecutor::place` `open_orders`'a `size_matched = 0` push eder; gerçek
+///   fill_size + price + prune User WS `trade MATCHED` event'inin **tek**
+///   sorumluluğudur (`record_fill_and_prune_if_full`).
 /// - `Live` — kitaba (orderbook) girdi, passive bekliyor →
-///   `LiveExecutor::place` `open_orders`'a `size_matched = 0` push.
+///   `open_orders`'a `size_matched = 0` push.
 /// - `Delayed` — CLOB asenkron eşleştirme kuyruğunda; sonuç User WS
 ///   `trade MATCHED` ile gelir → `open_orders`'a `size_matched = 0` push.
 /// - `Unmatched` — reject; `PostOrderResponse.success=false` ile birlikte

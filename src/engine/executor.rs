@@ -132,19 +132,27 @@ impl LiveExecutor {
                 resp.error_msg
             )));
         }
-        // `Matched` → REST anında karşı taraf bulundu; `open_orders`'a
-        // `size_matched = size` marker push, `metrics.ingest_fill` ÇAĞRILMAZ.
-        // Gerçek fill price book best fiyatından dolayı `planned.price`'tan
-        // farklı olabilir → metrics ingest'i User WS `trade MATCHED` event'inin
-        // tek sorumluluğu. Marker WS event'inde
-        // `record_fill_and_prune_if_full` ile düşürülür. Regresyon:
-        // Bot 6 / btc-updown-5m-1776776400 — REST `planned.price` ile ingest
-        // VWAP'ı bozup hedge target'ını yanlış hesaplattırıyordu.
+        // `Matched` REST yanıtı **tam fill garantisi DEĞİL** — Polymarket GTC
+        // için kısmi match'te de `status=matched` döner (kalan kitapta canlı).
+        // Eski kod `Matched` görünce marker olarak `size_matched = planned.size`
+        // basardı; sonra User WS `trade MATCHED` event aynı fill'i tekrar
+        // `size_matched += fill_size` eklediğinden çift sayım oluşur ve
+        // `record_fill_and_prune_if_full` opener'ı erken prune ederdi → kitapta
+        // unutulmuş partial leg + bozulmuş hedge size hesabı (Bot 4 /
+        // btc-updown-5m-1776795600 regresyonu: DOWN opener 11 → 6.78 fill,
+        // marker=11 + WS 6.78 = 17.78 → prune; kalan 4.22 kitapta canlı kaldı).
         //
-        // `Live` / `Delayed` → kitapta passive ya da async kuyrukta;
-        // `open_orders`'a `size_matched = 0` push, fill yine WS ile gelir.
+        // Tüm statülerde `size_matched = 0.0` push. Hem metrics hem size
+        // akümülasyonu **User WS `trade MATCHED` event'inin tek sorumluluğu**:
+        // - Metrics: REST `planned.price` book best fiyatından farklı olabilir,
+        //   VWAP'ı bozar (Bot 6 / btc-updown-5m-1776776400).
+        // - Size: REST yanıtı `makingAmount/takingAmount` taşımadığı için
+        //   gerçek partial fill miktarı yalnız WS'den gelir.
+        //
+        // Race riski yok: `select!` loop `place()`'i await ederken WS mpsc
+        // event'leri buffer'da bekler; `place()` döndükten sonra processed olur
+        // ve o zamana dek `open_orders` entry mevcuttur.
         let filled = resp.status.is_filled();
-        let size_matched_now = if filled { planned.size } else { 0.0 };
         session.open_orders.push(OpenOrder {
             id: resp.order_id.clone(),
             outcome: planned.outcome,
@@ -153,7 +161,7 @@ impl LiveExecutor {
             size: planned.size,
             reason: planned.reason.clone(),
             placed_at_ms: now_ms(),
-            size_matched: size_matched_now,
+            size_matched: 0.0,
         });
         // Cooldown `place_batch`'te (her live emir gönderiminde) tek noktadan
         // tetiklenir — burada ayrıca arm etmek çift güncelleme demek.
