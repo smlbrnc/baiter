@@ -48,9 +48,9 @@ pub trait DecisionEngine {
 /// `decide()` döndüğü aksiyon — engine tarafından yürütülür.
 ///
 /// `CancelAndPlace` hedge re-pricing gibi senaryolarda eski emrin cancel'ı
-/// + yeni emrin placement'ı tek tick'te atomic olarak yapılsın diye ayrı
+/// ile yeni emrin placement'ı tek tick'te atomic olarak yapılsın diye ayrı
 /// bir varyanttır. Executor önce cancel REST, sonra place REST sırasını
-/// uygular; ara `HedgeUpdating` tick'i beklenmez (doc §9 atomic re-price).
+/// uygular; ayrı bir ara state beklenmez (doc §9 atomic re-price).
 #[derive(Debug, Clone)]
 pub enum Decision {
     NoOp,

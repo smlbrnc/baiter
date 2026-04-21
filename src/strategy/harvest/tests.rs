@@ -589,46 +589,17 @@ fn position_open_missing_hedge_replaces() {
     );
 }
 
-/// Drift tespit edilse bile yeni hedge planlanamıyorsa (target band dışı /
-/// imbalance dust) eski hedge cancel edilmez — ProfitLock garantisini
-/// bozmamak için cancel-only yapılmaz; bir sonraki tick'te avg değişince
-/// yeniden değerlendirilir. (Strategy refactor: cancel-only fallback kaldırıldı.)
-#[test]
-fn position_open_drift_with_unbuildable_hedge_keeps_old_hedge() {
-    // Çok düşük avg_yes (≈0.10) → target = 0.98 − 0.10 = 0.88. max_price'ı
-    // 0.80'e indirip target'ı band dışına it; drift olsa da `build_hedge=None`
-    // → `Decision::NoOp`, hedge open_orders'ta kalır.
-    let mut metrics = StrategyMetrics::default();
-    metrics.ingest_fill(Outcome::Up, Side::Buy, 0.10, 50.0, 0.0);
-    let opens = vec![mk_order(
-        "hedge_old",
-        Outcome::Down,
-        "harvest_v2:hedge:down",
-        0.50,
-        50.0,
-        0,
-    )];
-    let mut ctx = default_ctx(&metrics, &opens);
-    ctx.max_price = 0.80;
-
-    let (state, dec) = decide(
-        HarvestState::PositionOpen {
-            filled_side: Outcome::Up,
-        },
-        &ctx,
-    );
-    assert_eq!(
-        state,
-        HarvestState::PositionOpen {
-            filled_side: Outcome::Up
-        }
-    );
-    assert!(
-        matches!(dec, Decision::NoOp),
-        "band dışı hedge için NoOp beklenir, got {:?}",
-        dec
-    );
-}
+// NOT: "drift tespit edilse de yeni hedge planlanamıyorsa cancel-only
+// yapma" davranışı için ayrı bir test yazılmadı çünkü pratikte tetiklenebilir
+// bir senaryo yok: `HarvestContext::snap_clamp` target fiyatını her zaman
+// `[min_price, max_price]` aralığına clamp ettiği için `build_hedge`'deki
+// ikinci `price_in_band` kontrolü unreachable. İmbalance dust durumu da
+// drift dalına giremez (hedge open_orders'ta varken imbalance dust olamaz,
+// çünkü hedge size = imbalance şartıyla yerleştirilmiştir). Defansif
+// koruma kodda var ama test edilemez. Drift senaryosunun her zaman
+// `Decision::CancelAndPlace` döndürdüğü (asla cancel-only `CancelOrders`
+// değil) `position_open_hedge_drift_triggers_cancel` testi tarafından
+// invariant olarak doğrulanıyor.
 
 /// Bot 4 (`btc-updown-5m-1776773400`) regresyonu: opener fill'leri de
 /// `last_averaging_ms` cooldown'unu tetiklemeli — session reset / Pending'e
