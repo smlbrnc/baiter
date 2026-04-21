@@ -240,6 +240,38 @@ export type FrontendEvent =
       ts_ms: number;
     }
   | {
+      /** BestBidAsk + SignalUpdate birleşimi; session slug ile eşleştirilir. */
+      kind: "TickSnapshot";
+      bot_id: number;
+      slug: string;
+      yes_best_bid: number;
+      yes_best_ask: number;
+      no_best_bid: number;
+      no_best_ask: number;
+      signal_score: number;
+      bsi: number;
+      ofi: number;
+      cvd: number;
+      ts_ms: number;
+    }
+  | {
+      /** 1 sn cadence PnL snapshot; REST polling yerine kullanılır. */
+      kind: "PnlUpdate";
+      bot_id: number;
+      slug: string;
+      cost_basis: number;
+      fee_total: number;
+      shares_yes: number;
+      shares_no: number;
+      pnl_if_up: number;
+      pnl_if_down: number;
+      mtm_pnl: number;
+      pair_count: number;
+      avg_yes?: number | null;
+      avg_no?: number | null;
+      ts_ms: number;
+    }
+  | {
       kind: "Error";
       bot_id: number;
       message: string;

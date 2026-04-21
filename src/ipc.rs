@@ -104,6 +104,37 @@ pub enum FrontendEvent {
         window_delta_bps: f64,
         ts_ms: u64,
     },
+    /// 1 sn cadence: BestBidAsk + SignalUpdate verilerini tek event'te birleştirir.
+    /// `slug` ile session'a bağlanır; frontend REST polling'i kaldırabilir.
+    TickSnapshot {
+        bot_id: i64,
+        slug: String,
+        yes_best_bid: f64,
+        yes_best_ask: f64,
+        no_best_bid: f64,
+        no_best_ask: f64,
+        signal_score: f64,
+        bsi: f64,
+        ofi: f64,
+        cvd: f64,
+        ts_ms: u64,
+    },
+    /// 1 sn cadence: PnL snapshot'ı — frontend REST polling'in yerine geçer.
+    PnlUpdate {
+        bot_id: i64,
+        slug: String,
+        cost_basis: f64,
+        fee_total: f64,
+        shares_yes: f64,
+        shares_no: f64,
+        pnl_if_up: f64,
+        pnl_if_down: f64,
+        mtm_pnl: f64,
+        pair_count: f64,
+        avg_yes: Option<f64>,
+        avg_no: Option<f64>,
+        ts_ms: u64,
+    },
     Error {
         bot_id: i64,
         message: String,

@@ -20,7 +20,7 @@ import { SpreadSignalChart } from "@/components/charts/spread-signal-chart";
 import { BotSettingsCards } from "@/components/bots/bot-settings-cards";
 import { api } from "@/lib/api";
 import { useBot, useHistoryStream } from "@/lib/hooks";
-import type { MarketTick, PnLSnapshot, SessionDetail } from "@/lib/types";
+import type { FrontendEvent, MarketTick, PnLSnapshot, SessionDetail } from "@/lib/types";
 
 export default function MarketDetailPage() {
   const { id, slug } = useParams<{ id: string; slug: string }>();
@@ -63,14 +63,56 @@ export default function MarketDetailPage() {
     [botId, slug],
   );
 
+  const appendTick = useCallback(
+    (ev: FrontendEvent): MarketTick | null => {
+      if (ev.kind !== "TickSnapshot") return null;
+      if (ev.bot_id !== botId || ev.slug !== slug) return null;
+      return {
+        yes_best_bid: ev.yes_best_bid,
+        yes_best_ask: ev.yes_best_ask,
+        no_best_bid: ev.no_best_bid,
+        no_best_ask: ev.no_best_ask,
+        signal_score: ev.signal_score,
+        bsi: ev.bsi,
+        ofi: ev.ofi,
+        cvd: ev.cvd,
+        ts_ms: ev.ts_ms,
+      };
+    },
+    [botId, slug],
+  );
+
+  const appendPnl = useCallback(
+    (ev: FrontendEvent): PnLSnapshot | null => {
+      if (ev.kind !== "PnlUpdate") return null;
+      if (ev.bot_id !== botId || ev.slug !== slug) return null;
+      return {
+        cost_basis: ev.cost_basis,
+        fee_total: ev.fee_total,
+        shares_yes: ev.shares_yes,
+        shares_no: ev.shares_no,
+        pnl_if_up: ev.pnl_if_up,
+        pnl_if_down: ev.pnl_if_down,
+        mtm_pnl: ev.mtm_pnl,
+        pair_count: ev.pair_count,
+        avg_yes: ev.avg_yes,
+        avg_no: ev.avg_no,
+        ts_ms: ev.ts_ms,
+      };
+    },
+    [botId, slug],
+  );
+
   const ticks = useHistoryStream<MarketTick>({
     fetchInitial: fetchTicks,
+    shouldAppend: appendTick,
     isLive,
     pollMs: 3000,
     maxItems: 800,
   });
   const pnlHistory = useHistoryStream<PnLSnapshot>({
     fetchInitial: fetchPnl,
+    shouldAppend: appendPnl,
     isLive,
     pollMs: 3000,
     maxItems: 500,

@@ -42,6 +42,21 @@ pub fn emit_frontend_snapshot(
         ts_ms,
     });
 
+    // BBA + signal verilerini tek event'te birleştir; frontend REST polling'i kaldırabilir.
+    ipc::emit(&FrontendEvent::TickSnapshot {
+        bot_id: ctx.bot_id,
+        slug: sess.slug.clone(),
+        yes_best_bid: sess.yes_best_bid,
+        yes_best_ask: sess.yes_best_ask,
+        no_best_bid: sess.no_best_bid,
+        no_best_ask: sess.no_best_ask,
+        signal_score: sig.composite,
+        bsi: sig.bsi,
+        ofi: sig.ofi,
+        cvd: sig.cvd,
+        ts_ms,
+    });
+
     if let Some(rtds_snap) = sig.rtds {
         ipc::emit(&FrontendEvent::RtdsUpdate {
             bot_id: ctx.bot_id,

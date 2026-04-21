@@ -7,12 +7,14 @@ use sqlx::SqlitePool;
 
 use crate::db;
 use crate::engine::{ExecutedOrder, MarketSession, DRYRUN_FEE_RATE};
+use crate::ipc::{self, FrontendEvent};
 use crate::time::now_ms;
 
 use super::ctx::Ctx;
 use super::signal::SignalSnapshot;
 
 /// `pnl_snapshots` tablosuna tek satır yazar — `window.rs` 1 sn cadence'inden.
+/// Aynı zamanda `PnlUpdate` SSE event'ini emit eder; frontend REST polling'i kaldırabilir.
 pub fn snapshot_pnl(pool: &SqlitePool, sess: &MarketSession) {
     if sess.market_session_id == 0 {
         return;
@@ -32,6 +34,22 @@ pub fn snapshot_pnl(pool: &SqlitePool, sess: &MarketSession) {
         avg_no: sess.metrics.avg_no,
         ts_ms: 0, // DB tarafı now_ms() kullanır.
     };
+    let ts_ms = now_ms();
+    ipc::emit(&FrontendEvent::PnlUpdate {
+        bot_id: sess.bot_id,
+        slug: sess.slug.clone(),
+        cost_basis: pnl.cost_basis,
+        fee_total: pnl.fee_total,
+        shares_yes: pnl.shares_yes,
+        shares_no: pnl.shares_no,
+        pnl_if_up: pnl.pnl_if_up,
+        pnl_if_down: pnl.pnl_if_down,
+        mtm_pnl: pnl.mtm_pnl,
+        pair_count: sess.metrics.pair_count(),
+        avg_yes: Some(sess.metrics.avg_yes),
+        avg_no: Some(sess.metrics.avg_no),
+        ts_ms,
+    });
     let bot_id = sess.bot_id;
     let market_session_id = sess.market_session_id;
     db::spawn_db("pnl_snapshot insert", async move {
