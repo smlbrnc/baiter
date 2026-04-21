@@ -294,7 +294,9 @@ pub(crate) fn apply_dryrun_fill(
     fill_size: f64,
 ) {
     let fee = fill_price * fill_size * DRYRUN_FEE_RATE;
-    session.metrics.ingest_fill(outcome, fill_price, fill_size, fee);
+    session
+        .metrics
+        .ingest_fill(outcome, Side::Buy, fill_price, fill_size, fee);
 }
 
 /// `execute()` çıktısı.

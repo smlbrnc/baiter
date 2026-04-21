@@ -75,8 +75,16 @@ export function TradesTable({
   );
 }
 
+function isSell(side: string | null): boolean {
+  return (side ?? "").trim().toUpperCase() === "SELL";
+}
+
 function SideTable({ direction, rows }: { direction: Direction; rows: TradeRow[] }) {
-  const notional = rows.reduce((acc, r) => acc + r.size * r.price, 0);
+  // Net notional = Σ buy − Σ sell (SELL = pozisyondan çıkış / cash-in).
+  const notional = rows.reduce(
+    (acc, r) => acc + (isSell(r.side) ? -1 : 1) * r.size * r.price,
+    0,
+  );
   const isUp = direction === "UP";
   const Icon = isUp ? TrendingUp : TrendingDown;
   const color = isUp ? "text-emerald-500" : "text-destructive";
@@ -95,15 +103,24 @@ function SideTable({ direction, rows }: { direction: Direction; rows: TradeRow[]
         </CardTitle>
         <div className="text-muted-foreground flex items-center gap-3 text-[10px] tracking-wider uppercase">
           <span>{rows.length} işlem</span>
-          <span className="text-foreground font-mono">
-            ${notional.toFixed(2)}
+          <span
+            className={cn(
+              "font-mono",
+              notional < 0
+                ? "text-amber-600 dark:text-amber-400"
+                : "text-foreground",
+            )}
+            title={notional < 0 ? "Net cash-in (SELL > BUY)" : "Net notional"}
+          >
+            {notional < 0 ? "−" : ""}${Math.abs(notional).toFixed(2)}
           </span>
         </div>
       </CardHeader>
       <CardContent className="px-0 pb-0">
-        <div className="border-border/40 grid grid-cols-[68px_56px_64px_56px_1fr_72px] gap-3 border-y px-4 py-2 text-[10px] font-medium tracking-wider text-muted-foreground uppercase">
+        <div className="border-border/40 grid grid-cols-[68px_56px_44px_64px_56px_1fr_72px] gap-3 border-y px-4 py-2 text-[10px] font-medium tracking-wider text-muted-foreground uppercase">
           <span>Zaman</span>
           <span>Yön</span>
+          <span>Aksiyon</span>
           <span className="text-right">Fiyat</span>
           <span className="text-right">Adet</span>
           <span>Durum</span>
@@ -129,8 +146,14 @@ function SideTable({ direction, rows }: { direction: Direction; rows: TradeRow[]
 }
 
 function Row({ t, direction }: { t: TradeRow; direction: Direction }) {
+  const sell = isSell(t.side);
   return (
-    <div className="grid grid-cols-[68px_56px_64px_56px_1fr_72px] items-center gap-3 px-4 py-2 text-xs">
+    <div
+      className={cn(
+        "grid grid-cols-[68px_56px_44px_64px_56px_1fr_72px] items-center gap-3 px-4 py-2 text-xs",
+        sell && "bg-amber-500/5",
+      )}
+    >
       <span className="text-muted-foreground font-mono">{fmtTime(t.ts_ms)}</span>
       <span
         className={cn(
@@ -140,6 +163,7 @@ function Row({ t, direction }: { t: TradeRow; direction: Direction }) {
       >
         {direction}
       </span>
+      <ActionTag sell={sell} />
       <span className="text-foreground text-right font-mono">
         {t.price.toFixed(4)}
       </span>
@@ -149,6 +173,21 @@ function Row({ t, direction }: { t: TradeRow; direction: Direction }) {
       <StatusBadge status={t.status} />
       <TraderTag side={t.trader_side} />
     </div>
+  );
+}
+
+function ActionTag({ sell }: { sell: boolean }) {
+  return (
+    <span
+      className={cn(
+        "rounded-sm px-1.5 py-0.5 text-[10px] font-semibold tracking-wide uppercase",
+        sell
+          ? "bg-amber-500/20 text-amber-700 dark:text-amber-300"
+          : "bg-sky-500/15 text-sky-700 dark:text-sky-300",
+      )}
+    >
+      {sell ? "SAT" : "AL"}
+    </span>
   );
 }
 

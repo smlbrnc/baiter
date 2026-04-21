@@ -127,14 +127,21 @@ function MoneyVal({ v }: { v: number }) {
 }
 
 function UsdVal({ v, neutral }: { v: number; neutral?: boolean }) {
+  // Negatif cost = realized cash-in (SELL > BUY notional). UI'de "−$X" göster.
+  const negative = v < 0;
   return (
     <span
       className={cn(
         "font-mono text-sm font-semibold tabular-nums",
-        neutral ? "text-foreground" : "text-foreground",
+        negative
+          ? "text-amber-600 dark:text-amber-400"
+          : neutral
+            ? "text-foreground"
+            : "text-foreground",
       )}
+      title={negative ? "Realized cash-in (SELL > BUY)" : undefined}
     >
-      ${v.toFixed(4)}
+      {negative ? "−" : ""}${Math.abs(v).toFixed(4)}
     </span>
   );
 }

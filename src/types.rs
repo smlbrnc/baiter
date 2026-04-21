@@ -42,6 +42,16 @@ impl Side {
             Self::Sell => "SELL",
         }
     }
+
+    /// Polymarket payload string'inden Side'a çevir. Yalnız "BUY"/"SELL"
+    /// (case-insensitive) tanınır; geçersiz → `None` (caller fill'i atlar).
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_uppercase().as_str() {
+            "BUY" => Some(Self::Buy),
+            "SELL" => Some(Self::Sell),
+            _ => None,
+        }
+    }
 }
 
 /// CLOB emir tipi — REST `order_type` alanı.

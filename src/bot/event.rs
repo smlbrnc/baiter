@@ -16,7 +16,7 @@ use crate::engine::{
 use crate::ipc::{self, FrontendEvent};
 use crate::polymarket::{PolymarketEvent, PriceChangeLevel};
 use crate::time::now_ms;
-use crate::types::{Outcome, RunMode};
+use crate::types::{Outcome, RunMode, Side};
 
 struct TradeMsg {
     trade_id: String,
@@ -162,7 +162,7 @@ fn after_book_update(sess: &mut MarketSession, pool: &SqlitePool, run_mode: RunM
 struct OurFill {
     outcome: Outcome,
     asset_id: String,
-    side: String,
+    side: Side,
     price: f64,
     size: f64,
     order_id: Option<String>,
@@ -196,13 +196,14 @@ fn on_trade(sess: &mut MarketSession, pool: &SqlitePool, ev: TradeMsg) {
 
     if status_upper == "MATCHED" {
         for (f, fee_per_fill) in our_fills.iter().zip(&fees_per_fill) {
-            absorb_trade_matched(sess, f.outcome, f.price, f.size, *fee_per_fill);
+            absorb_trade_matched(sess, f.outcome, f.side, f.price, f.size, *fee_per_fill);
             record_fill_and_prune_if_full(sess, f.order_id.as_deref(), f.size, &label);
             log_fill_and_position(&label, sess, f.outcome, f.size, f.price);
             ipc::emit(&FrontendEvent::Fill {
                 bot_id,
                 trade_id: trade_id.clone(),
                 outcome: f.outcome,
+                side: f.side.as_str().to_string(),
                 price: f.price,
                 size: f.size,
                 status: status_upper.clone(),
@@ -320,11 +321,7 @@ fn extract_our_fills(
                     let outcome = outcome_from_asset_id(sess, asset)?;
                     let amount: f64 = m.get("matched_amount")?.as_str()?.parse().ok()?;
                     let price: f64 = m.get("price")?.as_str()?.parse().ok()?;
-                    let side = m
-                        .get("side")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or_default()
-                        .to_string();
+                    let side = Side::parse(m.get("side")?.as_str()?)?;
                     Some(OurFill {
                         outcome,
                         asset_id: asset.to_string(),
@@ -341,18 +338,20 @@ fn extract_our_fills(
         return maker;
     }
 
-    outcome_from_asset_id(sess, top_asset_id)
-        .map(|outcome| {
-            vec![OurFill {
-                outcome,
-                asset_id: top_asset_id.to_string(),
-                side: top_side.unwrap_or_default().to_string(),
-                price: top_price,
-                size: top_size,
-                order_id: None,
-            }]
-        })
-        .unwrap_or_default()
+    let Some(outcome) = outcome_from_asset_id(sess, top_asset_id) else {
+        return Vec::new();
+    };
+    let Some(side) = top_side.and_then(Side::parse) else {
+        return Vec::new();
+    };
+    vec![OurFill {
+        outcome,
+        asset_id: top_asset_id.to_string(),
+        side,
+        price: top_price,
+        size: top_size,
+        order_id: None,
+    }]
 }
 
 /// `our_fills`'i tek DB satırına indir. Polymarket bir trade event'i tek
@@ -364,15 +363,10 @@ fn aggregate_for_persist(
     let sum_size: f64 = fills.iter().map(|f| f.size).sum();
     let sum_pxsz: f64 = fills.iter().map(|f| f.price * f.size).sum();
     let avg_price = sum_pxsz / sum_size.max(f64::EPSILON);
-    let side = if first.side.is_empty() {
-        None
-    } else {
-        Some(first.side.clone())
-    };
     (
         Some(first.outcome.as_str().to_string()),
         Some(first.asset_id.clone()),
-        side,
+        Some(first.side.as_str().to_string()),
         avg_price,
         sum_size,
     )
@@ -553,6 +547,7 @@ fn run_passive_fills_dryrun(sess: &mut MarketSession, pool: &SqlitePool) {
             bot_id,
             trade_id: ex.order_id.clone(),
             outcome: p.outcome,
+            side: p.side.as_str().to_string(),
             price: fp,
             size: fs,
             status: "MATCHED".to_string(),
@@ -621,7 +616,7 @@ mod tests {
         let f = &fills[0];
         assert_eq!(f.outcome, Outcome::Up);
         assert_eq!(f.asset_id, "UP_TOKEN");
-        assert_eq!(f.side, "BUY");
+        assert_eq!(f.side, Side::Buy);
         assert!((f.price - 0.33).abs() < 1e-9);
         assert!((f.size - 9.33).abs() < 1e-9);
         assert_eq!(f.order_id.as_deref(), Some("0xMINE"));
@@ -644,7 +639,7 @@ mod tests {
         let f = &fills[0];
         assert_eq!(f.outcome, Outcome::Up);
         assert_eq!(f.asset_id, "UP_TOKEN");
-        assert_eq!(f.side, "BUY");
+        assert_eq!(f.side, Side::Buy);
         assert!((f.price - 0.57).abs() < 1e-9);
         assert!((f.size - 9.0).abs() < 1e-9);
         assert!(f.order_id.is_none());
@@ -712,16 +707,16 @@ mod tests {
             OurFill {
                 outcome: Outcome::Up,
                 asset_id: "UP_TOKEN".into(),
-                side: "BUY".into(),
-                price: 0.32,
-                size: 5.0,
-                order_id: Some("0xMINE".into()),
-            },
-            OurFill {
-                outcome: Outcome::Up,
-                asset_id: "UP_TOKEN".into(),
-                side: "BUY".into(),
-                price: 0.34,
+            side: Side::Buy,
+            price: 0.32,
+            size: 5.0,
+            order_id: Some("0xMINE".into()),
+        },
+        OurFill {
+            outcome: Outcome::Up,
+            asset_id: "UP_TOKEN".into(),
+            side: Side::Buy,
+            price: 0.34,
                 size: 10.0,
                 order_id: Some("0xMINE".into()),
             },
@@ -735,19 +730,21 @@ mod tests {
         assert!((price - (1.6 + 3.4) / 15.0).abs() < 1e-9);
     }
 
-    /// fill.side boşsa side=None döner (audit caller'da Option olarak gider).
+    /// SELL fill DB satırı için `side="SELL"` döner.
     #[test]
-    fn aggregate_for_persist_empty_side_returns_none() {
+    fn aggregate_for_persist_sell_emits_sell_side() {
         let fills = vec![OurFill {
-            outcome: Outcome::Down,
-            asset_id: "DOWN_TOKEN".into(),
-            side: String::new(),
-            price: 0.42,
-            size: 7.0,
+            outcome: Outcome::Up,
+            asset_id: "UP_TOKEN".into(),
+            side: Side::Sell,
+            price: 0.92,
+            size: 98.41,
             order_id: None,
         }];
-        let (_o, _a, side, _p, _s) = aggregate_for_persist(&fills);
-        assert!(side.is_none());
+        let (_o, _a, side, price, size) = aggregate_for_persist(&fills);
+        assert_eq!(side.as_deref(), Some("SELL"));
+        assert!((price - 0.92).abs() < 1e-9);
+        assert!((size - 98.41).abs() < 1e-9);
     }
 
     /// Maker (order_id=Some) → fee=0 her zaman.
@@ -756,7 +753,7 @@ mod tests {
         let f = OurFill {
             outcome: Outcome::Up,
             asset_id: "UP_TOKEN".into(),
-            side: "BUY".into(),
+            side: Side::Buy,
             price: 0.50,
             size: 10.0,
             order_id: Some("0xMINE".into()),
@@ -772,7 +769,7 @@ mod tests {
         let f = OurFill {
             outcome: Outcome::Up,
             asset_id: "UP_TOKEN".into(),
-            side: "BUY".into(),
+            side: Side::Buy,
             price: 0.52,
             size: 10.0,
             order_id: None,
@@ -787,7 +784,7 @@ mod tests {
         let f = OurFill {
             outcome: Outcome::Up,
             asset_id: "UP_TOKEN".into(),
-            side: "BUY".into(),
+            side: Side::Buy,
             price: 0.50,
             size: 10.0,
             order_id: None,
@@ -802,7 +799,7 @@ mod tests {
         let f = OurFill {
             outcome: Outcome::Up,
             asset_id: "UP_TOKEN".into(),
-            side: "BUY".into(),
+            side: Side::Buy,
             price: 0.52,
             size: 10.0,
             order_id: None,

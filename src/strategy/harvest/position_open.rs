@@ -5,6 +5,7 @@ use crate::strategy::{order_size, planned_buy_gtc, Decision, PlannedOrder};
 use crate::time::MarketZone;
 use crate::types::Outcome;
 
+use super::hedge_update;
 use super::state::{
     HarvestContext, HarvestState, AVG_DOWN_REASON_PREFIX, PYRAMID_REASON_PREFIX,
 };
@@ -21,6 +22,14 @@ pub fn handle(filled_side: Outcome, ctx: &HarvestContext) -> (HarvestState, Deci
     let stale = ctx.stale_avg_or_pyramid_ids();
     if !stale.is_empty() {
         return (same, Decision::CancelOrders(stale));
+    }
+
+    // §9: hedge yoksa (cancel race / API hata / manuel) → re-place.
+    // `hedge_update::handle` aynı imbalance + band kontrolünü yapar; hedge
+    // yoksa doğrudan PlaceOrders üretir, böylece avg-down yığıldıkça
+    // profit-lock kaçmaz (Bot 2 / btc-updown-5m-1776766500 regresyonu).
+    if ctx.hedge_order().is_none() {
+        return hedge_update::handle(filled_side, ctx);
     }
 
     // §9 adım 2-4: hedge drift → HedgeUpdating.

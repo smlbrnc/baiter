@@ -10,7 +10,7 @@ use crate::strategy::harvest::{HarvestContext, HarvestEngine, HarvestState};
 use crate::strategy::metrics::{MarketPnL, StrategyMetrics};
 use crate::strategy::{Decision, DecisionEngine, OpenOrder, PlannedOrder};
 use crate::time::{zone_pct, MarketZone};
-use crate::types::{Outcome, RunMode, Strategy};
+use crate::types::{Outcome, RunMode, Side, Strategy};
 
 pub mod executor;
 pub mod passive;
@@ -161,16 +161,18 @@ impl MarketSession {
     }
 }
 
-/// User WS `trade MATCHED` event'inden gelen fill'i absorbla.
+/// User WS `trade MATCHED` event'inden gelen fill'i absorbla. `side=Sell`
+/// (manuel/dış SELL) → pozisyondan çıkış: shares düşer, cost realize olur.
 pub fn absorb_trade_matched(
     session: &mut MarketSession,
     outcome: Outcome,
+    side: Side,
     price: f64,
     size: f64,
     fee: f64,
 ) {
     use crate::time::now_ms;
-    session.metrics.ingest_fill(outcome, price, size, fee);
+    session.metrics.ingest_fill(outcome, side, price, size, fee);
     session.last_averaging_ms = now_ms();
 }
 

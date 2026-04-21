@@ -74,6 +74,7 @@ pub enum FrontendEvent {
         bot_id: i64,
         trade_id: String,
         outcome: Outcome,
+        side: String,
         price: f64,
         size: f64,
         status: String,

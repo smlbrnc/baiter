@@ -116,7 +116,7 @@ async fn harvest_v2_stop_trade_cancels_all_open_orders() {
     let mut sess = session(&cfg);
     // Elle PositionOpen senaryosu kur: shares_yes fill + hedge kitapta.
     sess.metrics
-        .ingest_fill(Outcome::Up, 0.50, 10.0, 0.0);
+        .ingest_fill(Outcome::Up, Side::Buy, 0.50, 10.0, 0.0);
     sess.harvest_state = HarvestState::PositionOpen {
         filled_side: Outcome::Up,
     };
@@ -149,7 +149,7 @@ async fn harvest_v2_normal_trade_avg_down_places_bid_when_ask_below_avg() {
     let mut sess = session(&cfg);
     // Manuel PositionOpen: shares_yes=10 @ 0.50, hedge kitapta @ 0.48.
     sess.metrics
-        .ingest_fill(Outcome::Up, 0.50, 10.0, 0.0);
+        .ingest_fill(Outcome::Up, Side::Buy, 0.50, 10.0, 0.0);
     sess.harvest_state = HarvestState::PositionOpen {
         filled_side: Outcome::Up,
     };
@@ -184,7 +184,7 @@ async fn harvest_v2_agg_trade_pyramid_same_side_with_signal() {
     let cfg = dryrun_cfg();
     let mut sess = session(&cfg);
     sess.metrics
-        .ingest_fill(Outcome::Up, 0.55, 10.0, 0.0);
+        .ingest_fill(Outcome::Up, Side::Buy, 0.55, 10.0, 0.0);
     sess.harvest_state = HarvestState::PositionOpen {
         filled_side: Outcome::Up,
     };
@@ -223,9 +223,9 @@ async fn harvest_v2_avg_down_match_triggers_hedge_reprice() {
     let mut sess = session(&cfg);
     // shares_yes=10 @ 0.50 + avg-down 10 @ 0.45 → avg_yes=0.475
     sess.metrics
-        .ingest_fill(Outcome::Up, 0.50, 10.0, 0.0);
+        .ingest_fill(Outcome::Up, Side::Buy, 0.50, 10.0, 0.0);
     sess.metrics
-        .ingest_fill(Outcome::Up, 0.45, 10.0, 0.0);
+        .ingest_fill(Outcome::Up, Side::Buy, 0.45, 10.0, 0.0);
     sess.harvest_state = HarvestState::PositionOpen {
         filled_side: Outcome::Up,
     };

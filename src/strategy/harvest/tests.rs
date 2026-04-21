@@ -177,7 +177,7 @@ fn pending_opens_pair_low_signal() {
 #[test]
 fn open_pair_single_leg_fill_to_position_open() {
     let mut metrics = StrategyMetrics::default();
-    metrics.ingest_fill(Outcome::Up, 0.53, 10.0, 0.0);
+    metrics.ingest_fill(Outcome::Up, Side::Buy, 0.53, 10.0, 0.0);
     let opens = vec![mk_order(
         "hedge",
         Outcome::Down,
@@ -200,8 +200,8 @@ fn open_pair_single_leg_fill_to_position_open() {
 #[test]
 fn open_pair_both_filled_to_pair_complete() {
     let mut metrics = StrategyMetrics::default();
-    metrics.ingest_fill(Outcome::Up, 0.50, 10.0, 0.0);
-    metrics.ingest_fill(Outcome::Down, 0.48, 10.0, 0.0);
+    metrics.ingest_fill(Outcome::Up, Side::Buy, 0.50, 10.0, 0.0);
+    metrics.ingest_fill(Outcome::Down, Side::Buy, 0.48, 10.0, 0.0);
     let opens: Vec<OpenOrder> = vec![];
     let ctx = default_ctx(&metrics, &opens);
     let (state, dec) = decide(HarvestState::OpenPair, &ctx);
@@ -212,7 +212,7 @@ fn open_pair_both_filled_to_pair_complete() {
 #[test]
 fn position_open_normal_trade_avg_down_triggers() {
     let mut metrics = StrategyMetrics::default();
-    metrics.ingest_fill(Outcome::Up, 0.50, 10.0, 0.0);
+    metrics.ingest_fill(Outcome::Up, Side::Buy, 0.50, 10.0, 0.0);
     let opens = vec![mk_order(
         "hedge",
         Outcome::Down,
@@ -251,7 +251,7 @@ fn position_open_normal_trade_avg_down_triggers() {
 #[test]
 fn position_open_normal_trade_avg_down_skipped_when_ask_above_avg() {
     let mut metrics = StrategyMetrics::default();
-    metrics.ingest_fill(Outcome::Up, 0.50, 10.0, 0.0);
+    metrics.ingest_fill(Outcome::Up, Side::Buy, 0.50, 10.0, 0.0);
     let opens = vec![mk_order(
         "hedge",
         Outcome::Down,
@@ -276,7 +276,7 @@ fn position_open_normal_trade_avg_down_skipped_when_ask_above_avg() {
 fn position_open_agg_trade_pyramid_same_side() {
     // rising=Up (yes_bid=0.60), filled=Up, last_fill=0.55, ask=0.62 > last_fill → pyramid.
     let mut metrics = StrategyMetrics::default();
-    metrics.ingest_fill(Outcome::Up, 0.55, 10.0, 0.0);
+    metrics.ingest_fill(Outcome::Up, Side::Buy, 0.55, 10.0, 0.0);
     let opens = vec![mk_order(
         "hedge",
         Outcome::Down,
@@ -311,7 +311,7 @@ fn position_open_agg_trade_pyramid_same_side() {
 fn position_open_agg_trade_pyramid_opposite_skips_trend_gate() {
     // filled=Up, yes_bid=0.40 → rising=Down. Trend gate atlanır.
     let mut metrics = StrategyMetrics::default();
-    metrics.ingest_fill(Outcome::Up, 0.50, 10.0, 0.0);
+    metrics.ingest_fill(Outcome::Up, Side::Buy, 0.50, 10.0, 0.0);
     let opens = vec![mk_order(
         "hedge",
         Outcome::Down,
@@ -348,8 +348,8 @@ fn position_open_hedge_drift_triggers_cancel() {
     // avg_yes = 0.45 (iki fill: 0.55 + 0.35). Hedge kitapta @ 0.48 (eski).
     // target = 0.98 − 0.45 = 0.53, |0.48 − 0.53| = 0.05 > tick/2 → drift.
     let mut metrics = StrategyMetrics::default();
-    metrics.ingest_fill(Outcome::Up, 0.55, 10.0, 0.0);
-    metrics.ingest_fill(Outcome::Up, 0.35, 10.0, 0.0);
+    metrics.ingest_fill(Outcome::Up, Side::Buy, 0.55, 10.0, 0.0);
+    metrics.ingest_fill(Outcome::Up, Side::Buy, 0.35, 10.0, 0.0);
     let opens = vec![mk_order(
         "hedge1",
         Outcome::Down,
@@ -382,7 +382,7 @@ fn hedge_updating_cancel_ok_reprices() {
     // Hedge gitti (open_orders=[]), shares_yes=20, shares_no=0 → imbalance=20 > api_min.
     // target = 0.98 − avg_yes.
     let mut metrics = StrategyMetrics::default();
-    metrics.ingest_fill(Outcome::Up, 0.50, 20.0, 0.0);
+    metrics.ingest_fill(Outcome::Up, Side::Buy, 0.50, 20.0, 0.0);
     let opens: Vec<OpenOrder> = vec![];
     let ctx = default_ctx(&metrics, &opens);
     let (state, dec) = decide(
@@ -412,8 +412,8 @@ fn hedge_updating_cancel_ok_reprices() {
 fn hedge_updating_cancel_race_to_pair_complete() {
     // Hedge fill oldu (shares_no > 0), imbalance ≈ 0 < api_min → PairComplete.
     let mut metrics = StrategyMetrics::default();
-    metrics.ingest_fill(Outcome::Up, 0.50, 10.0, 0.0);
-    metrics.ingest_fill(Outcome::Down, 0.48, 10.0, 0.0);
+    metrics.ingest_fill(Outcome::Up, Side::Buy, 0.50, 10.0, 0.0);
+    metrics.ingest_fill(Outcome::Down, Side::Buy, 0.48, 10.0, 0.0);
     let opens: Vec<OpenOrder> = vec![];
     let ctx = default_ctx(&metrics, &opens);
     let (state, dec) = decide(
@@ -430,7 +430,7 @@ fn hedge_updating_cancel_race_to_pair_complete() {
 fn hedge_updating_cancel_pending_returns_noop() {
     // Hedge hâlâ kitapta → cancel response bekleniyor → NoOp.
     let mut metrics = StrategyMetrics::default();
-    metrics.ingest_fill(Outcome::Up, 0.50, 10.0, 0.0);
+    metrics.ingest_fill(Outcome::Up, Side::Buy, 0.50, 10.0, 0.0);
     let opens = vec![mk_order(
         "hedge",
         Outcome::Down,
@@ -458,7 +458,7 @@ fn hedge_updating_cancel_pending_returns_noop() {
 #[test]
 fn stop_trade_cancels_all_and_done() {
     let mut metrics = StrategyMetrics::default();
-    metrics.ingest_fill(Outcome::Up, 0.50, 10.0, 0.0);
+    metrics.ingest_fill(Outcome::Up, Side::Buy, 0.50, 10.0, 0.0);
     let opens = vec![mk_order(
         "hedge",
         Outcome::Down,
@@ -515,7 +515,7 @@ fn pair_complete_noop_when_book_empty() {
 #[test]
 fn cooldown_blocks_avg_down_within_window() {
     let mut metrics = StrategyMetrics::default();
-    metrics.ingest_fill(Outcome::Up, 0.50, 10.0, 0.0);
+    metrics.ingest_fill(Outcome::Up, Side::Buy, 0.50, 10.0, 0.0);
     let opens = vec![mk_order(
         "hedge",
         Outcome::Down,
@@ -541,7 +541,7 @@ fn cooldown_blocks_avg_down_within_window() {
 #[test]
 fn stale_avg_order_is_cancelled_after_cooldown() {
     let mut metrics = StrategyMetrics::default();
-    metrics.ingest_fill(Outcome::Up, 0.50, 10.0, 0.0);
+    metrics.ingest_fill(Outcome::Up, Side::Buy, 0.50, 10.0, 0.0);
     let now = COOLDOWN * 4;
     let opens = vec![
         mk_order(
@@ -585,8 +585,8 @@ fn stale_avg_order_is_cancelled_after_cooldown() {
 fn position_open_hedge_passive_fill_completes_pair() {
     // Hedge kayboldu + shares(opposite) > 0 → passive fill oldu → PairComplete.
     let mut metrics = StrategyMetrics::default();
-    metrics.ingest_fill(Outcome::Up, 0.50, 10.0, 0.0);
-    metrics.ingest_fill(Outcome::Down, 0.48, 10.0, 0.0);
+    metrics.ingest_fill(Outcome::Up, Side::Buy, 0.50, 10.0, 0.0);
+    metrics.ingest_fill(Outcome::Down, Side::Buy, 0.48, 10.0, 0.0);
     let opens: Vec<OpenOrder> = vec![];
     let ctx = default_ctx(&metrics, &opens);
     let (state, dec) = decide(
@@ -597,4 +597,53 @@ fn position_open_hedge_passive_fill_completes_pair() {
     );
     assert_eq!(state, HarvestState::PairComplete);
     assert!(matches!(dec, Decision::NoOp));
+}
+
+/// Bot 2 (`btc-updown-5m-1776766500`) regresyonu: hedge cancel race / API
+/// hata sonrası `open_orders`'tan düştü ve `shares(opposite)==0` kaldı. Eski
+/// kod `position_open` içinde sessiz NoOp dönüyordu → bot avg-down yığarken
+/// profit-lock'u kaçırıyordu. Yeni davranış: `hedge_update::handle`'a delege
+/// → DOWN @ (0.98 − avg_yes) re-place edilir.
+#[test]
+fn position_open_missing_hedge_replaces_via_hedge_update() {
+    let mut metrics = StrategyMetrics::default();
+    metrics.ingest_fill(Outcome::Up, Side::Buy, 0.45, 11.0, 0.0);
+    metrics.ingest_fill(Outcome::Up, Side::Buy, 0.30, 17.0, 0.0);
+    metrics.ingest_fill(Outcome::Up, Side::Buy, 0.17, 30.0, 0.0);
+    let opens: Vec<OpenOrder> = vec![];
+    let ctx = default_ctx(&metrics, &opens);
+
+    let (state, dec) = decide(
+        HarvestState::PositionOpen {
+            filled_side: Outcome::Up,
+        },
+        &ctx,
+    );
+    assert_eq!(
+        state,
+        HarvestState::PositionOpen {
+            filled_side: Outcome::Up
+        }
+    );
+    let orders = match dec {
+        Decision::PlaceOrders(o) => o,
+        other => panic!("expected hedge re-place, got {:?}", other),
+    };
+    assert_eq!(orders.len(), 1, "tek hedge order beklenir");
+    let h = &orders[0];
+    assert_eq!(h.outcome, Outcome::Down, "hedge karşı tarafa konur");
+    let expected_target = 0.98
+        - ((0.45 * 11.0 + 0.30 * 17.0 + 0.17 * 30.0) / (11.0 + 17.0 + 30.0));
+    assert!(
+        (h.price - expected_target).abs() < 0.02,
+        "hedge price={} expected≈{}",
+        h.price,
+        expected_target
+    );
+    assert!(
+        (h.size - metrics.shares_yes).abs() < 1e-9,
+        "hedge size = imbalance ({}) , got {}",
+        metrics.shares_yes,
+        h.size
+    );
 }
