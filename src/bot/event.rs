@@ -1,6 +1,6 @@
 //! Polymarket WS event handler dispatch.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use sqlx::SqlitePool;
@@ -164,18 +164,12 @@ struct OurFill {
     side: String,
     price: f64,
     size: f64,
-    /// `true` → bizim emir maker_orders'taydı (Polymarket policy: maker fee=0).
-    /// `false` → biz taker'ız (concave fee uygulanır).
-    is_maker: bool,
     /// Maker dalında bizim `OpenOrder.id`; taker fallback'ında `None`.
-    /// `on_trade` bunu kullanarak `OpenOrder.size_matched`'i artırır ve
-    /// full-fill durumunda emri `open_orders`'tan düşürür.
+    /// İkili rol: (1) `compute_fee` `Some` → maker (fee=0), `None` → taker
+    /// (concave fee). (2) `on_trade` bunu kullanarak `OpenOrder.size_matched`'i
+    /// artırır ve full-fill durumunda emri `open_orders`'tan düşürür.
     order_id: Option<String>,
 }
-
-/// Polymarket dust toleransı: `1e-6` shares (Polymarket minimum tick'inden çok
-/// küçük). `size_matched >= size − FILL_EPSILON` olan emir "fully filled" sayılır.
-const FILL_EPSILON: f64 = 1e-6;
 
 fn on_trade(sess: &mut MarketSession, pool: &SqlitePool, ev: TradeMsg) {
     let bot_id = sess.bot_id;
@@ -201,12 +195,6 @@ fn on_trade(sess: &mut MarketSession, pool: &SqlitePool, ev: TradeMsg) {
     // Per-fill fee: Polymarket policy — makers pay 0%, only takers pay,
     // concave formula `fee = size × (bps/10000) × price × (1−price)`.
     // Doc: <https://docs.polymarket.com/trading/fees>
-    if status_upper == "MATCHED" && fee_rate_bps.is_none() && !our_fills.is_empty() {
-        ipc::log_line(
-            &label,
-            format!("⚠️ trade {} missing fee_rate_bps; persist fee=0", trade_id),
-        );
-    }
     let fees_per_fill: Vec<f64> = our_fills
         .iter()
         .map(|f| compute_fee(f, fee_rate_bps))
@@ -237,7 +225,7 @@ fn on_trade(sess: &mut MarketSession, pool: &SqlitePool, ev: TradeMsg) {
     // Persist view: tek satır/trade_id. our_fills doluysa bizim aggregate'i
     // yaz; boşsa (bilinmeyen asset veya MATCHED-dışı) top-level'ı yaz (audit).
     let (p_outcome, p_asset, p_side, p_price, p_size) = if !our_fills.is_empty() {
-        aggregate_for_persist(&label, &our_fills, ev.side.as_deref())
+        aggregate_for_persist(&our_fills, ev.side.as_deref())
     } else {
         (
             ev.outcome.clone(),
@@ -265,9 +253,15 @@ fn on_trade(sess: &mut MarketSession, pool: &SqlitePool, ev: TradeMsg) {
     db::trades::persist_trade(pool, record, "user_ws upsert_trade");
 }
 
-/// Maker fill'i ilgili `OpenOrder.size_matched`'e ekle; full-fill ise emri
-/// `open_orders`'tan düşür → harvest FSM `PairComplete` transition'ı
+/// Maker fill'i ilgili `OpenOrder.size_matched`'e ekle; emir "effectively
+/// filled" ise `open_orders`'tan düşür → harvest FSM `PairComplete` transition'ı
 /// (state.rs:154) doğru tetiklenebilir.
+///
+/// **Dust kuralı**: kalan miktar `api_min_order_size`'tan küçükse emir gerçekçi
+/// olarak yeni bir trade tetikleyemez (Polymarket min order size altında),
+/// dolayısıyla "fully filled" sayılır. Bot 53 (9.987/10), bot 54 (8.996/9 ve
+/// 9.991/10) gibi senaryolar bu kural sayesinde doğru prune edilir; aksi halde
+/// FSM `PositionOpen`'da takılı kalıp profit lock sonrası pyramid tetikler.
 ///
 /// `order_id=None` (taker fallback) veya bilinmeyen id → no-op.
 fn record_fill_and_prune_if_full(
@@ -277,15 +271,17 @@ fn record_fill_and_prune_if_full(
     label: &str,
 ) {
     let Some(id) = order_id else { return };
+    let dust_threshold = sess.api_min_order_size;
     let mut fully_filled = false;
     if let Some(o) = sess.open_orders.iter_mut().find(|o| o.id == id) {
         o.size_matched += fill_size;
-        fully_filled = o.size_matched >= o.size - FILL_EPSILON;
+        let remaining = (o.size - o.size_matched).max(0.0);
+        fully_filled = remaining < dust_threshold;
         if fully_filled {
             ipc::log_line(
                 label,
                 format!(
-                    "🧹 open_order fully filled — pruning id={id} size={} matched={}",
+                    "🧹 open_order effectively filled — pruning id={id} size={} matched={} remaining={remaining} (< api_min_order_size={dust_threshold})",
                     o.size, o.size_matched
                 ),
             );
@@ -299,8 +295,8 @@ fn record_fill_and_prune_if_full(
 /// Polymarket taker fee: `size × (bps/10000) × price × (1−price)`. Makers → 0.
 /// Doc: <https://docs.polymarket.com/trading/fees>
 fn compute_fee(f: &OurFill, fee_rate_bps: Option<f64>) -> f64 {
-    if f.is_maker {
-        return 0.0;
+    if f.order_id.is_some() {
+        return 0.0; // maker
     }
     let bps = fee_rate_bps.unwrap_or(0.0);
     f.size * (bps / 10_000.0) * f.price * (1.0 - f.price)
@@ -352,7 +348,6 @@ fn extract_our_fills(
                         side,
                         price,
                         size: amount,
-                        is_maker: true,
                         order_id: Some(id.to_string()),
                     })
                 })
@@ -371,7 +366,6 @@ fn extract_our_fills(
                 side: top_side.unwrap_or_default().to_string(),
                 price: top_price,
                 size: top_size,
-                is_maker: false,
                 order_id: None,
             }]
         })
@@ -380,49 +374,28 @@ fn extract_our_fills(
 
 /// `our_fills`'i tek bir DB satırına indirgemek için aggregate.
 ///
-/// - Tek outcome'da birden fazla fill: `size = sum`, `price = sum(p*s)/sum(s)`.
-/// - Birden fazla outcome (NEG_RISK edge case): toplam size'ı en yüksek olan
-///   outcome'u dominant kabul edip onu yaz, WARN logla. Diğer outcome'un
-///   pozisyonu yine `absorb_trade_matched` döngüsünde doğru güncellenir.
+/// Polymarket trade event'i tek `asset_id` etrafında oluşur (top-level + tüm
+/// `maker_orders[]` aynı asset). Dolayısıyla `fills` tek outcome'dur:
+/// `size = sum`, `price = sum(p*s)/sum(s)`.
 fn aggregate_for_persist(
-    label: &str,
     fills: &[OurFill],
     fallback_side: Option<&str>,
 ) -> (Option<String>, Option<String>, Option<String>, f64, f64) {
-    // outcome -> (sum_size, sum_price_x_size, asset_id, side)
-    let mut by_outcome: HashMap<Outcome, (f64, f64, String, String)> = HashMap::new();
-    for f in fills {
-        let entry = by_outcome
-            .entry(f.outcome)
-            .or_insert_with(|| (0.0, 0.0, f.asset_id.clone(), f.side.clone()));
-        entry.0 += f.size;
-        entry.1 += f.price * f.size;
-    }
-    if by_outcome.len() > 1 {
-        ipc::log_line(
-            label,
-            format!(
-                "⚠️ trade contains fills across {} outcomes — persisting dominant only",
-                by_outcome.len()
-            ),
-        );
-    }
-    let (out, (sz, pxsz, asset, side)) = by_outcome
-        .into_iter()
-        .max_by(|a, b| a.1 .0.partial_cmp(&b.1 .0).unwrap_or(std::cmp::Ordering::Equal))
-        .expect("aggregate_for_persist requires non-empty fills");
-    let avg_price = pxsz / sz.max(f64::EPSILON);
-    let side_out = if side.is_empty() {
+    let first = &fills[0];
+    let sum_size: f64 = fills.iter().map(|f| f.size).sum();
+    let sum_pxsz: f64 = fills.iter().map(|f| f.price * f.size).sum();
+    let avg_price = sum_pxsz / sum_size.max(f64::EPSILON);
+    let side_out = if first.side.is_empty() {
         fallback_side.map(str::to_string)
     } else {
-        Some(side)
+        Some(first.side.clone())
     };
     (
-        Some(out.as_str().to_string()),
-        Some(asset),
+        Some(first.outcome.as_str().to_string()),
+        Some(first.asset_id.clone()),
         side_out,
         avg_price,
-        sz,
+        sum_size,
     )
 }
 
@@ -702,11 +675,10 @@ mod tests {
         assert_eq!(f.side, "BUY");
         assert!((f.price - 0.33).abs() < 1e-9);
         assert!((f.size - 9.33).abs() < 1e-9);
-        assert!(f.is_maker, "maker dalında is_maker=true olmalı");
         assert_eq!(
             f.order_id.as_deref(),
             Some("0xMINE"),
-            "maker dalı OpenOrder.id'yi geri vermeli"
+            "maker dalı OpenOrder.id'yi geri vermeli (=is_maker proxy'si)"
         );
     }
 
@@ -737,8 +709,10 @@ mod tests {
         assert_eq!(f.side, "BUY");
         assert!((f.price - 0.57).abs() < 1e-9);
         assert!((f.size - 9.0).abs() < 1e-9);
-        assert!(!f.is_maker, "taker fallback'ında is_maker=false olmalı");
-        assert!(f.order_id.is_none(), "taker fallback'ında order_id=None");
+        assert!(
+            f.order_id.is_none(),
+            "taker fallback'ında order_id=None (=is_maker proxy'si)"
+        );
     }
 
     /// `maker_orders` alanı hiç yoksa ve top-level asset bilinmiyorsa → boş.
@@ -806,7 +780,8 @@ mod tests {
     }
 
     /// Aynı outcome'da iki fill aggregate edilince size toplanır, price
-    /// weighted average olur.
+    /// weighted average olur. (Polymarket trade event'leri tek `asset_id`
+    /// etrafında oluşur; aggregate her zaman tek-outcome'dur.)
     #[test]
     fn aggregate_for_persist_sums_same_outcome() {
         let fills = vec![
@@ -816,7 +791,6 @@ mod tests {
                 side: "BUY".into(),
                 price: 0.32,
                 size: 5.0,
-                is_maker: true,
                 order_id: Some("0xMINE".into()),
             },
             OurFill {
@@ -825,11 +799,10 @@ mod tests {
                 side: "BUY".into(),
                 price: 0.34,
                 size: 10.0,
-                is_maker: true,
                 order_id: Some("0xMINE".into()),
             },
         ];
-        let (outcome, asset, side, price, size) = aggregate_for_persist("test", &fills, None);
+        let (outcome, asset, side, price, size) = aggregate_for_persist(&fills, None);
         assert_eq!(outcome.as_deref(), Some("UP"));
         assert_eq!(asset.as_deref(), Some("UP_TOKEN"));
         assert_eq!(side.as_deref(), Some("BUY"));
@@ -838,38 +811,23 @@ mod tests {
         assert!((price - (1.6 + 3.4) / 15.0).abs() < 1e-9);
     }
 
-    /// Mixed-outcome (NEG_RISK rare): UP size 9 + DOWN size 4 → outcome=UP
-    /// (dominant), size=9.
+    /// `side` boşsa fallback_side kullanılır.
     #[test]
-    fn aggregate_for_persist_picks_dominant_when_mixed() {
-        let fills = vec![
-            OurFill {
-                outcome: Outcome::Up,
-                asset_id: "UP_TOKEN".into(),
-                side: "BUY".into(),
-                price: 0.58,
-                size: 9.0,
-                is_maker: true,
-                order_id: Some("0xUP".into()),
-            },
-            OurFill {
-                outcome: Outcome::Down,
-                asset_id: "DOWN_TOKEN".into(),
-                side: "BUY".into(),
-                price: 0.40,
-                size: 4.0,
-                is_maker: false,
-                order_id: None,
-            },
-        ];
-        let (outcome, asset, _side, price, size) = aggregate_for_persist("test", &fills, None);
-        assert_eq!(outcome.as_deref(), Some("UP"));
-        assert_eq!(asset.as_deref(), Some("UP_TOKEN"));
-        assert!((size - 9.0).abs() < 1e-9);
-        assert!((price - 0.58).abs() < 1e-9);
+    fn aggregate_for_persist_uses_fallback_side_when_empty() {
+        let fills = vec![OurFill {
+            outcome: Outcome::Down,
+            asset_id: "DOWN_TOKEN".into(),
+            side: String::new(),
+            price: 0.42,
+            size: 7.0,
+            order_id: None,
+        }];
+        let (_o, _a, side, _p, _s) = aggregate_for_persist(&fills, Some("BUY"));
+        assert_eq!(side.as_deref(), Some("BUY"));
     }
 
-    /// Polymarket policy: makers pay 0% no matter what fee_rate_bps says.
+    /// Polymarket policy: makers (order_id=Some) pay 0% no matter what
+    /// fee_rate_bps says.
     #[test]
     fn compute_fee_maker_returns_zero() {
         let f = OurFill {
@@ -878,7 +836,6 @@ mod tests {
             side: "BUY".into(),
             price: 0.50,
             size: 10.0,
-            is_maker: true,
             order_id: Some("0xMINE".into()),
         };
         assert_eq!(compute_fee(&f, Some(1000.0)), 0.0);
@@ -896,7 +853,6 @@ mod tests {
             side: "BUY".into(),
             price: 0.52,
             size: 10.0,
-            is_maker: false,
             order_id: None,
         };
         let fee = compute_fee(&f, Some(1000.0));
@@ -912,7 +868,6 @@ mod tests {
             side: "BUY".into(),
             price: 0.50,
             size: 10.0,
-            is_maker: false,
             order_id: None,
         };
         let fee = compute_fee(&f, Some(1000.0));
@@ -928,7 +883,6 @@ mod tests {
             side: "BUY".into(),
             price: 0.52,
             size: 10.0,
-            is_maker: false,
             order_id: None,
         };
         assert_eq!(compute_fee(&f, None), 0.0);
@@ -979,46 +933,75 @@ mod tests {
         assert_eq!(sess.open_orders[0].size_matched, 0.0);
     }
 
-    /// Dust toleransı: `size_matched >= size − 1e-6` full-fill sayılır.
+    /// `remaining < api_min_order_size` → emir effectively filled, prune edilir.
+    /// Bot 54 senaryosu: hedge 8.996/9 → kalan 0.004 share, threshold 5.0.
     #[test]
-    fn record_fill_dust_tolerance() {
+    fn record_fill_dust_below_min_order_prunes() {
         let mut sess = make_session();
+        sess.api_min_order_size = 5.0;
         let mut o = open("0xHEDGE");
-        o.size = 10.0;
-        o.size_matched = 9.999_999;
+        o.size = 9.0;
         sess.open_orders.push(o);
 
-        // Hiç fill eklemeden bile dust threshold'a yakın → partial fill bırak,
-        // gerçek dust simulation:
-        record_fill_and_prune_if_full(&mut sess, Some("0xHEDGE"), 0.000_001, "test");
-        assert!(sess.open_orders.is_empty());
+        record_fill_and_prune_if_full(&mut sess, Some("0xHEDGE"), 8.996, "test");
+        assert!(
+            sess.open_orders.is_empty(),
+            "0.004 dust < 5.0 min_order → prune"
+        );
     }
 
-    /// Bot 53 regresyon: hedge 3 ayrı trade event'inde dolduğunda, kümülatif
-    /// fill 10'a ulaşınca emir düşer → harvest FSM `PairComplete`'e geçebilir.
+    /// `remaining >= api_min_order_size` → emir korunur (yeni trade için
+    /// hâlâ tradeable). Bot 53 ilk fill: 1.886/10 → kalan 8.114 share.
     #[test]
-    fn bot53_three_fills_complete_hedge() {
+    fn record_fill_remaining_tradeable_keeps_order() {
         let mut sess = make_session();
+        sess.api_min_order_size = 5.0;
+        let mut o = open("0xHEDGE");
+        o.size = 10.0;
+        sess.open_orders.push(o);
+
+        record_fill_and_prune_if_full(&mut sess, Some("0xHEDGE"), 1.886_791, "test");
+        assert_eq!(sess.open_orders.len(), 1);
+        assert!((sess.open_orders[0].size_matched - 1.886_791).abs() < 1e-9);
+    }
+
+    /// Bot 53 regresyon: hedge 9.987/10 doluyor; kalan 0.013 share <
+    /// api_min_order_size (5.0) → prune → FSM PairComplete'e gider.
+    /// Daha önce `FILL_EPSILON=1e-6` ile prune olmuyor, FSM PositionOpen'da
+    /// kalıp pyramid tetikliyordu.
+    #[test]
+    fn bot53_dust_after_three_fills_prunes() {
+        let mut sess = make_session();
+        sess.api_min_order_size = 5.0;
         let mut hedge = open("0xfb68");
         hedge.size = 10.0;
         hedge.outcome = Outcome::Down;
         sess.open_orders.push(hedge);
 
         record_fill_and_prune_if_full(&mut sess, Some("0xfb68"), 1.886_791, "test");
-        assert_eq!(sess.open_orders.len(), 1, "1. fill sonrası: partial");
+        assert_eq!(sess.open_orders.len(), 1, "1. fill: remaining 8.11 >= 5");
 
         record_fill_and_prune_if_full(&mut sess, Some("0xfb68"), 3.26, "test");
-        assert_eq!(sess.open_orders.len(), 1, "2. fill sonrası: partial");
-
-        record_fill_and_prune_if_full(&mut sess, Some("0xfb68"), 4.840_376, "test");
-        // 1.886791 + 3.26 + 4.840376 = 9.987167 → dust kalır; gerçek
-        // Polymarket akışında 4. mini fill veya WS CANCELLATION ile düşer.
-        assert_eq!(sess.open_orders.len(), 1, "9.987 < 10 dust beyond epsilon");
-
-        record_fill_and_prune_if_full(&mut sess, Some("0xfb68"), 0.012_833, "test");
+        // 1.886 + 3.26 = 5.146 → remaining = 4.854 < 5 → effectively filled.
         assert!(
             sess.open_orders.is_empty(),
-            "tüm 10 dolduğunda hedge pruned → FSM PairComplete'e gider"
+            "2. fill sonrası remaining 4.854 < 5 → prune"
+        );
+    }
+
+    /// Bot 54 ikinci session regresyon: 5.78 + 0.89 + 3.32 = 9.99/10 → prune.
+    #[test]
+    fn bot54_three_fills_dust_prunes() {
+        let mut sess = make_session();
+        sess.api_min_order_size = 5.0;
+        let mut hedge = open("0x2049");
+        hedge.size = 10.0;
+        sess.open_orders.push(hedge);
+
+        record_fill_and_prune_if_full(&mut sess, Some("0x2049"), 5.78, "test");
+        assert!(
+            sess.open_orders.is_empty(),
+            "tek fill 5.78 → remaining 4.22 < 5 → prune"
         );
     }
 }
