@@ -395,6 +395,134 @@ fn position_open_hedge_drift_triggers_cancel() {
     }
 }
 
+/// Bot 1 / `btc-updown-5m-1776791700` partial-fill regresyonu: opener UP
+/// kısmen doldu (3 share / 9), DOWN hedge orijinal opener boyutunda (size=9)
+/// kitapta duruyor. `avg_filled = 0.57` değişmediği için fiyat drift'i yok,
+/// ama hedge size (remaining=9) imbalance.abs()=3'ten ≥ api_min_order_size(5)
+/// fazla → re-size beklenir. Cancel-and-place ile yeni hedge size=imbalance(3).
+///
+/// NOT: api_min_order_size=5 → imbalance 3 normalde `build_hedge`'i geçemez;
+/// bu test için min'i 1.0'a düşürüyoruz (gerçek BTC market'inde imbalance
+/// genellikle ≥ 5 olur, küçük imbalance dust check'ine takılır).
+#[test]
+fn position_open_partial_opener_resizes_oversized_hedge() {
+    let mut metrics = StrategyMetrics::default();
+    metrics.ingest_fill(Outcome::Up, Side::Buy, 0.57, 3.0, 0.0); // kısmi opener fill
+    let opens = vec![mk_order(
+        "hedge_orig",
+        Outcome::Down,
+        "harvest_v2:hedge:down",
+        0.39, // target = 0.96 - 0.57 = 0.39 (avg_threshold tweak'i için aşağıda)
+        9.0,  // orijinal opener_size
+        0,
+    )];
+    let mut ctx = default_ctx(&metrics, &opens);
+    ctx.api_min_order_size = 1.0;
+    ctx.avg_threshold = 0.96; // 0.96 - 0.57 = 0.39 → fiyat drift yok
+    let (state, dec) = decide(
+        HarvestState::PositionOpen {
+            filled_side: Outcome::Up,
+        },
+        &ctx,
+    );
+    assert_eq!(
+        state,
+        HarvestState::PositionOpen {
+            filled_side: Outcome::Up
+        }
+    );
+    match dec {
+        Decision::CancelAndPlace { cancels, places } => {
+            assert_eq!(cancels, vec!["hedge_orig".to_string()]);
+            assert_eq!(places.len(), 1);
+            let h = &places[0];
+            assert_eq!(h.outcome, Outcome::Down);
+            assert!(
+                (h.price - 0.39).abs() < 1e-9,
+                "fiyat aynı kalmalı: 0.96 - 0.57 = 0.39, got {}",
+                h.price
+            );
+            assert!(
+                (h.size - 3.0).abs() < 1e-9,
+                "hedge size = imbalance.abs() = 3.0, got {}",
+                h.size
+            );
+        }
+        other => panic!("expected CancelAndPlace (size drift), got {:?}", other),
+    }
+}
+
+/// Hedge boyutu zaten doğru ise (opener tam dolduktan sonra hedge fill yok)
+/// re-place yapılmamalı — gereksiz cancel-place spam'i engelle.
+#[test]
+fn position_open_hedge_size_in_tolerance_skips_replace() {
+    let mut metrics = StrategyMetrics::default();
+    metrics.ingest_fill(Outcome::Up, Side::Buy, 0.57, 9.0, 0.0); // tam opener fill
+    let opens = vec![mk_order(
+        "hedge_orig",
+        Outcome::Down,
+        "harvest_v2:hedge:down",
+        0.39,
+        9.0, // hedge = imbalance
+        0,
+    )];
+    let mut ctx = default_ctx(&metrics, &opens);
+    ctx.avg_threshold = 0.96;
+    ctx.zone = MarketZone::DeepTrade; // avg_down/pyramid yan etkilerini ele
+    let (state, dec) = decide(
+        HarvestState::PositionOpen {
+            filled_side: Outcome::Up,
+        },
+        &ctx,
+    );
+    assert_eq!(
+        state,
+        HarvestState::PositionOpen {
+            filled_side: Outcome::Up
+        }
+    );
+    assert!(
+        matches!(dec, Decision::NoOp),
+        "fiyat & size doğru → re-place beklenmez, got {:?}",
+        dec
+    );
+}
+
+/// Hedge kısmen doldukça `remaining = size - size_matched` küçülür ama
+/// imbalance da paralel küçülür → mismatch sabit ve `≈ remaining_opener`.
+/// Opener tam dolu + hedge kısmen doluysa hedge size hâlâ imbalance ile
+/// uyumludur (ikisi de aynı oranda azalır) — re-place yapılmamalı.
+#[test]
+fn position_open_hedge_partial_fill_in_sync_no_replace() {
+    let mut metrics = StrategyMetrics::default();
+    metrics.ingest_fill(Outcome::Up, Side::Buy, 0.57, 9.0, 0.0);
+    metrics.ingest_fill(Outcome::Down, Side::Buy, 0.39, 4.0, 0.0); // hedge kısmi fill
+    let mut hedge = mk_order(
+        "hedge_orig",
+        Outcome::Down,
+        "harvest_v2:hedge:down",
+        0.39,
+        9.0,
+        0,
+    );
+    hedge.size_matched = 4.0; // remaining = 5 = imbalance (9-4)
+    let opens = vec![hedge];
+    let mut ctx = default_ctx(&metrics, &opens);
+    ctx.avg_threshold = 0.96;
+    ctx.zone = MarketZone::DeepTrade;
+    let (_state, dec) = decide(
+        HarvestState::PositionOpen {
+            filled_side: Outcome::Up,
+        },
+        &ctx,
+    );
+    assert!(
+        matches!(dec, Decision::NoOp),
+        "remaining(5) == imbalance(5) → NoOp beklenir, got {:?}",
+        dec
+    );
+}
+
 #[test]
 fn stop_trade_cancels_all_and_done() {
     let mut metrics = StrategyMetrics::default();

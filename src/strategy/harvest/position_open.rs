@@ -35,12 +35,13 @@ pub fn handle(filled_side: Outcome, ctx: &HarvestContext) -> (HarvestState, Deci
         return replace_missing_hedge(filled_side, ctx);
     }
 
-    // §9 adım 2-4: hedge drift → atomic cancel + re-place. Aynı tick içinde
-    // eski hedge düşer, yeni hedge `0.98 − avg_filled` hedef fiyatıyla kitaba
-    // girer. Yeni hedge planlanamıyorsa (target band dışı / imbalance dust)
-    // eski hedge bırakılır — ProfitLock garantisini bozmamak için cancel-only
-    // yapılmaz; bir sonraki tick'te avg değişince tekrar değerlendirilir.
-    if let Some(cancel) = hedge_drift_cancel(filled_side, ctx) {
+    // §9 adım 2-4: hedge fiyat veya size sapması → atomic cancel + re-place.
+    // Aynı tick içinde eski hedge düşer, yeni hedge `0.96 − avg_filled` hedef
+    // fiyatı + `imbalance.abs()` size'ıyla kitaba girer. Yeni hedge
+    // planlanamıyorsa (target band dışı / imbalance dust) eski hedge bırakılır
+    // — ProfitLock garantisini bozmamak için cancel-only yapılmaz; bir sonraki
+    // tick'te avg değişince tekrar değerlendirilir.
+    if let Some(cancel) = hedge_needs_replace(filled_side, ctx) {
         return match build_hedge(filled_side, ctx) {
             Some(replacement) => (
                 same,
@@ -112,16 +113,31 @@ fn build_hedge(filled_side: Outcome, ctx: &HarvestContext) -> Option<PlannedOrde
     ))
 }
 
-/// Doc §9 adım 2-4: beklenen hedge = `avg_threshold − avg_filled_side`; mevcut
-/// hedge bu fiyattan ≥ 1 tick sapmışsa cancel ID döndür.
-fn hedge_drift_cancel(filled_side: Outcome, ctx: &HarvestContext) -> Option<String> {
+/// Doc §9 adım 2-4: hedge için fiyat veya size sapması — cancel ID döndür.
+///
+/// - **Fiyat sapması**: `|hedge.price − (avg_threshold − avg_filled)| ≥ tick/2`.
+///   Avg-down/pyramid sonrası ProfitLock hedef fiyatı kayar; hedge re-price
+///   edilmezse eski fiyatta kalır (avg < 0.50 senaryosunda profit-lock kaçar).
+/// - **Size sapması**: `|remaining_hedge − imbalance.abs()| ≥ api_min_order_size`.
+///   OpenPair hedge'i her zaman opener_size ile basılır (dengeli pair). Opener
+///   kısmen dolup canlı kalırsa hedge orijinal opener boyutunda kalır → hedge
+///   tamamen dolarsa karşı taraf ağırlığa kayar (Bot 1 / btc-updown-5m-1776791700
+///   takibinde ortaya çıkan partial-fill regresyonu). Bu kontrol kısmi fill
+///   senaryosunda da hedge'i `imbalance.abs()`'e ayarlar.
+///
+/// `remaining_hedge = hedge.size − hedge.size_matched` (kümülatif maker fill).
+fn hedge_needs_replace(filled_side: Outcome, ctx: &HarvestContext) -> Option<String> {
     let hedge = ctx.hedge_order(filled_side.opposite())?;
     let avg_filled = ctx.avg_filled(filled_side);
     if avg_filled <= 0.0 {
         return None;
     }
-    let target = ctx.snap_clamp(ctx.avg_threshold - avg_filled);
-    if (hedge.price - target).abs() < ctx.tick_size * 0.5 {
+    let target_price = ctx.snap_clamp(ctx.avg_threshold - avg_filled);
+    let imbalance = (ctx.shares(filled_side) - ctx.shares(filled_side.opposite())).abs();
+    let remaining = (hedge.size - hedge.size_matched).max(0.0);
+    let price_drift = (hedge.price - target_price).abs() >= ctx.tick_size * 0.5;
+    let size_drift = (remaining - imbalance).abs() >= ctx.api_min_order_size;
+    if !price_drift && !size_drift {
         return None;
     }
     Some(hedge.id.clone())
