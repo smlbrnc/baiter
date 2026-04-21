@@ -240,9 +240,17 @@ fn on_trade(sess: &mut MarketSession, pool: &SqlitePool, ev: TradeMsg) {
     db::trades::persist_trade(pool, record, "user_ws upsert_trade");
 }
 
+/// Tam-fill veya gerçek dust olduğunda prune edilecek tolerans (share).
+///
+/// Polymarket `min_order_size` (≈5.0) **yeni emir POST için** geçerli;
+/// book'taki kısmi emir herhangi bir küçük boyutta dolmaya devam eder. Bu
+/// yüzden dust eşiği POST minimum'undan **çok daha küçük** olmalı: kalan
+/// miktar 0.5 share'in altındaysa pratikte counterparty bulamaz.
+const FILL_DUST_THRESHOLD: f64 = 0.5;
+
 /// Maker fill'i `OpenOrder.size_matched`'e ekle; kalan miktar
-/// `api_min_order_size`'tan küçükse (yeni trade için tradeable değil) emri
-/// `open_orders`'tan düşür → harvest FSM `PairComplete` doğru tetiklenir.
+/// `FILL_DUST_THRESHOLD`'un altına düşerse emri `open_orders`'tan düşür →
+/// harvest FSM `PairComplete` doğru tetiklenir.
 fn record_fill_and_prune_if_full(
     sess: &mut MarketSession,
     order_id: Option<&str>,
@@ -250,17 +258,16 @@ fn record_fill_and_prune_if_full(
     label: &str,
 ) {
     let Some(id) = order_id else { return };
-    let dust_threshold = sess.api_min_order_size;
     let mut fully_filled = false;
     if let Some(o) = sess.open_orders.iter_mut().find(|o| o.id == id) {
         o.size_matched += fill_size;
         let remaining = (o.size - o.size_matched).max(0.0);
-        fully_filled = remaining < dust_threshold;
+        fully_filled = remaining < FILL_DUST_THRESHOLD;
         if fully_filled {
             ipc::log_line(
                 label,
                 format!(
-                    "open_order effectively filled — pruning id={id} size={} matched={} remaining={remaining} (< api_min_order_size={dust_threshold})",
+                    "open_order effectively filled — pruning id={id} size={} matched={} remaining={remaining} (< {FILL_DUST_THRESHOLD})",
                     o.size, o.size_matched
                 ),
             );
@@ -815,7 +822,7 @@ mod tests {
         assert!(sess.open_orders.is_empty());
     }
 
-    /// Partial fill (kalan ≥ api_min_order_size) → emir korunur.
+    /// Partial fill (kalan ≥ FILL_DUST_THRESHOLD) → emir korunur.
     #[test]
     fn record_fill_partial_keeps_order() {
         let mut sess = make_session();
@@ -848,11 +855,10 @@ mod tests {
         assert_eq!(sess.open_orders[0].size_matched, 0.0);
     }
 
-    /// Bot 54 dust: hedge 8.996/9 → kalan 0.004 < 5.0 min_order → prune.
+    /// Bot 54 dust: hedge 8.996/9 → kalan 0.004 < FILL_DUST_THRESHOLD → prune.
     #[test]
-    fn record_fill_dust_below_min_order_prunes() {
+    fn record_fill_dust_below_threshold_prunes() {
         let mut sess = make_session();
-        sess.api_min_order_size = 5.0;
         let mut o = open("0xHEDGE");
         o.size = 9.0;
         sess.open_orders.push(o);
@@ -861,25 +867,39 @@ mod tests {
         assert!(sess.open_orders.is_empty());
     }
 
-    /// Bot 53 ilk fill: 1.886/10 → kalan 8.114 ≥ 5 → emir korunur.
+    /// Yarı dolma (5/10 → kalan 5 ≥ 0.5) → emir korunur ve sonraki fill'i
+    /// bekler. Bu, session-1 (`btc-updown-5m-1776763500`) bug'ının
+    /// regresyonu: eski `dust=api_min_order_size=5.0` kuralında 4.688
+    /// remaining yanlışlıkla prune edilip ghost DOWN trade üretiyordu.
     #[test]
-    fn record_fill_remaining_tradeable_keeps_order() {
+    fn record_fill_half_filled_keeps_order_for_session1_regression() {
         let mut sess = make_session();
-        sess.api_min_order_size = 5.0;
-        let mut o = open("0xHEDGE");
+        let mut o = open("0xe515");
         o.size = 10.0;
         sess.open_orders.push(o);
 
-        record_fill_and_prune_if_full(&mut sess, Some("0xHEDGE"), 1.886_791, "test");
+        record_fill_and_prune_if_full(&mut sess, Some("0xe515"), 0.311_606, "test");
         assert_eq!(sess.open_orders.len(), 1);
-        assert!((sess.open_orders[0].size_matched - 1.886_791).abs() < 1e-9);
+
+        record_fill_and_prune_if_full(&mut sess, Some("0xe515"), 5.0, "test");
+        assert_eq!(
+            sess.open_orders.len(),
+            1,
+            "remaining 4.69 hâlâ tradeable → emir korunmalı"
+        );
+        assert!((sess.open_orders[0].size_matched - 5.311_606).abs() < 1e-9);
+
+        record_fill_and_prune_if_full(&mut sess, Some("0xe515"), 4.68, "test");
+        assert!(
+            sess.open_orders.is_empty(),
+            "9.991/10 → remaining 0.009 < 0.5 → prune"
+        );
     }
 
-    /// Bot 53 regresyon: 1.886 + 3.26 = 5.146/10 → kalan 4.854 < 5 → prune.
+    /// Bot 53 regresyon: 3 fill (1.886+3.26+4.84) → 9.986/10 → prune.
     #[test]
-    fn bot53_dust_after_two_fills_prunes() {
+    fn bot53_three_fills_complete_hedge_prunes() {
         let mut sess = make_session();
-        sess.api_min_order_size = 5.0;
         let mut hedge = open("0xfb68");
         hedge.size = 10.0;
         hedge.outcome = Outcome::Down;
@@ -889,19 +909,27 @@ mod tests {
         assert_eq!(sess.open_orders.len(), 1);
 
         record_fill_and_prune_if_full(&mut sess, Some("0xfb68"), 3.26, "test");
-        assert!(sess.open_orders.is_empty());
+        assert_eq!(sess.open_orders.len(), 1, "5.146/10 → remaining 4.85 ≥ 0.5");
+
+        record_fill_and_prune_if_full(&mut sess, Some("0xfb68"), 4.84, "test");
+        assert!(sess.open_orders.is_empty(), "9.986/10 → remaining 0.014 < 0.5");
     }
 
-    /// Bot 54 #2 regresyon: tek fill 5.78/10 → kalan 4.22 < 5 → prune.
+    /// Bot 54 #2 regresyon: 3 fill (5.78+0.89+3.32) → 9.99/10 → prune.
     #[test]
-    fn bot54_single_fill_dust_prunes() {
+    fn bot54_three_fills_complete_hedge_prunes() {
         let mut sess = make_session();
-        sess.api_min_order_size = 5.0;
         let mut hedge = open("0x2049");
         hedge.size = 10.0;
         sess.open_orders.push(hedge);
 
         record_fill_and_prune_if_full(&mut sess, Some("0x2049"), 5.78, "test");
-        assert!(sess.open_orders.is_empty());
+        assert_eq!(sess.open_orders.len(), 1, "5.78/10 → remaining 4.22 ≥ 0.5");
+
+        record_fill_and_prune_if_full(&mut sess, Some("0x2049"), 0.89, "test");
+        assert_eq!(sess.open_orders.len(), 1, "6.67/10 → remaining 3.33 ≥ 0.5");
+
+        record_fill_and_prune_if_full(&mut sess, Some("0x2049"), 3.32, "test");
+        assert!(sess.open_orders.is_empty(), "9.99/10 → remaining 0.01 < 0.5");
     }
 }
