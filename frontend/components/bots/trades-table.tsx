@@ -47,6 +47,7 @@ export function TradesTable({
     fetchInitial: fetchTrades,
     isLive,
     pollMs: 1500,
+    maxItems: 500,
   });
 
   const { up, down } = useMemo(() => {

@@ -151,8 +151,9 @@ export function useHistoryStream<T extends { ts_ms: number }>(opts: {
   isLive: boolean;
   filter?: (ev: FrontendEvent) => boolean;
   pollMs?: number;
+  maxItems?: number;
 }): T[] {
-  const { fetchInitial, shouldAppend, isLive, filter, pollMs } = opts;
+  const { fetchInitial, shouldAppend, isLive, filter, pollMs, maxItems } = opts;
   const [items, setItems] = useState<T[]>([]);
   const lastTsRef = useRef(0);
   const fetchRef = useRef(fetchInitial);
@@ -182,7 +183,7 @@ export function useHistoryStream<T extends { ts_ms: number }>(opts: {
         if (fresh.length === 0) return prev;
         const next = [...prev, ...fresh];
         lastTsRef.current = next[next.length - 1].ts_ms;
-        return next;
+        return maxItems ? next.slice(-maxItems) : next;
       });
     } catch {
       /* yut — sonraki tick toparlar */
@@ -205,7 +206,10 @@ export function useHistoryStream<T extends { ts_ms: number }>(opts: {
       if (!row) return;
       if (row.ts_ms <= lastTsRef.current) return;
       lastTsRef.current = row.ts_ms;
-      setItems((prev) => [...prev, row]);
+      setItems((prev) => {
+        const next = [...prev, row];
+        return maxItems ? next.slice(-maxItems) : next;
+      });
     });
     const offConn = bus.onConnected((connected) => {
       if (connected && lastTsRef.current > 0) {
@@ -220,10 +224,28 @@ export function useHistoryStream<T extends { ts_ms: number }>(opts: {
 
   useEffect(() => {
     if (!isLive || !pollMs) return;
-    const t = setInterval(() => {
+    let t: ReturnType<typeof setInterval> | null = null;
+
+    const start = () => {
       reload(lastTsRef.current);
-    }, pollMs);
-    return () => clearInterval(t);
+      t = setInterval(() => reload(lastTsRef.current), pollMs);
+    };
+    const stop = () => {
+      if (t !== null) {
+        clearInterval(t);
+        t = null;
+      }
+    };
+
+    const onVisibility = () => (document.hidden ? stop() : start());
+    document.addEventListener("visibilitychange", onVisibility);
+
+    if (!document.hidden) start();
+
+    return () => {
+      stop();
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
   }, [isLive, pollMs, reload]);
 
   return items;
