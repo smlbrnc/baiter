@@ -162,6 +162,9 @@ struct OurFill {
     side: String,
     price: f64,
     size: f64,
+    /// `true` → bizim emir maker_orders'taydı (Polymarket policy: maker fee=0).
+    /// `false` → biz taker'ız (concave fee uygulanır).
+    is_maker: bool,
 }
 
 fn on_trade(sess: &mut MarketSession, pool: &SqlitePool, ev: TradeMsg) {
@@ -185,6 +188,21 @@ fn on_trade(sess: &mut MarketSession, pool: &SqlitePool, ev: TradeMsg) {
         Vec::new()
     };
 
+    // Per-fill fee: Polymarket policy — makers pay 0%, only takers pay,
+    // concave formula `fee = size × (bps/10000) × price × (1−price)`.
+    // Doc: <https://docs.polymarket.com/trading/fees>
+    if status_upper == "MATCHED" && fee_rate_bps.is_none() && !our_fills.is_empty() {
+        ipc::log_line(
+            &label,
+            format!("⚠️ trade {} missing fee_rate_bps; persist fee=0", trade_id),
+        );
+    }
+    let fees_per_fill: Vec<f64> = our_fills
+        .iter()
+        .map(|f| compute_fee(f, fee_rate_bps))
+        .collect();
+    let total_fee: f64 = fees_per_fill.iter().sum();
+
     // Persist view: tek satır/trade_id. our_fills doluysa bizim aggregate'i
     // yaz; boşsa (bilinmeyen asset veya MATCHED-dışı) top-level'ı yaz (audit).
     let (p_outcome, p_asset, p_side, p_price, p_size) = if !our_fills.is_empty() {
@@ -198,16 +216,6 @@ fn on_trade(sess: &mut MarketSession, pool: &SqlitePool, ev: TradeMsg) {
             ev.size,
         )
     };
-    let persist_fee = match fee_rate_bps {
-        Some(bps) => p_price * p_size * bps / 10_000.0,
-        None => {
-            ipc::log_line(
-                &label,
-                format!("⚠️ trade {} missing fee_rate_bps; persist fee=0", trade_id),
-            );
-            0.0
-        }
-    };
     let record = db::trades::TradeRecord::from_user_ws(db::trades::WsTradeInput {
         bot_id,
         market_session_id: sess.market_session_id,
@@ -219,7 +227,7 @@ fn on_trade(sess: &mut MarketSession, pool: &SqlitePool, ev: TradeMsg) {
         size: p_size,
         price: p_price,
         status: status_upper.clone(),
-        fee: persist_fee,
+        fee: total_fee,
         ts_ms: ev.timestamp_ms as i64,
         raw: &raw,
     });
@@ -231,10 +239,7 @@ fn on_trade(sess: &mut MarketSession, pool: &SqlitePool, ev: TradeMsg) {
 
     // Pozisyon math: her bireysel fill ayrı `absorb_trade_matched` (mixed-outcome
     // edge case'inde her iki tarafın pozisyonu da doğru güncellenir).
-    for f in our_fills {
-        let fee_per_fill = fee_rate_bps
-            .map(|bps| f.price * f.size * bps / 10_000.0)
-            .unwrap_or(0.0); // warn yukarıda persist_fee match'inde tek sefer atıldı.
+    for (f, fee_per_fill) in our_fills.into_iter().zip(fees_per_fill) {
         absorb_trade_matched(sess, f.outcome, f.price, f.size, fee_per_fill);
         log_fill_and_position(&label, sess, f.outcome, f.size, f.price);
         ipc::emit(&FrontendEvent::Fill {
@@ -247,6 +252,16 @@ fn on_trade(sess: &mut MarketSession, pool: &SqlitePool, ev: TradeMsg) {
             ts_ms: now_ms(),
         });
     }
+}
+
+/// Polymarket taker fee: `size × (bps/10000) × price × (1−price)`. Makers → 0.
+/// Doc: <https://docs.polymarket.com/trading/fees>
+fn compute_fee(f: &OurFill, fee_rate_bps: Option<f64>) -> f64 {
+    if f.is_maker {
+        return 0.0;
+    }
+    let bps = fee_rate_bps.unwrap_or(0.0);
+    f.size * (bps / 10_000.0) * f.price * (1.0 - f.price)
 }
 
 /// Trade event'inden bizim fill'lerimizi çıkar (User Channel garantisi: bu
@@ -295,6 +310,7 @@ fn extract_our_fills(
                         side,
                         price,
                         size: amount,
+                        is_maker: true,
                     })
                 })
                 .collect()
@@ -312,6 +328,7 @@ fn extract_our_fills(
                 side: top_side.unwrap_or_default().to_string(),
                 price: top_price,
                 size: top_size,
+                is_maker: false,
             }]
         })
         .unwrap_or_default()
@@ -622,6 +639,7 @@ mod tests {
         assert_eq!(f.side, "BUY");
         assert!((f.price - 0.33).abs() < 1e-9);
         assert!((f.size - 9.33).abs() < 1e-9);
+        assert!(f.is_maker, "maker dalında is_maker=true olmalı");
     }
 
     /// Taker rolü: `maker_orders[]` ya boş ya da bizim id yok → top-level
@@ -651,6 +669,7 @@ mod tests {
         assert_eq!(f.side, "BUY");
         assert!((f.price - 0.57).abs() < 1e-9);
         assert!((f.size - 9.0).abs() < 1e-9);
+        assert!(!f.is_maker, "taker fallback'ında is_maker=false olmalı");
     }
 
     /// `maker_orders` alanı hiç yoksa ve top-level asset bilinmiyorsa → boş.
@@ -728,6 +747,7 @@ mod tests {
                 side: "BUY".into(),
                 price: 0.32,
                 size: 5.0,
+                is_maker: true,
             },
             OurFill {
                 outcome: Outcome::Up,
@@ -735,6 +755,7 @@ mod tests {
                 side: "BUY".into(),
                 price: 0.34,
                 size: 10.0,
+                is_maker: true,
             },
         ];
         let (outcome, asset, side, price, size) = aggregate_for_persist("test", &fills, None);
@@ -757,6 +778,7 @@ mod tests {
                 side: "BUY".into(),
                 price: 0.58,
                 size: 9.0,
+                is_maker: true,
             },
             OurFill {
                 outcome: Outcome::Down,
@@ -764,6 +786,7 @@ mod tests {
                 side: "BUY".into(),
                 price: 0.40,
                 size: 4.0,
+                is_maker: false,
             },
         ];
         let (outcome, asset, _side, price, size) = aggregate_for_persist("test", &fills, None);
@@ -771,5 +794,66 @@ mod tests {
         assert_eq!(asset.as_deref(), Some("UP_TOKEN"));
         assert!((size - 9.0).abs() < 1e-9);
         assert!((price - 0.58).abs() < 1e-9);
+    }
+
+    /// Polymarket policy: makers pay 0% no matter what fee_rate_bps says.
+    #[test]
+    fn compute_fee_maker_returns_zero() {
+        let f = OurFill {
+            outcome: Outcome::Up,
+            asset_id: "UP_TOKEN".into(),
+            side: "BUY".into(),
+            price: 0.50,
+            size: 10.0,
+            is_maker: true,
+        };
+        assert_eq!(compute_fee(&f, Some(1000.0)), 0.0);
+        assert_eq!(compute_fee(&f, Some(720.0)), 0.0);
+        assert_eq!(compute_fee(&f, None), 0.0);
+    }
+
+    /// Polymarket concave formula: `size × (bps/10000) × p × (1−p)`.
+    /// Bot 52 senaryosu: UP TAKER 0.52 × 10 @ bps=1000 → 0.2496.
+    #[test]
+    fn compute_fee_taker_uses_concave_formula() {
+        let f = OurFill {
+            outcome: Outcome::Up,
+            asset_id: "UP_TOKEN".into(),
+            side: "BUY".into(),
+            price: 0.52,
+            size: 10.0,
+            is_maker: false,
+        };
+        let fee = compute_fee(&f, Some(1000.0));
+        assert!((fee - 0.2496).abs() < 1e-9, "expected 0.2496, got {fee}");
+    }
+
+    /// Pik fee 50%'de: 10 × 0.10 × 0.5 × 0.5 = 0.25.
+    #[test]
+    fn compute_fee_taker_peaks_at_half() {
+        let f = OurFill {
+            outcome: Outcome::Up,
+            asset_id: "UP_TOKEN".into(),
+            side: "BUY".into(),
+            price: 0.50,
+            size: 10.0,
+            is_maker: false,
+        };
+        let fee = compute_fee(&f, Some(1000.0));
+        assert!((fee - 0.25).abs() < 1e-9);
+    }
+
+    /// `fee_rate_bps` yoksa taker bile 0 fee (defansif default).
+    #[test]
+    fn compute_fee_taker_no_bps_returns_zero() {
+        let f = OurFill {
+            outcome: Outcome::Up,
+            asset_id: "UP_TOKEN".into(),
+            side: "BUY".into(),
+            price: 0.52,
+            size: 10.0,
+            is_maker: false,
+        };
+        assert_eq!(compute_fee(&f, None), 0.0);
     }
 }
