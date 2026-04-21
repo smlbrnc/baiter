@@ -24,7 +24,6 @@ pub struct TradeRecord {
     pub status: String,
     pub fee: f64,
     pub ts_ms: i64,
-    pub raw_payload: Option<String>,
 }
 
 /// Fire-and-forget kalıbı (§⚡ Kural 4).
@@ -37,12 +36,11 @@ pub async fn upsert_trade(pool: &SqlitePool, r: &TradeRecord) -> Result<(), AppE
     sqlx::query(
         "INSERT INTO trades (trade_id, bot_id, market_session_id, market, asset_id, \
          taker_order_id, maker_orders, trader_side, side, outcome, size, price, status, fee, \
-         ts_ms, raw_payload) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+         ts_ms) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT(trade_id) DO UPDATE SET \
          status = excluded.status, \
-         ts_ms = excluded.ts_ms, \
-         raw_payload = COALESCE(excluded.raw_payload, trades.raw_payload)",
+         ts_ms = excluded.ts_ms",
     )
     .bind(&r.trade_id)
     .bind(r.bot_id)
@@ -59,7 +57,6 @@ pub async fn upsert_trade(pool: &SqlitePool, r: &TradeRecord) -> Result<(), AppE
     .bind(&r.status)
     .bind(r.fee)
     .bind(r.ts_ms)
-    .bind(&r.raw_payload)
     .execute(pool)
     .await?;
     Ok(())
@@ -76,7 +73,7 @@ pub async fn trades_for_session(
     let after = after_ts_ms.unwrap_or(0);
     let rows = sqlx::query(
         "SELECT trade_id, bot_id, market_session_id, market, asset_id, taker_order_id, \
-         maker_orders, trader_side, side, outcome, size, price, status, fee, ts_ms, raw_payload \
+         maker_orders, trader_side, side, outcome, size, price, status, fee, ts_ms \
          FROM trades \
          WHERE market_session_id = ? AND ts_ms > ? \
          ORDER BY ts_ms ASC LIMIT ?",
@@ -104,13 +101,14 @@ pub async fn trades_for_session(
             status: r.get("status"),
             fee: r.get("fee"),
             ts_ms: r.get("ts_ms"),
-            raw_payload: r.get("raw_payload"),
         })
         .collect())
 }
 
 /// User WS `trade` event payload'ından satır üretmek için input bag.
-pub struct WsTradeInput<'a> {
+/// Tipli alanlar — `event.rs::persist_trade` `TradePayload`'tan doğrudan
+/// geçirir (raw JSON fishing yok).
+pub struct WsTradeInput {
     pub bot_id: i64,
     pub market_session_id: i64,
     pub trade_id: String,
@@ -123,31 +121,22 @@ pub struct WsTradeInput<'a> {
     pub status: String,
     pub fee: f64,
     pub ts_ms: i64,
-    pub raw: &'a serde_json::Value,
+    pub taker_order_id: Option<String>,
+    pub maker_orders_json: Option<String>,
+    pub trader_side: Option<String>,
 }
 
 impl TradeRecord {
-    pub fn from_user_ws(input: WsTradeInput<'_>) -> Self {
-        let taker_order_id = input
-            .raw
-            .get("taker_order_id")
-            .and_then(|v| v.as_str())
-            .map(str::to_string);
-        let maker_orders = input.raw.get("maker_orders").map(|v| v.to_string());
-        let trader_side = input
-            .raw
-            .get("trader_side")
-            .and_then(|v| v.as_str())
-            .map(str::to_string);
+    pub fn from_user_ws(input: WsTradeInput) -> Self {
         Self {
             trade_id: input.trade_id,
             bot_id: input.bot_id,
             market_session_id: Some(input.market_session_id),
             market: Some(input.market),
             asset_id: Some(input.asset_id),
-            taker_order_id,
-            maker_orders,
-            trader_side,
+            taker_order_id: input.taker_order_id,
+            maker_orders: input.maker_orders_json,
+            trader_side: input.trader_side,
             side: input.side,
             outcome: input.outcome,
             size: input.size,
@@ -155,7 +144,6 @@ impl TradeRecord {
             status: input.status,
             fee: input.fee,
             ts_ms: input.ts_ms,
-            raw_payload: Some(input.raw.to_string()),
         }
     }
 }

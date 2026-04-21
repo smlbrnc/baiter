@@ -2,9 +2,10 @@
 //!
 //! Sync (Rule 1). DB I/O `db::*::persist_*` → `spawn_db` ile fire-and-forget;
 //! strateji-kritik in-memory state her zaman önce, audit persist sonra.
+//!
+//! Spec referansı: <https://docs.polymarket.com/developers/CLOB/websocket/user-channel>.
 
 use std::collections::HashSet;
-use std::sync::Arc;
 
 use sqlx::SqlitePool;
 
@@ -14,46 +15,12 @@ use crate::engine::{
     MarketSession,
 };
 use crate::ipc::{self, FrontendEvent};
-use crate::polymarket::{PolymarketEvent, PriceChangeLevel};
+use crate::polymarket::{
+    fee_for_role, MarketResolvedPayload, OrderLifecycle, OrderPayload, PolymarketEvent,
+    PriceChangeLevel, TradePayload, TradeStatus,
+};
 use crate::time::now_ms;
 use crate::types::{Outcome, RunMode, Side};
-
-struct TradeMsg {
-    trade_id: String,
-    market: String,
-    asset_id: String,
-    side: Option<String>,
-    outcome: Option<String>,
-    size: f64,
-    price: f64,
-    status: String,
-    fee_rate_bps: Option<f64>,
-    timestamp_ms: u64,
-    raw: Arc<serde_json::Value>,
-}
-
-struct OrderMsg {
-    order_id: String,
-    market: String,
-    asset_id: String,
-    side: String,
-    outcome: Option<String>,
-    original_size: Option<f64>,
-    size_matched: Option<f64>,
-    price: Option<f64>,
-    order_type: Option<String>,
-    status: String,
-    lifecycle_type: String,
-    timestamp_ms: u64,
-    raw: Arc<serde_json::Value>,
-}
-
-struct ResolvedMsg {
-    market: String,
-    winning_outcome: String,
-    winning_asset_id: Option<String>,
-    timestamp_ms: u64,
-}
 
 pub fn handle_event(
     sess: &mut MarketSession,
@@ -71,32 +38,9 @@ pub fn handle_event(
         PolymarketEvent::PriceChange { changes } => {
             on_price_change(sess, pool, run_mode, &changes)
         }
-        PolymarketEvent::Trade {
-            trade_id, market, asset_id, side, outcome, size, price, status,
-            fee_rate_bps, timestamp_ms, raw,
-        } => on_trade(
-            sess, pool,
-            TradeMsg {
-                trade_id, market, asset_id, side, outcome, size, price, status,
-                fee_rate_bps, timestamp_ms, raw,
-            },
-        ),
-        PolymarketEvent::Order {
-            order_id, market, asset_id, side, outcome, original_size, size_matched,
-            price, order_type, status, lifecycle_type, timestamp_ms, raw,
-        } => on_order(
-            sess, pool,
-            OrderMsg {
-                order_id, market, asset_id, side, outcome, original_size, size_matched,
-                price, order_type, status, lifecycle_type, timestamp_ms, raw,
-            },
-        ),
-        PolymarketEvent::MarketResolved {
-            market, winning_outcome, winning_asset_id, timestamp_ms,
-        } => on_market_resolved(
-            sess, pool,
-            ResolvedMsg { market, winning_outcome, winning_asset_id, timestamp_ms },
-        ),
+        PolymarketEvent::Trade(t) => on_trade(sess, pool, &t),
+        PolymarketEvent::Order(o) => on_order(sess, &o),
+        PolymarketEvent::MarketResolved(r) => on_market_resolved(sess, pool, &r),
     }
 }
 
@@ -153,93 +97,240 @@ fn after_book_update(sess: &mut MarketSession, pool: &SqlitePool, run_mode: RunM
     }
 }
 
-/// Bizim bir trade event içindeki tek fill'imiz.
+/// Bizim bir trade event içindeki tek fill'imizin rolü.
 ///
-/// `order_id`: bizim açık emrimize karşılık geliyorsa `Some(OpenOrder.id)`
-/// (maker fill → `maker_orders` entry; ya da REST `status=matched`
-/// sonrası kitapta marker olarak duran taker emrimize ait `taker_order_id`).
-/// `None` → bizim hiçbir açık emrimizle eşleşmeyen taker fill (örn. manuel
-/// satış event'i). `is_taker` fee politikasını seçer (maker=0%, taker=concave).
+/// - `Maker { open_order_id }`: `maker_orders[]` entry'mizin `order_id`'si
+///   bizim `open_orders`'ımızda → fill `open_order_id`'a attribute edilir.
+/// - `Taker { marker_order_id }`: top-level event bizim tarafımızdan tetiklendi.
+///   Live mod REST `POST /order` `status=matched` yanıtında `LiveExecutor::place`
+///   aynı id'yi `open_orders`'a marker olarak push eder; o id `taker_order_id`
+///   alanında geri gelirse `marker_order_id` set edilir ve marker prune'lanır.
 #[derive(Debug, Clone)]
-struct OurFill {
+enum FillRole {
+    Maker { open_order_id: String },
+    Taker { marker_order_id: Option<String> },
+}
+
+impl FillRole {
+    fn is_taker(&self) -> bool {
+        matches!(self, Self::Taker { .. })
+    }
+
+    /// `record_fill_and_prune_if_full` için open_order id'si.
+    fn open_order_id(&self) -> Option<&str> {
+        match self {
+            Self::Maker { open_order_id } => Some(open_order_id.as_str()),
+            Self::Taker { marker_order_id } => marker_order_id.as_deref(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Fill {
+    role: FillRole,
     outcome: Outcome,
     asset_id: String,
     side: Side,
     price: f64,
     size: f64,
-    order_id: Option<String>,
-    is_taker: bool,
 }
 
-fn on_trade(sess: &mut MarketSession, pool: &SqlitePool, ev: TradeMsg) {
+impl Fill {
+    /// Maker = 0, Taker = concave Polymarket fee. `bps` `MarketSession.fee_rate_bps`
+    /// (CLOB `GET /fee-rate`) tek otoritedir.
+    fn fee(&self, bps: u32) -> f64 {
+        fee_for_role(self.price, self.size, bps, self.role.is_taker())
+    }
+}
+
+/// DB persist için tek-satır view; per-fill aggregation veya top-level fallback.
+///
+/// `asset_id` ve `side` daima set (`TradePayload.side: Side` zorunlu;
+/// aggregate bir asset etrafında). `outcome` gerçekten opsiyonel — top-level
+/// fallback'te session yes/no mapping'de asset tanınmıyorsa `None`.
+struct PersistedTrade {
+    outcome: Option<String>,
+    asset_id: String,
+    side: String,
+    price: f64,
+    size: f64,
+}
+
+impl PersistedTrade {
+    fn from_top_level(sess: &MarketSession, ev: &TradePayload) -> Self {
+        let outcome = outcome_from_asset_id(sess, &ev.asset_id).map(|o| o.as_str().to_string());
+        Self {
+            outcome,
+            asset_id: ev.asset_id.clone(),
+            side: ev.side.as_str().to_string(),
+            price: ev.price,
+            size: ev.size,
+        }
+    }
+
+    /// `fills.len() >= 1` garanti — caller sadece non-empty list'le çağırır.
+    /// Polymarket bir trade event'i tek `asset_id` etrafında oluşur; aggregate
+    /// her zaman tek-outcome'dur.
+    fn from_fills(fills: &[Fill]) -> Self {
+        let first = &fills[0];
+        let sum_size: f64 = fills.iter().map(|f| f.size).sum();
+        let sum_pxsz: f64 = fills.iter().map(|f| f.price * f.size).sum();
+        let avg_price = sum_pxsz / sum_size.max(f64::EPSILON);
+        Self {
+            outcome: Some(first.outcome.as_str().to_string()),
+            asset_id: first.asset_id.clone(),
+            side: first.side.as_str().to_string(),
+            price: avg_price,
+            size: sum_size,
+        }
+    }
+}
+
+/// User Channel `trade` event handler.
+///
+/// Spec: <https://docs.polymarket.com/developers/CLOB/websocket/user-channel>.
+/// Fill attribution **sadece** ilk `MATCHED`'de; sonraki `MINED/CONFIRMED` aynı
+/// `trade_id`'yi upsert edip status/ts/raw günceller — outcome/price/size FREEZE.
+fn on_trade(sess: &mut MarketSession, pool: &SqlitePool, ev: &TradePayload) {
     let bot_id = sess.bot_id;
     let label = bot_id.to_string();
-    let status_upper = ev.status.to_ascii_uppercase();
 
-    log_ws_trade_line(&label, &ev, &status_upper);
+    log_ws_trade_line(&label, ev);
 
-    let trade_id = ev.trade_id;
-    let raw = ev.raw;
-    let fee_rate_bps = ev.fee_rate_bps;
-
-    // MATCHED dışı statuslarda (MINED/CONFIRMED) `upsert_trade` ON CONFLICT
-    // yalnızca status/ts/raw'ı günceller; outcome/price/size FREEZE → fill
-    // attribution sadece ilk MATCHED'de yapılır.
-    let our_fills: Vec<OurFill> = if status_upper == "MATCHED" {
-        extract_our_fills(sess, &raw, &ev.asset_id, ev.side.as_deref(), ev.price, ev.size)
+    let fills: Vec<Fill> = if ev.status.is_initial_match() {
+        extract_fills(sess, ev)
     } else {
         Vec::new()
     };
 
-    let fees_per_fill: Vec<f64> = our_fills
-        .iter()
-        .map(|f| compute_fee(f, fee_rate_bps))
-        .collect();
-    let total_fee: f64 = fees_per_fill.iter().sum();
+    let bps = sess.fee_rate_bps;
+    let fees: Vec<f64> = fills.iter().map(|f| f.fee(bps)).collect();
+    let total_fee: f64 = fees.iter().sum();
 
-    if status_upper == "MATCHED" {
-        for (f, fee_per_fill) in our_fills.iter().zip(&fees_per_fill) {
-            absorb_trade_matched(sess, f.outcome, f.side, f.price, f.size, *fee_per_fill);
-            record_fill_and_prune_if_full(sess, f.order_id.as_deref(), f.size, &label);
-            log_fill_and_position(&label, sess, f.outcome, f.size, f.price);
-            ipc::emit(&FrontendEvent::Fill {
-                bot_id,
-                trade_id: trade_id.clone(),
-                outcome: f.outcome,
-                side: f.side.as_str().to_string(),
-                price: f.price,
-                size: f.size,
-                status: status_upper.clone(),
-                ts_ms: now_ms(),
-            });
-        }
+    for (f, &fee) in fills.iter().zip(&fees) {
+        apply_fill(sess, &label, bot_id, &ev.trade_id, ev.status, f, fee);
     }
 
-    let (p_outcome, p_asset, p_side, p_price, p_size) = if our_fills.is_empty() {
-        (
-            ev.outcome,
-            Some(ev.asset_id),
-            ev.side,
-            ev.price,
-            ev.size,
-        )
+    let view = if fills.is_empty() {
+        PersistedTrade::from_top_level(sess, ev)
     } else {
-        aggregate_for_persist(&our_fills)
+        PersistedTrade::from_fills(&fills)
+    };
+    persist_trade(pool, sess, ev, &view, total_fee);
+}
+
+/// Trade event'inden bizim fill'lerimizi çıkar.
+///
+/// Spec: <https://docs.polymarket.com/developers/CLOB/websocket/user-channel>.
+/// İki olası rol:
+/// - **Maker**: `maker_orders[]`'ta `open_orders.id`'lerimizden eşleşen
+///   entry'ler (her biri kendi asset/side/price/matched_amount'ı taşır;
+///   NEG_RISK'te asset top-level'dan farklı outcome olabilir).
+/// - **Taker**: bizim id `maker_orders`'ta yok → top-level (asset_id, side,
+///   price, size) bizim view'ımız; bizim id ise `taker_order_id` field'ında
+///   olur.
+///
+/// Hiçbir `raw.get()` çağrısı yok — sadece tipli `TradePayload` alanları.
+fn extract_fills(sess: &MarketSession, ev: &TradePayload) -> Vec<Fill> {
+    let our_ids: HashSet<&str> = sess.open_orders.iter().map(|o| o.id.as_str()).collect();
+
+    let maker: Vec<Fill> = ev
+        .maker_orders
+        .iter()
+        .filter(|m| our_ids.contains(m.order_id.as_str()))
+        .filter_map(|m| {
+            let outcome = outcome_from_asset_id(sess, &m.asset_id)?;
+            Some(Fill {
+                role: FillRole::Maker { open_order_id: m.order_id.clone() },
+                outcome,
+                asset_id: m.asset_id.clone(),
+                side: m.side,
+                price: m.price,
+                size: m.matched_amount,
+            })
+        })
+        .collect();
+    if !maker.is_empty() {
+        return maker;
+    }
+
+    let outcome = match outcome_from_asset_id(sess, &ev.asset_id) {
+        Some(o) => o,
+        None => return Vec::new(),
+    };
+    let marker_order_id = ev
+        .taker_order_id
+        .as_deref()
+        .filter(|id| our_ids.contains(id))
+        .map(str::to_string);
+    vec![Fill {
+        role: FillRole::Taker { marker_order_id },
+        outcome,
+        asset_id: ev.asset_id.clone(),
+        side: ev.side,
+        price: ev.price,
+        size: ev.size,
+    }]
+}
+
+/// Tek fill'in tüm side-effect'leri tek noktada: metrics absorb + open_order
+/// prune + console log + frontend event emit.
+fn apply_fill(
+    sess: &mut MarketSession,
+    label: &str,
+    bot_id: i64,
+    trade_id: &str,
+    status: TradeStatus,
+    fill: &Fill,
+    fee: f64,
+) {
+    absorb_trade_matched(sess, fill.outcome, fill.side, fill.price, fill.size, fee);
+    record_fill_and_prune_if_full(sess, fill.role.open_order_id(), fill.size, label);
+    log_fill_and_position(label, sess, fill.outcome, fill.size, fill.price);
+    ipc::emit(&FrontendEvent::Fill {
+        bot_id,
+        trade_id: trade_id.to_string(),
+        outcome: fill.outcome,
+        side: fill.side.as_str().to_string(),
+        price: fill.price,
+        size: fill.size,
+        status: status.as_str().to_string(),
+        ts_ms: now_ms(),
+    });
+}
+
+fn persist_trade(
+    pool: &SqlitePool,
+    sess: &MarketSession,
+    ev: &TradePayload,
+    view: &PersistedTrade,
+    fee: f64,
+) {
+    let maker_orders_json = if ev.maker_orders.is_empty() {
+        None
+    } else {
+        // `Vec<MakerOrder>` serializasyonu deterministik ve infallible.
+        Some(
+            serde_json::to_string(&ev.maker_orders)
+                .expect("Vec<MakerOrder> serialization is infallible"),
+        )
     };
     let record = db::trades::TradeRecord::from_user_ws(db::trades::WsTradeInput {
-        bot_id,
+        bot_id: sess.bot_id,
         market_session_id: sess.market_session_id,
-        trade_id,
-        market: ev.market,
-        asset_id: p_asset.unwrap_or_default(),
-        side: p_side,
-        outcome: p_outcome,
-        size: p_size,
-        price: p_price,
-        status: status_upper,
-        fee: total_fee,
+        trade_id: ev.trade_id.clone(),
+        market: ev.market.clone(),
+        asset_id: view.asset_id.clone(),
+        side: Some(view.side.clone()),
+        outcome: view.outcome.clone(),
+        size: view.size,
+        price: view.price,
+        status: ev.status.as_str().to_string(),
+        fee,
         ts_ms: ev.timestamp_ms as i64,
-        raw: &raw,
+        taker_order_id: ev.taker_order_id.clone(),
+        maker_orders_json,
+        trader_side: ev.trader_side.clone(),
     });
     db::trades::persist_trade(pool, record, "user_ws upsert_trade");
 }
@@ -282,131 +373,18 @@ fn record_fill_and_prune_if_full(
     }
 }
 
-/// Polymarket fee policy: maker=0, taker concave `size×(bps/10000)×p×(1−p)`.
-/// Doc: <https://docs.polymarket.com/trading/fees>
-fn compute_fee(f: &OurFill, fee_rate_bps: Option<f64>) -> f64 {
-    if !f.is_taker {
-        return 0.0;
-    }
-    let bps = fee_rate_bps.unwrap_or(0.0);
-    f.size * (bps / 10_000.0) * f.price * (1.0 - f.price)
-}
-
-/// Trade event'inden bizim fill'lerimizi çıkar.
-///
-/// User Channel garantisi: bu event'te biziz. İki olası rol:
-/// - **Maker**: `maker_orders[]`'ta `open_orders.id`'lerimizden eşleşen
-///   entry'ler (her biri kendi asset/side/price/matched_amount'ı taşır;
-///   NEG_RISK'te asset top-level'dan farklı outcome olabilir).
-/// - **Taker**: bizim id maker_orders'ta yok → top-level (asset_id, side,
-///   price, size) bizim view'ımız; bizim id ise `taker_order_id` field'ında
-///   olur. Live mod REST `POST /order` `status=matched` yanıtında
-///   `LiveExecutor::place` aynı id'yi `open_orders`'a marker olarak push
-///   eder → buradaki `our_ids` setinde bulunur ve `OurFill.order_id` set
-///   edilir; `record_fill_and_prune_if_full` marker'ı temizler.
-///
-/// `metrics.ingest_fill` tek kaynak: bu fonksiyondan dönen fill'ler.
-/// REST yanıtı kendi başına metrics'i değiştirmez (gerçek fill price WS
-/// event'inde gelir; planned price'tan farklı olabilir — Bot 6 regresyonu).
-fn extract_our_fills(
-    sess: &MarketSession,
-    raw: &serde_json::Value,
-    top_asset_id: &str,
-    top_side: Option<&str>,
-    top_price: f64,
-    top_size: f64,
-) -> Vec<OurFill> {
-    let our_ids: HashSet<&str> = sess.open_orders.iter().map(|o| o.id.as_str()).collect();
-
-    let maker: Vec<OurFill> = raw
-        .get("maker_orders")
-        .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|m| {
-                    let id = m.get("order_id")?.as_str()?;
-                    if !our_ids.contains(id) {
-                        return None;
-                    }
-                    let asset = m.get("asset_id")?.as_str()?;
-                    let outcome = outcome_from_asset_id(sess, asset)?;
-                    let amount: f64 = m.get("matched_amount")?.as_str()?.parse().ok()?;
-                    let price: f64 = m.get("price")?.as_str()?.parse().ok()?;
-                    let side = Side::parse(m.get("side")?.as_str()?)?;
-                    Some(OurFill {
-                        outcome,
-                        asset_id: asset.to_string(),
-                        side,
-                        price,
-                        size: amount,
-                        order_id: Some(id.to_string()),
-                        is_taker: false,
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    if !maker.is_empty() {
-        return maker;
-    }
-
-    let Some(outcome) = outcome_from_asset_id(sess, top_asset_id) else {
-        return Vec::new();
-    };
-    let Some(side) = top_side.and_then(Side::parse) else {
-        return Vec::new();
-    };
-    let taker_order_id = raw
-        .get("taker_order_id")
-        .and_then(|v| v.as_str())
-        .filter(|id| our_ids.contains(*id))
-        .map(str::to_string);
-    vec![OurFill {
-        outcome,
-        asset_id: top_asset_id.to_string(),
-        side,
-        price: top_price,
-        size: top_size,
-        order_id: taker_order_id,
-        is_taker: true,
-    }]
-}
-
-/// `our_fills`'i tek DB satırına indir. Polymarket bir trade event'i tek
-/// `asset_id` etrafında oluşur; aggregate her zaman tek-outcome'dur.
-fn aggregate_for_persist(
-    fills: &[OurFill],
-) -> (Option<String>, Option<String>, Option<String>, f64, f64) {
-    let first = &fills[0];
-    let sum_size: f64 = fills.iter().map(|f| f.size).sum();
-    let sum_pxsz: f64 = fills.iter().map(|f| f.price * f.size).sum();
-    let avg_price = sum_pxsz / sum_size.max(f64::EPSILON);
-    (
-        Some(first.outcome.as_str().to_string()),
-        Some(first.asset_id.clone()),
-        Some(first.side.as_str().to_string()),
-        avg_price,
-        sum_size,
-    )
-}
-
-fn log_ws_trade_line(label: &str, ev: &TradeMsg, status_upper: &str) {
-    let mut parts = vec![
-        format!("id={}", ev.trade_id),
-        format!("status={status_upper}"),
-    ];
-    if let Some(o) = ev.outcome.as_deref() {
-        parts.push(format!("outcome={o}"));
-    }
-    parts.push(format!("size={}", ev.size));
-    parts.push(format!("price={}", ev.price));
-    if let Some(s) = ev.raw.get("taker_order_id").and_then(|v| v.as_str()) {
-        parts.push(format!("taker_order_id={s}"));
-    }
-    if let Some(s) = ev.raw.get("trader_side").and_then(|v| v.as_str()) {
-        parts.push(format!("trader_side={s}"));
-    }
-    ipc::log_line(label, format!("WS trade | {}", parts.join(" ")));
+fn log_ws_trade_line(label: &str, ev: &TradePayload) {
+    ipc::log_line(
+        label,
+        format!(
+            "WS trade | id={} status={} side={} size={} price={}",
+            ev.trade_id,
+            ev.status.as_str(),
+            ev.side.as_str(),
+            ev.size,
+            ev.price,
+        ),
+    );
 }
 
 fn log_fill_and_position(label: &str, sess: &MarketSession, outcome: Outcome, size: f64, price: f64) {
@@ -424,74 +402,48 @@ fn log_fill_and_position(label: &str, sess: &MarketSession, outcome: Outcome, si
     );
 }
 
-fn on_order(sess: &mut MarketSession, pool: &SqlitePool, ev: OrderMsg) {
-    let bot_id = sess.bot_id;
-    let label = bot_id.to_string();
-    match ev.lifecycle_type.as_str() {
-        "PLACEMENT" => {
+/// User Channel `order` event handler — in-memory state günceller.
+///
+/// `UPDATE` lifecycle'da full-fill prune `on_trade`'de yapılır: WS UPDATE
+/// ilgili trade `MATCHED`'ten önce gelirse `extract_fills` order_id'i
+/// bulamaz ve maker fill yanlış attribute olur.
+fn on_order(sess: &mut MarketSession, ev: &OrderPayload) {
+    let label = sess.bot_id.to_string();
+    match ev.lifecycle {
+        OrderLifecycle::Placement => {
             let mut parts = vec!["type=PLACEMENT".to_string()];
-            if let Some(ot) = ev.order_type.as_deref().filter(|s| !s.is_empty()) {
-                parts.push(format!("order_type={ot}"));
+            if let Some(ot) = ev.order_type {
+                parts.push(format!("order_type={}", ot.as_str()));
             }
-            if !ev.status.is_empty() {
-                parts.push(format!("status={}", ev.status));
-            }
+            parts.push(format!("status={}", ev.status));
             parts.push(format!("id={}", ev.order_id));
             ipc::log_line(&label, format!("WS order {}", parts.join(" ")));
         }
-        "UPDATE" => {
-            // Full-fill prune'u burada DEĞİL `on_trade`'de yapıyoruz: WS UPDATE
-            // ilgili trade MATCHED'ten önce gelirse `extract_our_fills` order_id'i
-            // bulamaz ve maker fill yanlış attribute olur.
+        OrderLifecycle::Update => {
             let mut parts = vec!["type=UPDATE".to_string(), format!("id={}", ev.order_id)];
             if let Some(sm) = ev.size_matched {
                 parts.push(format!("size_matched={sm}"));
             }
-            if let Some(at) = ev.raw.get("associate_trades") {
-                parts.push(format!("associate_trades={at}"));
-            }
             ipc::log_line(&label, format!("WS order {}", parts.join(" ")));
         }
-        "CANCELLATION" => {
+        OrderLifecycle::Cancellation => {
             ipc::log_line(&label, format!("WS order type=CANCELLATION id={}", ev.order_id));
             let before = sess.open_orders.len();
             sess.open_orders.retain(|o| o.id != ev.order_id);
             if sess.open_orders.len() < before {
                 ipc::log_line(
                     &label,
-                    format!("open_order canceled — pruning id={} (WS CANCELLATION)", ev.order_id),
+                    format!(
+                        "open_order canceled — pruning id={} (WS CANCELLATION)",
+                        ev.order_id
+                    ),
                 );
             }
         }
-        other => {
-            ipc::log_line(
-                &label,
-                format!("unknown ws order lifecycle '{other}' id={}", ev.order_id),
-            );
-        }
     }
-
-    let record = db::orders::OrderRecord::from_user_ws(db::orders::WsOrderInput {
-        bot_id,
-        market_session_id: sess.market_session_id,
-        order_id: ev.order_id,
-        market: ev.market,
-        asset_id: ev.asset_id,
-        side: ev.side,
-        outcome: ev.outcome,
-        original_size: ev.original_size,
-        size_matched: ev.size_matched,
-        price: ev.price,
-        order_type: ev.order_type,
-        status: ev.status,
-        lifecycle_type: ev.lifecycle_type,
-        ts_ms: ev.timestamp_ms as i64,
-        raw: &ev.raw,
-    });
-    db::orders::persist_order(pool, record, "user_ws upsert_order");
 }
 
-fn on_market_resolved(sess: &MarketSession, pool: &SqlitePool, ev: ResolvedMsg) {
+fn on_market_resolved(sess: &MarketSession, pool: &SqlitePool, ev: &MarketResolvedPayload) {
     let bot_id = sess.bot_id;
     let asset_part = ev
         .winning_asset_id
@@ -514,7 +466,9 @@ fn on_market_resolved(sess: &MarketSession, pool: &SqlitePool, ev: ResolvedMsg) 
     });
 
     let pool = pool.clone();
-    let ResolvedMsg { market, winning_outcome, winning_asset_id, .. } = ev;
+    let market = ev.market.clone();
+    let winning_outcome = ev.winning_outcome.clone();
+    let winning_asset_id = ev.winning_asset_id.clone();
     db::spawn_db("market_resolved upsert", async move {
         db::markets::upsert_market_resolved(
             &pool,
@@ -578,9 +532,9 @@ fn run_passive_fills_dryrun(sess: &mut MarketSession, pool: &SqlitePool) {
 mod tests {
     use super::*;
     use crate::config::{BotConfig, StrategyParams};
+    use crate::polymarket::{MakerOrder, TradePayload, TradeStatus};
     use crate::strategy::OpenOrder;
     use crate::types::{RunMode, Side, Strategy};
-    use serde_json::json;
 
     fn make_session() -> MarketSession {
         let cfg = BotConfig {
@@ -615,21 +569,59 @@ mod tests {
         }
     }
 
-    /// Maker rolü: maker_orders[] içinde 3 entry, biri bizim → tek OurFill.
+    fn trade_payload(
+        asset_id: &str,
+        side: Side,
+        price: f64,
+        size: f64,
+        taker_order_id: Option<&str>,
+        maker_orders: Vec<MakerOrder>,
+    ) -> TradePayload {
+        TradePayload {
+            trade_id: "T".into(),
+            market: "M".into(),
+            asset_id: asset_id.into(),
+            side,
+            size,
+            price,
+            status: TradeStatus::Matched,
+            taker_order_id: taker_order_id.map(str::to_string),
+            trader_side: None,
+            maker_orders,
+            timestamp_ms: 0,
+        }
+    }
+
+    fn maker(order_id: &str, asset_id: &str, side: Side, price: f64, amount: f64) -> MakerOrder {
+        MakerOrder {
+            order_id: order_id.into(),
+            asset_id: asset_id.into(),
+            matched_amount: amount,
+            price,
+            side,
+        }
+    }
+
+    /// Maker rolü: maker_orders[] içinde 3 entry, biri bizim → tek Fill (Maker).
     #[test]
-    fn extract_our_fills_maker_picks_matching_order_id() {
+    fn extract_fills_maker_picks_matching_order_id() {
         let mut sess = make_session();
         sess.open_orders.push(open("0xMINE"));
 
-        let raw = json!({
-            "maker_orders": [
-                {"order_id": "0xOTHER1", "matched_amount": "5",    "price": "0.32", "asset_id": "UP_TOKEN", "side": "BUY"},
-                {"order_id": "0xMINE",   "matched_amount": "9.33", "price": "0.33", "asset_id": "UP_TOKEN", "side": "BUY"},
-                {"order_id": "0xOTHER2", "matched_amount": "2",    "price": "0.34", "asset_id": "UP_TOKEN", "side": "BUY"}
-            ]
-        });
+        let ev = trade_payload(
+            "DOWN_TOKEN",
+            Side::Sell,
+            0.67,
+            97.0,
+            None,
+            vec![
+                maker("0xOTHER1", "UP_TOKEN", Side::Buy, 0.32, 5.0),
+                maker("0xMINE", "UP_TOKEN", Side::Buy, 0.33, 9.33),
+                maker("0xOTHER2", "UP_TOKEN", Side::Buy, 0.34, 2.0),
+            ],
+        );
 
-        let fills = extract_our_fills(&sess, &raw, "DOWN_TOKEN", Some("SELL"), 0.67, 97.0);
+        let fills = extract_fills(&sess, &ev);
         assert_eq!(fills.len(), 1);
         let f = &fills[0];
         assert_eq!(f.outcome, Outcome::Up);
@@ -637,23 +629,28 @@ mod tests {
         assert_eq!(f.side, Side::Buy);
         assert!((f.price - 0.33).abs() < 1e-9);
         assert!((f.size - 9.33).abs() < 1e-9);
-        assert_eq!(f.order_id.as_deref(), Some("0xMINE"));
-        assert!(!f.is_taker, "maker rolü → fee=0");
+        match &f.role {
+            FillRole::Maker { open_order_id } => assert_eq!(open_order_id, "0xMINE"),
+            _ => panic!("expected maker role"),
+        }
+        assert!(!f.role.is_taker(), "maker rolü → fee=0");
     }
 
-    /// Taker rolü: maker_orders'ta bizim id yok → top-level OurFill.
-    /// `taker_order_id` bizim açık emrimize ait değilse `order_id=None`.
+    /// Taker rolü: maker_orders'ta bizim id yok → top-level Fill (Taker).
     #[test]
-    fn extract_our_fills_taker_returns_top_level_ourfill() {
+    fn extract_fills_taker_returns_top_level_fill() {
         let sess = make_session();
 
-        let raw = json!({
-            "maker_orders": [
-                {"order_id": "0xSOMEONE_ELSE", "matched_amount": "9", "price": "0.57", "asset_id": "UP_TOKEN", "side": "SELL"}
-            ]
-        });
+        let ev = trade_payload(
+            "UP_TOKEN",
+            Side::Buy,
+            0.57,
+            9.0,
+            None,
+            vec![maker("0xSOMEONE_ELSE", "UP_TOKEN", Side::Sell, 0.57, 9.0)],
+        );
 
-        let fills = extract_our_fills(&sess, &raw, "UP_TOKEN", Some("BUY"), 0.57, 9.0);
+        let fills = extract_fills(&sess, &ev);
         assert_eq!(fills.len(), 1);
         let f = &fills[0];
         assert_eq!(f.outcome, Outcome::Up);
@@ -661,17 +658,19 @@ mod tests {
         assert_eq!(f.side, Side::Buy);
         assert!((f.price - 0.57).abs() < 1e-9);
         assert!((f.size - 9.0).abs() < 1e-9);
-        assert!(f.order_id.is_none());
-        assert!(f.is_taker);
+        assert!(f.role.is_taker());
+        match &f.role {
+            FillRole::Taker { marker_order_id } => assert!(marker_order_id.is_none()),
+            _ => panic!("expected taker role"),
+        }
     }
 
     /// REST `status=matched` sonrası `LiveExecutor::place` `open_orders`'a
-    /// marker ID'yi push eder; aynı id `taker_order_id` olarak WS event'inde
-    /// gelirse `OurFill.order_id` set edilir → `record_fill_and_prune_if_full`
-    /// marker'ı düşürür. Bot 6 regresyonu: taker fill prune edilemezse marker
-    /// sonsuza dek `open_orders`'ta sürünür.
+    /// marker ID push eder; aynı id `taker_order_id` olarak WS event'inde
+    /// gelirse `marker_order_id` set edilir → `record_fill_and_prune_if_full`
+    /// marker'ı düşürür. Bot 6 regresyonu.
     #[test]
-    fn extract_our_fills_taker_marker_pruned_via_taker_order_id() {
+    fn extract_fills_taker_marker_pruned_via_taker_order_id() {
         let mut sess = make_session();
         sess.open_orders.push({
             let mut o = open("0xMARKER");
@@ -679,31 +678,37 @@ mod tests {
             o
         });
 
-        let raw = json!({
-            "taker_order_id": "0xMARKER",
-            "maker_orders": [
-                {"order_id": "0xSOMEONE", "matched_amount": "9", "price": "0.57", "asset_id": "UP_TOKEN", "side": "SELL"}
-            ]
-        });
+        let ev = trade_payload(
+            "UP_TOKEN",
+            Side::Buy,
+            0.57,
+            9.0,
+            Some("0xMARKER"),
+            vec![maker("0xSOMEONE", "UP_TOKEN", Side::Sell, 0.57, 9.0)],
+        );
 
-        let fills = extract_our_fills(&sess, &raw, "UP_TOKEN", Some("BUY"), 0.57, 9.0);
+        let fills = extract_fills(&sess, &ev);
         assert_eq!(fills.len(), 1);
-        assert_eq!(fills[0].order_id.as_deref(), Some("0xMARKER"));
-        assert!(fills[0].is_taker);
+        match &fills[0].role {
+            FillRole::Taker { marker_order_id } => {
+                assert_eq!(marker_order_id.as_deref(), Some("0xMARKER"));
+            }
+            _ => panic!("expected taker role"),
+        }
     }
 
     /// maker_orders yok ve top-level asset bilinmiyor → boş, panik atmamalı.
     #[test]
-    fn extract_our_fills_unknown_asset_returns_empty() {
+    fn extract_fills_unknown_asset_returns_empty() {
         let sess = make_session();
-        let raw = json!({});
-        let fills = extract_our_fills(&sess, &raw, "UNKNOWN_ASSET", Some("BUY"), 0.5, 1.0);
+        let ev = trade_payload("UNKNOWN_ASSET", Side::Buy, 0.5, 1.0, None, vec![]);
+        let fills = extract_fills(&sess, &ev);
         assert!(fills.is_empty());
     }
 
     /// Birden fazla maker emrimiz aynı trade'de match olabilir (UP+DOWN).
     #[test]
-    fn extract_our_fills_maker_collects_all_our_orders() {
+    fn extract_fills_maker_collects_all_our_orders() {
         let mut sess = make_session();
         sess.open_orders.push(open("0xUP"));
         sess.open_orders.push({
@@ -712,14 +717,19 @@ mod tests {
             o
         });
 
-        let raw = json!({
-            "maker_orders": [
-                {"order_id": "0xUP",   "matched_amount": "3", "price": "0.40", "asset_id": "UP_TOKEN",   "side": "BUY"},
-                {"order_id": "0xDOWN", "matched_amount": "7", "price": "0.55", "asset_id": "DOWN_TOKEN", "side": "BUY"}
-            ]
-        });
+        let ev = trade_payload(
+            "UP_TOKEN",
+            Side::Sell,
+            0.6,
+            10.0,
+            None,
+            vec![
+                maker("0xUP", "UP_TOKEN", Side::Buy, 0.40, 3.0),
+                maker("0xDOWN", "DOWN_TOKEN", Side::Buy, 0.55, 7.0),
+            ],
+        );
 
-        let fills = extract_our_fills(&sess, &raw, "UP_TOKEN", Some("SELL"), 0.6, 10.0);
+        let fills = extract_fills(&sess, &ev);
         assert_eq!(fills.len(), 2);
         assert!(fills.iter().any(|f| f.outcome == Outcome::Up));
         assert!(fills.iter().any(|f| f.outcome == Outcome::Down));
@@ -728,157 +738,84 @@ mod tests {
     /// NEG_RISK: top-level taker token (DOWN/0.42) ile maker entry (UP/0.58)
     /// farklı outcome → bizim entry'den oku, top-level'a uyma.
     #[test]
-    fn extract_our_fills_maker_negrisk_different_asset() {
+    fn extract_fills_maker_negrisk_different_asset() {
         let mut sess = make_session();
         sess.open_orders.push(open("0xMINE"));
 
-        let raw = json!({
-            "maker_orders": [
-                {"order_id": "0xMINE", "matched_amount": "9", "price": "0.58", "asset_id": "UP_TOKEN", "side": "BUY"}
-            ]
-        });
+        let ev = trade_payload(
+            "DOWN_TOKEN",
+            Side::Buy,
+            0.42,
+            50.50,
+            None,
+            vec![maker("0xMINE", "UP_TOKEN", Side::Buy, 0.58, 9.0)],
+        );
 
-        let fills = extract_our_fills(&sess, &raw, "DOWN_TOKEN", Some("BUY"), 0.42, 50.50);
+        let fills = extract_fills(&sess, &ev);
         assert_eq!(fills.len(), 1);
         let f = &fills[0];
         assert_eq!(f.outcome, Outcome::Up);
         assert_eq!(f.asset_id, "UP_TOKEN");
         assert!((f.price - 0.58).abs() < 1e-9);
         assert!((f.size - 9.0).abs() < 1e-9);
-        assert!(!f.is_taker, "maker rolü → fee=0");
+        assert!(!f.role.is_taker(), "maker rolü → fee=0");
     }
 
     /// İki fill: size toplanır, price weighted average.
     #[test]
-    fn aggregate_for_persist_sums_same_outcome() {
+    fn persisted_trade_from_fills_sums_same_outcome() {
         let fills = vec![
-            OurFill {
+            Fill {
+                role: FillRole::Maker { open_order_id: "0xMINE".into() },
                 outcome: Outcome::Up,
                 asset_id: "UP_TOKEN".into(),
                 side: Side::Buy,
                 price: 0.32,
                 size: 5.0,
-                order_id: Some("0xMINE".into()),
-                is_taker: false,
             },
-            OurFill {
+            Fill {
+                role: FillRole::Maker { open_order_id: "0xMINE".into() },
                 outcome: Outcome::Up,
                 asset_id: "UP_TOKEN".into(),
                 side: Side::Buy,
                 price: 0.34,
                 size: 10.0,
-                order_id: Some("0xMINE".into()),
-                is_taker: false,
             },
         ];
-        let (outcome, asset, side, price, size) = aggregate_for_persist(&fills);
-        assert_eq!(outcome.as_deref(), Some("UP"));
-        assert_eq!(asset.as_deref(), Some("UP_TOKEN"));
-        assert_eq!(side.as_deref(), Some("BUY"));
-        assert!((size - 15.0).abs() < 1e-9);
-        // weighted: (0.32*5 + 0.34*10) / 15
-        assert!((price - (1.6 + 3.4) / 15.0).abs() < 1e-9);
+        let v = PersistedTrade::from_fills(&fills);
+        assert_eq!(v.outcome.as_deref(), Some("UP"));
+        assert_eq!(v.asset_id, "UP_TOKEN");
+        assert_eq!(v.side, "BUY");
+        assert!((v.size - 15.0).abs() < 1e-9);
+        assert!((v.price - (1.6 + 3.4) / 15.0).abs() < 1e-9);
     }
 
     /// SELL fill DB satırı için `side="SELL"` döner.
     #[test]
-    fn aggregate_for_persist_sell_emits_sell_side() {
-        let fills = vec![OurFill {
+    fn persisted_trade_from_fills_sell_emits_sell_side() {
+        let fills = vec![Fill {
+            role: FillRole::Taker { marker_order_id: None },
             outcome: Outcome::Up,
             asset_id: "UP_TOKEN".into(),
             side: Side::Sell,
             price: 0.92,
             size: 98.41,
-            order_id: None,
-            is_taker: true,
         }];
-        let (_o, _a, side, price, size) = aggregate_for_persist(&fills);
-        assert_eq!(side.as_deref(), Some("SELL"));
-        assert!((price - 0.92).abs() < 1e-9);
-        assert!((size - 98.41).abs() < 1e-9);
+        let v = PersistedTrade::from_fills(&fills);
+        assert_eq!(v.side, "SELL");
+        assert!((v.price - 0.92).abs() < 1e-9);
+        assert!((v.size - 98.41).abs() < 1e-9);
     }
 
-    /// Maker (`is_taker=false`) → fee=0 her zaman.
+    /// Top-level fallback: outcome session mapping'inden çıkarılır.
     #[test]
-    fn compute_fee_maker_returns_zero() {
-        let f = OurFill {
-            outcome: Outcome::Up,
-            asset_id: "UP_TOKEN".into(),
-            side: Side::Buy,
-            price: 0.50,
-            size: 10.0,
-            order_id: Some("0xMINE".into()),
-            is_taker: false,
-        };
-        assert_eq!(compute_fee(&f, Some(1000.0)), 0.0);
-        assert_eq!(compute_fee(&f, Some(720.0)), 0.0);
-        assert_eq!(compute_fee(&f, None), 0.0);
-    }
-
-    /// Concave: size×(bps/10000)×p×(1−p). Bot 52: 0.52×10@1000bps → 0.2496.
-    #[test]
-    fn compute_fee_taker_uses_concave_formula() {
-        let f = OurFill {
-            outcome: Outcome::Up,
-            asset_id: "UP_TOKEN".into(),
-            side: Side::Buy,
-            price: 0.52,
-            size: 10.0,
-            order_id: None,
-            is_taker: true,
-        };
-        let fee = compute_fee(&f, Some(1000.0));
-        assert!((fee - 0.2496).abs() < 1e-9, "expected 0.2496, got {fee}");
-    }
-
-    /// Pik fee 50%'de: 10×0.10×0.5×0.5 = 0.25.
-    #[test]
-    fn compute_fee_taker_peaks_at_half() {
-        let f = OurFill {
-            outcome: Outcome::Up,
-            asset_id: "UP_TOKEN".into(),
-            side: Side::Buy,
-            price: 0.50,
-            size: 10.0,
-            order_id: None,
-            is_taker: true,
-        };
-        let fee = compute_fee(&f, Some(1000.0));
-        assert!((fee - 0.25).abs() < 1e-9);
-    }
-
-    /// fee_rate_bps yoksa taker bile 0 fee.
-    #[test]
-    fn compute_fee_taker_no_bps_returns_zero() {
-        let f = OurFill {
-            outcome: Outcome::Up,
-            asset_id: "UP_TOKEN".into(),
-            side: Side::Buy,
-            price: 0.52,
-            size: 10.0,
-            order_id: None,
-            is_taker: true,
-        };
-        assert_eq!(compute_fee(&f, None), 0.0);
-    }
-
-    /// REST `status=matched` sonrası `open_orders`'taki marker (kendi taker
-    /// emrimiz) WS event'inde `taker_order_id` ile eşleşse bile fee=0
-    /// olmamalı — marker `OurFill.order_id`'ı set ediyor ama bu emir
-    /// gerçekten taker olarak doldu, fee taker concave'i.
-    #[test]
-    fn compute_fee_taker_with_marker_id_still_charges_fee() {
-        let f = OurFill {
-            outcome: Outcome::Up,
-            asset_id: "UP_TOKEN".into(),
-            side: Side::Buy,
-            price: 0.52,
-            size: 10.0,
-            order_id: Some("0xMARKER".into()),
-            is_taker: true,
-        };
-        let fee = compute_fee(&f, Some(1000.0));
-        assert!((fee - 0.2496).abs() < 1e-9, "marker id fee'yi sıfırlamamalı");
+    fn persisted_trade_from_top_level_uses_session_outcome_mapping() {
+        let sess = make_session();
+        let ev = trade_payload("UP_TOKEN", Side::Buy, 0.42, 5.0, None, vec![]);
+        let v = PersistedTrade::from_top_level(&sess, &ev);
+        assert_eq!(v.outcome.as_deref(), Some("UP"));
+        assert_eq!(v.asset_id, "UP_TOKEN");
+        assert_eq!(v.side, "BUY");
     }
 
     /// Tek fill emrin tamamını doldurursa prune.
@@ -939,9 +876,7 @@ mod tests {
     }
 
     /// Yarı dolma (5/10 → kalan 5 ≥ 0.5) → emir korunur ve sonraki fill'i
-    /// bekler. Bu, session-1 (`btc-updown-5m-1776763500`) bug'ının
-    /// regresyonu: eski `dust=api_min_order_size=5.0` kuralında 4.688
-    /// remaining yanlışlıkla prune edilip ghost DOWN trade üretiyordu.
+    /// bekler. Session-1 (`btc-updown-5m-1776763500`) bug regresyonu.
     #[test]
     fn record_fill_half_filled_keeps_order_for_session1_regression() {
         let mut sess = make_session();

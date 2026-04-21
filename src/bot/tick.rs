@@ -14,6 +14,16 @@ use crate::types::{Outcome, RunMode};
 use super::ctx::Ctx;
 use super::signal::decision_composite;
 
+/// Composite skor `[0, 10]`; 5.0 = nötr (long/short eşit ağırlık).
+/// `decide()` bu noktada opener/pyramid yönünü flip etmez.
+const NEUTRAL_COMPOSITE: f64 = 5.0;
+
+/// Doc §3: `δ = (composite − 5) / 5 ∈ [−1, +1]`. `decide()` ve log
+/// helper'ları bu faktörü ortak kullansın diye tek noktaya alındı.
+fn delta_from_composite(composite: f64) -> f64 {
+    (composite - NEUTRAL_COMPOSITE) / NEUTRAL_COMPOSITE
+}
+
 /// State-transition logu için `tick` sırasındaki session snapshot — `'static`
 /// task'a güvenle taşınır (tüm alanlar `Copy`).
 #[derive(Clone, Copy)]
@@ -157,13 +167,13 @@ fn log_state_transition(c: &TickLogCtx) {
                     .iter()
                     .find(|o| matches!(o.outcome, Outcome::Up))
                     .map(|o| o.price)
-                    .unwrap_or(0.0);
+                    .expect("OpenPair invariant: UP leg present in PlaceOrders");
                 let down = orders
                     .iter()
                     .find(|o| matches!(o.outcome, Outcome::Down))
                     .map(|o| o.price)
-                    .unwrap_or(0.0);
-                let delta = (composite - 5.0) / 5.0;
+                    .expect("OpenPair invariant: DOWN leg present in PlaceOrders");
+                let delta = delta_from_composite(composite);
                 ipc::log_line(
                     label,
                     format!(
@@ -262,7 +272,7 @@ fn log_cancel_responses(canceled: &[CancelResponse], label: &str) {
 fn log_placements(out: &ExecuteOutput, composite: f64, label: &str) {
     // δ = (composite − 5) / 5 ∈ [−1, +1] — opener/pyramid fiyatının spread üzerinden ölçeklenmesini üreten faktör.
     // Avg-down emirlerinde fiyat best_bid'den verilir; δ bilgi amaçlıdır.
-    let delta = (composite - 5.0) / 5.0;
+    let delta = delta_from_composite(composite);
     for ex in &out.placed {
         let status = if ex.filled { "matched" } else { "live" };
         ipc::log_line(

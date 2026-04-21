@@ -10,7 +10,7 @@ use crate::strategy::harvest::{HarvestContext, HarvestEngine, HarvestState};
 use crate::strategy::metrics::{MarketPnL, StrategyMetrics};
 use crate::strategy::{Decision, DecisionEngine, OpenOrder, PlannedOrder};
 use crate::time::{zone_pct, MarketZone};
-use crate::types::{Outcome, RunMode, Side, Strategy};
+use crate::types::{Outcome, Side, Strategy};
 
 pub mod executor;
 pub mod passive;
@@ -23,7 +23,7 @@ pub use passive::simulate_passive_fills;
 /// Yürütülen emir sonucu — in-memory pipeline kaydı (DB persist sub-field'lar üzerinden).
 /// `fill_price`/`fill_size` daima set edilir: fill olmamış emirlerde planned
 /// değerleriyle (kitapta canlı duran emrin beklenen fiyatı/boyutu).
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct ExecutedOrder {
     pub order_id: String,
     pub planned: PlannedOrder,
@@ -33,18 +33,16 @@ pub struct ExecutedOrder {
 }
 
 /// Market seansı — bir bot × bir pencere (slug).
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct MarketSession {
     pub bot_id: i64,
     pub slug: String,
-    /// `market_sessions.id` — DB FK (orders/trades/pnl).
     pub market_session_id: i64,
     pub condition_id: String,
     pub yes_token_id: String,
     pub no_token_id: String,
     pub tick_size: f64,
     pub api_min_order_size: f64,
-    /// NegRisk Exchange mi? EIP-712 verifying_contract belirleyici.
     pub neg_risk: bool,
     pub start_ts: u64,
     pub end_ts: u64,
@@ -59,16 +57,11 @@ pub struct MarketSession {
     pub no_best_bid: f64,
     pub no_best_ask: f64,
 
-    pub run_mode: RunMode,
     pub open_orders: Vec<OpenOrder>,
 
     pub min_price: f64,
     pub max_price: f64,
-    /// Averaging cooldown (ms) — strateji ctx'lerine geçirilir.
     pub cooldown_threshold: u64,
-    /// CLOB `GET /fee-rate?token_id=YES` sonucu (basis points). Pencere açılırken
-    /// Live modda bir kez fetch edilir; DryRun'da 0. `LiveExecutor::place`
-    /// `BuildArgs.fee_rate_bps`'e geçirir — server'ın `mbf`'i ile eşleşmezse 400.
     pub fee_rate_bps: u32,
     pub book_ready_logged: bool,
 }
@@ -95,7 +88,6 @@ impl MarketSession {
             yes_best_ask: 0.0,
             no_best_bid: 0.0,
             no_best_ask: 0.0,
-            run_mode: cfg.run_mode,
             open_orders: Vec::new(),
             min_price: cfg.min_price,
             max_price: cfg.max_price,
@@ -155,7 +147,9 @@ impl MarketSession {
                 self.harvest_state = new_state;
                 decision
             }
-            _ => Decision::NoOp,
+            Strategy::DutchBook | Strategy::Prism => unreachable!(
+                "bot/ctx.rs::load only allows Strategy::Harvest at start time"
+            ),
         }
     }
 }
@@ -202,6 +196,7 @@ mod tests {
     use super::*;
     use crate::config::StrategyParams;
     use crate::time::now_ms;
+    use crate::types::RunMode;
 
     fn test_cfg(run_mode: RunMode) -> BotConfig {
         BotConfig {

@@ -30,6 +30,25 @@ pub fn is_averaging_like(reason: &str) -> bool {
         || reason.starts_with(OPEN_REASON_PREFIX)
 }
 
+/// Reason string builder'ları — `Outcome` lowercase suffix ile prefix birleştirir.
+/// `open_pair.rs` / `position_open.rs` 4 call site bu helper'lara delege eder;
+/// inline `format!("{prefix}{outcome}")` tekrarı kaldırılır.
+pub fn open_reason(side: Outcome) -> String {
+    format!("{OPEN_REASON_PREFIX}{}", side.as_lowercase())
+}
+
+pub fn hedge_reason(side: Outcome) -> String {
+    format!("{HEDGE_REASON_PREFIX}{}", side.as_lowercase())
+}
+
+pub fn avg_down_reason(side: Outcome) -> String {
+    format!("{AVG_DOWN_REASON_PREFIX}{}", side.as_lowercase())
+}
+
+pub fn pyramid_reason(side: Outcome) -> String {
+    format!("{PYRAMID_REASON_PREFIX}{}", side.as_lowercase())
+}
+
 /// Harvest v2 FSM (doc §4).
 ///
 /// Persist edilmez — `MarketSession` yeniden oluşturulduğunda `Pending`'ten başlar.

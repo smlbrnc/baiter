@@ -608,9 +608,14 @@ async fn events_sse(
 }
 
 fn bot_row_to_json(r: db::BotRow) -> Result<Value, AppError> {
-    let strategy_params: Value = serde_json::from_str(&r.strategy_params).map_err(|e| {
+    // `to_config()` zaten `strategy_params` JSON'unu tipli `StrategyParams`'a parse
+    // ediyor; burada raw string'i ikinci kez `from_str` ile parse etmek bekleyen
+    // alanları tipsiz `Value` olarak fallback'e düşürüyordu. Tek parse yolu:
+    // string → StrategyParams → Value (`serde_json::to_value`).
+    let cfg = r.to_config()?;
+    let strategy_params = serde_json::to_value(&cfg.strategy_params).map_err(|e| {
         AppError::Config(format!(
-            "bot {id} strategy_params JSON bozuk: {e}",
+            "bot {id} strategy_params serialize: {e}",
             id = r.id
         ))
     })?;

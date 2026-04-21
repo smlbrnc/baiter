@@ -4,14 +4,14 @@
 //! `clobTokenIds`, `startDate`/`endDate` çekilir (mimari §0).
 
 use reqwest::Client;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::error::AppError;
 
 /// Gamma market yanıt DTO'su — yalnızca bot tarafından okunan alanlar.
 /// Polymarket Gamma şemasında daha çok alan vardır; serde varsayılan olarak
 /// bilinmeyen alanları yutar (deserialize sapması olmaz).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct GammaMarket {
     #[serde(default)]
     pub question: Option<String>,
@@ -25,9 +25,6 @@ pub struct GammaMarket {
     pub tick_size: Option<f64>,
     #[serde(default, rename = "orderMinSize")]
     pub minimum_order_size: Option<f64>,
-    /// `negRisk` true ise Polymarket NegRisk Exchange & Adapter sözleşmesine
-    /// gönderilir; false ise standart Exchange. EIP-712 verifying_contract
-    /// seçimini doğrudan etkiler.
     #[serde(default, rename = "negRisk")]
     pub neg_risk: Option<bool>,
 }

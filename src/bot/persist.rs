@@ -10,7 +10,7 @@ use crate::engine::{ExecutedOrder, MarketSession, DRYRUN_FEE_RATE};
 use crate::time::now_ms;
 
 use super::ctx::Ctx;
-use super::signal::observed_snapshot;
+use super::signal::SignalSnapshot;
 
 /// `pnl_snapshots` tablosuna tek satır yazar — `window.rs` 1 sn cadence'inden.
 pub fn snapshot_pnl(pool: &SqlitePool, sess: &MarketSession) {
@@ -40,11 +40,12 @@ pub fn snapshot_pnl(pool: &SqlitePool, sess: &MarketSession) {
 }
 
 /// `market_ticks` tablosuna 1 sn cadence BBA + composite signal snapshot'ı yazar.
-pub async fn snapshot_tick(ctx: &Ctx, sess: &MarketSession) {
+/// `sig` `window.rs::run_trading_loop`'ta `observed_snapshot` ile tek kez hesaplanıp
+/// `zone::emit_frontend_snapshot` ile paylaşılır — duplicate RwLock + composite yok.
+pub fn snapshot_tick(ctx: &Ctx, sess: &MarketSession, sig: &SignalSnapshot) {
     if sess.market_session_id == 0 {
         return;
     }
-    let sig = observed_snapshot(ctx, sess).await;
     let tick = db::MarketTick {
         yes_best_bid: sess.yes_best_bid,
         yes_best_ask: sess.yes_best_ask,
@@ -99,15 +100,6 @@ pub fn persist_dryrun_fill(
     }
     let p = &ex.planned;
     let fee = fill_price * fill_size * DRYRUN_FEE_RATE;
-    let source = match trader_side {
-        "MAKER" => "dryrun_passive",
-        _ => "dryrun_taker",
-    };
-    let raw = serde_json::json!({
-        "source": source,
-        "reason": p.reason,
-        "order_type": p.order_type.as_str(),
-    });
     let record = db::trades::TradeRecord {
         trade_id: format!("dryrun:{}", ex.order_id),
         bot_id: sess.bot_id,
@@ -124,7 +116,6 @@ pub fn persist_dryrun_fill(
         status: "MATCHED".to_string(),
         fee,
         ts_ms: now_ms() as i64,
-        raw_payload: Some(raw.to_string()),
     };
     db::trades::persist_trade(pool, record, "dryrun fill upsert_trade");
 }

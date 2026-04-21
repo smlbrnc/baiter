@@ -3,9 +3,7 @@
 use crate::strategy::{order_size, planned_buy_gtc, Decision};
 use crate::types::Outcome;
 
-use super::state::{
-    HarvestContext, HarvestState, HEDGE_REASON_PREFIX, OPEN_REASON_PREFIX,
-};
+use super::state::{hedge_reason, open_reason, HarvestContext, HarvestState};
 
 /// `Pending` → `OpenPair`: sinyal yönüne göre opener + ProfitLock hedge (doc §5).
 pub fn pending(ctx: &HarvestContext) -> (HarvestState, Decision) {
@@ -32,14 +30,14 @@ pub fn pending(ctx: &HarvestContext) -> (HarvestState, Decision) {
             ctx.token_id(open_side),
             open_price,
             open_size,
-            format!("{}{}", OPEN_REASON_PREFIX, open_side.as_lowercase()),
+            open_reason(open_side),
         ),
         planned_buy_gtc(
             hedge_side,
             ctx.token_id(hedge_side),
             hedge_price,
             hedge_size,
-            format!("{}{}", HEDGE_REASON_PREFIX, hedge_side.as_lowercase()),
+            hedge_reason(hedge_side),
         ),
     ];
     (HarvestState::OpenPair, Decision::PlaceOrders(orders))

@@ -3,11 +3,9 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use sqlx::SqlitePool;
 use uuid::Uuid;
 
 use crate::config::Credentials;
-use crate::db;
 use crate::error::AppError;
 use crate::ipc;
 use crate::polymarket::order::{
@@ -50,10 +48,7 @@ pub struct LiveExecutor {
     pub client: Arc<ClobClient>,
     pub creds: Credentials,
     pub chain_id: u64,
-    /// GTD timeout (sn). `cooldown_threshold` (ms) → sn dönüşümü.
     pub gtd_timeout_secs: u64,
-    /// Fire-and-forget DB persist için (§⚡ Kural 4).
-    pub pool: SqlitePool,
 }
 
 #[async_trait::async_trait]
@@ -76,11 +71,7 @@ impl OrderSink for Executor {
     ) -> Result<CancelResponse, AppError> {
         match self {
             Self::DryRun(sim) => sim.cancel(session, order_id).await,
-            Self::Live(live) => {
-                let resp = live.client.cancel_order(order_id).await?;
-                live.persist_cancel(session, order_id, &resp);
-                Ok(resp)
-            }
+            Self::Live(live) => live.client.cancel_order(order_id).await,
         }
     }
 }
@@ -136,27 +127,22 @@ impl LiveExecutor {
         if !resp.success {
             return Err(AppError::Clob(format!(
                 "POST /order rejected: status={} error={}",
-                resp.status, resp.error_msg
+                resp.status.as_str(),
+                resp.error_msg
             )));
         }
-        // Polymarket CLOB `POST /order` `status` enumu:
-        //   "matched"   → karşı taraf REST anında bulundu, fill garanti.
-        //                  `open_orders`'a marker (`size_matched = size`)
-        //                  push edilir; `metrics.ingest_fill` çağrılmaz.
-        //                  Gerçek fill price `planned.price`'tan farklı
-        //                  olabilir (book best fiyatından dolar) → metrics
-        //                  ingest'i User WS `trade MATCHED` event'inin
-        //                  sorumluluğunda. WS event geldiğinde marker
-        //                  `record_fill_and_prune_if_full` ile düşürülür.
-        //                  Bot 6 / btc-updown-5m-1776776400 regresyonu:
-        //                  REST `planned.price` ingest VWAP'ı bozuyor ve
-        //                  hedge target'ını yanlış hesaplattırıyordu.
-        //   "live"      → kitaba girdi, passive bekliyor → `open_orders` push.
-        //   "delayed"   → CLOB asenkron eşleştirme kuyruğunda; sonuç User WS
-        //                  `trade MATCHED` ile gelir → `open_orders` push.
-        //   "unmatched" → reject (success=false ile zaten yukarıda yakalandı).
-        // Bkz. <https://docs.polymarket.com/developers/CLOB/orders/create-an-order>.
-        let filled = resp.status.eq_ignore_ascii_case("matched");
+        // `Matched` → REST anında karşı taraf bulundu; `open_orders`'a
+        // `size_matched = size` marker push, `metrics.ingest_fill` ÇAĞRILMAZ.
+        // Gerçek fill price book best fiyatından dolayı `planned.price`'tan
+        // farklı olabilir → metrics ingest'i User WS `trade MATCHED` event'inin
+        // tek sorumluluğu. Marker WS event'inde
+        // `record_fill_and_prune_if_full` ile düşürülür. Regresyon:
+        // Bot 6 / btc-updown-5m-1776776400 — REST `planned.price` ile ingest
+        // VWAP'ı bozup hedge target'ını yanlış hesaplattırıyordu.
+        //
+        // `Live` / `Delayed` → kitapta passive ya da async kuyrukta;
+        // `open_orders`'a `size_matched = 0` push, fill yine WS ile gelir.
+        let filled = resp.status.is_filled();
         let size_matched_now = if filled { planned.size } else { 0.0 };
         session.open_orders.push(OpenOrder {
             id: resp.order_id.clone(),
@@ -168,60 +154,20 @@ impl LiveExecutor {
             placed_at_ms: now_ms(),
             size_matched: size_matched_now,
         });
-        if filled && is_averaging_like(&planned.reason) {
-            session.last_averaging_ms = now_ms();
-        }
-        let executed = ExecutedOrder {
-            order_id: resp.order_id.clone(),
+        // Cooldown `place_batch`'te (her live emir gönderiminde) tek noktadan
+        // tetiklenir — burada ayrıca arm etmek çift güncelleme demek.
+        Ok(ExecutedOrder {
+            order_id: resp.order_id,
             planned: planned.clone(),
             filled,
             fill_price: planned.price,
             fill_size: planned.size,
-        };
-        self.persist_place(session, &executed, &resp.status);
-        Ok(executed)
-    }
-
-    fn persist_place(
-        &self,
-        session: &MarketSession,
-        executed: &ExecutedOrder,
-        post_status: &str,
-    ) {
-        let record = db::orders::OrderRecord::rest_placement(db::orders::RestPlacementInput {
-            bot_id: session.bot_id,
-            market_session_id: session.market_session_id,
-            market: session.condition_id.clone(),
-            order_id: executed.order_id.clone(),
-            asset_id: executed.planned.token_id.clone(),
-            side: executed.planned.side.as_str(),
-            outcome: executed.planned.outcome.as_str(),
-            order_type: executed.planned.order_type.as_str(),
-            price: executed.planned.price,
-            original_size: executed.planned.size,
-            size_matched: executed.filled.then_some(executed.fill_size),
-            post_status: post_status.to_string(),
-            ts_ms: now_ms() as i64,
-        });
-        db::orders::persist_order(&self.pool, record, "rest_post upsert_order");
-    }
-
-    fn persist_cancel(&self, session: &MarketSession, order_id: &str, resp: &CancelResponse) {
-        let record = db::orders::OrderRecord::rest_cancellation(
-            session.bot_id,
-            session.market_session_id,
-            session.condition_id.clone(),
-            order_id.to_string(),
-            &resp.canceled,
-            &resp.not_canceled,
-            now_ms() as i64,
-        );
-        db::orders::persist_order(&self.pool, record, "rest_delete upsert_order");
+        })
     }
 }
 
 /// DryRun simülatörü — slip yok, sabit fee.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Simulator;
 
 impl Simulator {
@@ -314,6 +260,17 @@ pub(crate) fn apply_dryrun_fill(
         .ingest_fill(outcome, Side::Buy, fill_price, fill_size, fee);
 }
 
+/// Eğer `reason` averaging-like (`harvest_v2:open|avg_down|pyramid:*`) ise
+/// `last_averaging_ms`'yi `now_ms()`'e ileri alır. `place_batch` her live
+/// emir gönderiminde, `simulate_passive_fills` passive fill anında çağırır;
+/// Live executor REST yanıtında ayrıca tetiklemez (çift güncelleme yapmamak
+/// için tek noktada toplanmıştır).
+pub(crate) fn maybe_arm_averaging_cooldown(session: &mut MarketSession, reason: &str) {
+    if is_averaging_like(reason) {
+        session.last_averaging_ms = now_ms();
+    }
+}
+
 /// `execute()` çıktısı.
 #[derive(Debug, Default)]
 pub struct ExecuteOutput {
@@ -374,9 +331,7 @@ async fn place_batch<S: OrderSink + ?Sized>(
             continue;
         }
         let executed = exec.place(session, &o).await?;
-        if is_averaging_like(&executed.planned.reason) {
-            session.last_averaging_ms = now_ms();
-        }
+        maybe_arm_averaging_cooldown(session, &executed.planned.reason);
         out.placed.push(executed);
     }
     Ok(())
@@ -392,8 +347,8 @@ async fn cancel_batch<S: OrderSink + ?Sized>(
     // Sadece Polymarket'in **gerçekten** iptal ettiği id'leri lokal state'ten
     // sil. `not_canceled` (örn. "matched orders can't be canceled") emir hâlâ
     // canlı veya match'te demektir; silersek ardından gelen MATCHED event'inde
-    // `extract_our_fills` bu id'yi `our_open_orders` setinde bulamaz ve maker
-    // fill atlanır.
+    // `extract_fills` bu id'yi `open_orders` setinde bulamaz ve maker fill
+    // atlanır.
     let mut truly_canceled: HashSet<String> = HashSet::new();
     for id in ids {
         let resp = exec.cancel(session, id).await?;

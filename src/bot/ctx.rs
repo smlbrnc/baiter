@@ -73,7 +73,7 @@ pub async fn load(bot_id: i64) -> Result<(Ctx, SlugInfo, Signal, Signal), AppErr
 
     let http = shared_http_client();
     let gamma = GammaClient::new(http.clone(), env_.gamma_base_url.clone());
-    let (executor, clob) = build_executor(&http, &env_, &cfg, &pool, creds.as_ref());
+    let (executor, clob) = build_executor(&http, &env_, &cfg, creds.as_ref());
 
     let signal_state = new_shared_state();
     let rtds_state = rtds::new_shared_state();
@@ -171,7 +171,6 @@ fn build_executor(
     http: &reqwest::Client,
     env_: &RuntimeEnv,
     cfg: &BotConfig,
-    pool: &SqlitePool,
     creds: Option<&Credentials>,
 ) -> (Executor, Option<Arc<ClobClient>>) {
     let Some(c) = creds else {
@@ -188,7 +187,6 @@ fn build_executor(
         chain_id: env_.polygon_chain_id,
         // GTD timeout'u averaging cooldown ile aynı (doc §13); ms → s.
         gtd_timeout_secs: cfg.cooldown_threshold / 1000,
-        pool: pool.clone(),
     });
     (exec, Some(clob))
 }

@@ -12,7 +12,6 @@ pub mod bots;
 pub mod credentials;
 pub mod logs;
 pub mod markets;
-pub mod orders;
 pub mod pnl;
 pub mod sessions;
 pub mod settings;
@@ -25,7 +24,6 @@ pub use bots::{
 pub use credentials::{get_credentials, upsert_credentials};
 pub use logs::{insert_log, recent_logs, LogRow};
 pub use markets::upsert_market_resolved;
-pub use orders::{upsert_order, OrderRecord};
 pub use pnl::{insert_pnl_snapshot, latest_pnl_for_bot, PnlSnapshot};
 pub use sessions::{
     latest_session_for_bot, set_rtds_window_open, update_market_session_meta,

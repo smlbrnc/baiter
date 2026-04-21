@@ -12,12 +12,25 @@ use crate::rtds;
 use super::ctx::Ctx;
 
 /// Her iki snapshot için ortak ham alanlar (composite + RTDS alt sinyalleri).
+/// `rtds` `Some(...)` iken RTDS aktif; frontend `RtdsUpdate` push'u burada
+/// taşınan değerleri kullanır — `zone::emit_frontend_snapshot` ayrıca
+/// `rtds_state.read()` çağırmaz.
 #[derive(Debug, Clone, Copy)]
 pub struct SignalSnapshot {
     pub composite: f64,
     pub bsi: f64,
     pub ofi: f64,
     pub cvd: f64,
+    pub rtds: Option<RtdsSnapshot>,
+}
+
+/// `observed_snapshot` zaten `rtds_state.read()` çağırdığı için aynı
+/// kilit aralığında frontend push'u için gereken RTDS alanlarını da yakalar.
+#[derive(Debug, Clone, Copy)]
+pub struct RtdsSnapshot {
+    pub current_price: f64,
+    pub window_open_price: Option<f64>,
+    pub window_delta_bps: f64,
 }
 
 /// `tick.rs` için: lookahead'lı opener composite skoru + RTDS hazır mı flag'i.
@@ -46,19 +59,28 @@ pub async fn decision_composite(ctx: &Ctx, sess: &MarketSession) -> (f64, bool) 
 }
 
 /// `zone.rs` ve `persist.rs` için: lookahead'sız anlık composite + alt sinyaller.
+/// RTDS aktif iken kilit tek kez alınır; `window_delta_score` hesabı +
+/// frontend `RtdsUpdate` için gereken `current_price/window_open/window_delta_bps`
+/// aynı kilit aralığında okunur — `zone.rs` ek `read()` yapmaz.
 pub async fn observed_snapshot(ctx: &Ctx, sess: &MarketSession) -> SignalSnapshot {
     let (binance_score, bsi, ofi, cvd) = {
         let snap = ctx.signal_state.read().await;
         (snap.signal_score, snap.bsi, snap.ofi, snap.cvd)
     };
-    let window_score = if ctx.cfg.strategy_params.rtds_enabled_or_default() {
+    let (window_score, rtds) = if ctx.cfg.strategy_params.rtds_enabled_or_default() {
         let rtds_snap = ctx.rtds_state.read().await;
-        rtds::window_delta_score(
+        let score = rtds::window_delta_score(
             rtds_snap.window_delta_bps,
             rtds::interval_scale(sess.end_ts.saturating_sub(sess.start_ts)),
-        )
+        );
+        let snap = RtdsSnapshot {
+            current_price: rtds_snap.current_price,
+            window_open_price: rtds_snap.window_open_price,
+            window_delta_bps: rtds_snap.window_delta_bps,
+        };
+        (score, Some(snap))
     } else {
-        5.0
+        (5.0, None)
     };
     let composite = rtds::composite_score(
         window_score,
@@ -70,5 +92,6 @@ pub async fn observed_snapshot(ctx: &Ctx, sess: &MarketSession) -> SignalSnapsho
         bsi,
         ofi,
         cvd,
+        rtds,
     }
 }

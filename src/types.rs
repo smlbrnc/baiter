@@ -84,6 +84,18 @@ impl OrderType {
             Self::Fak => "FAK",
         }
     }
+
+    /// Polymarket payload string'inden OrderType'a çevir. Yalnız
+    /// `GTC/GTD/FOK/FAK` (case-insensitive) tanınır; geçersiz → `None`.
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_uppercase().as_str() {
+            "GTC" => Some(Self::Gtc),
+            "GTD" => Some(Self::Gtd),
+            "FOK" => Some(Self::Fok),
+            "FAK" => Some(Self::Fak),
+            _ => None,
+        }
+    }
 }
 
 /// `BotConfig.run_mode` — Live (CLOB REST) veya DryRun (Simulator).

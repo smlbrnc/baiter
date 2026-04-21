@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use reqwest::{Client, Method};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
 use crate::config::Credentials;
@@ -183,38 +183,142 @@ impl ClobClient {
 
 // -------------------------- DTO'lar --------------------------
 
-/// Polymarket CLOB `POST /order` response.
+/// Polymarket CLOB `POST /order` response status enum.
 ///
 /// Spec: <https://docs.polymarket.com/developers/CLOB/orders/create-an-order>
 ///
-/// `status` enum (string):
-/// - `"matched"` — karşı taraf REST anında bulundu, fill garanti.
+/// - `Matched` — karşı taraf REST anında bulundu, fill garanti.
 ///   `LiveExecutor::place` `open_orders`'a `size_matched = size` marker
 ///   push eder; `metrics` değiştirilmez. Gerçek fill price `planned.price`'tan
 ///   farklı olabilir (book best fiyatından dolar) → metrics ingest'i tek
-///   kaynak olarak User WS `trade MATCHED` event'inde yapılır; aynı
-///   event'te `record_fill_and_prune_if_full` marker'ı düşürür.
-/// - `"live"` — kitaba (orderbook) girdi, passive bekliyor →
+///   kaynak olarak User WS `trade MATCHED` event'inde yapılır; aynı event'te
+///   `record_fill_and_prune_if_full` marker'ı düşürür.
+/// - `Live` — kitaba (orderbook) girdi, passive bekliyor →
 ///   `LiveExecutor::place` `open_orders`'a `size_matched = 0` push.
-/// - `"delayed"` — CLOB asenkron eşleştirme kuyruğunda; sonuç User WS
+/// - `Delayed` — CLOB asenkron eşleştirme kuyruğunda; sonuç User WS
 ///   `trade MATCHED` ile gelir → `open_orders`'a `size_matched = 0` push.
-/// - `"unmatched"` — reject; `success=false` ile birlikte `error_msg`
-///   doldurulur ve `LiveExecutor::place` `AppError::Clob` döndürür.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// - `Unmatched` — reject; `PostOrderResponse.success=false` ile birlikte
+///   `error_msg` doldurulur ve `LiveExecutor::place` `AppError::Clob` döndürür.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PostOrderStatus {
+    Matched,
+    Live,
+    Delayed,
+    Unmatched,
+}
+
+impl PostOrderStatus {
+    /// Canonical lowercase string — DB persist ve hata mesajı için.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Matched => "matched",
+            Self::Live => "live",
+            Self::Delayed => "delayed",
+            Self::Unmatched => "unmatched",
+        }
+    }
+
+    /// REST anında dolan emir mi?
+    pub fn is_filled(self) -> bool {
+        matches!(self, Self::Matched)
+    }
+}
+
+impl<'de> Deserialize<'de> for PostOrderStatus {
+    fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(d)?;
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "matched" => Ok(Self::Matched),
+            "live" => Ok(Self::Live),
+            "delayed" => Ok(Self::Delayed),
+            "unmatched" => Ok(Self::Unmatched),
+            other => Err(serde::de::Error::custom(format!(
+                "unknown PostOrderStatus: {other:?}"
+            ))),
+        }
+    }
+}
+
+/// Polymarket CLOB `POST /order` response.
+///
+/// Spec: <https://docs.polymarket.com/developers/CLOB/orders/create-an-order>
+#[derive(Debug, Clone, Deserialize)]
 pub struct PostOrderResponse {
     pub success: bool,
     #[serde(default, rename = "orderID")]
     pub order_id: String,
-    #[serde(default)]
-    pub status: String,
+    pub status: PostOrderStatus,
     #[serde(default, rename = "errorMsg")]
     pub error_msg: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct CancelResponse {
     #[serde(default)]
     pub canceled: Vec<String>,
     #[serde(default)]
     pub not_canceled: Value,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PostOrderResponse, PostOrderStatus};
+
+    #[test]
+    fn parse_known_variants_case_insensitive() {
+        for (raw, want) in [
+            ("matched", PostOrderStatus::Matched),
+            ("LIVE", PostOrderStatus::Live),
+            ("Delayed", PostOrderStatus::Delayed),
+            ("  unmatched\n", PostOrderStatus::Unmatched),
+        ] {
+            let resp: PostOrderResponse = serde_json::from_value(serde_json::json!({
+                "success": true,
+                "orderID": "0xabc",
+                "status": raw,
+            }))
+            .unwrap();
+            assert_eq!(resp.status, want, "raw={raw}");
+        }
+    }
+
+    #[test]
+    fn parse_unknown_status_errors() {
+        let err = serde_json::from_value::<PostOrderResponse>(serde_json::json!({
+            "success": true,
+            "orderID": "0xabc",
+            "status": "weird",
+        }))
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("unknown PostOrderStatus"),
+            "err={err}"
+        );
+    }
+
+    #[test]
+    fn is_filled_only_for_matched() {
+        assert!(PostOrderStatus::Matched.is_filled());
+        assert!(!PostOrderStatus::Live.is_filled());
+        assert!(!PostOrderStatus::Delayed.is_filled());
+        assert!(!PostOrderStatus::Unmatched.is_filled());
+    }
+
+    #[test]
+    fn as_str_round_trips() {
+        for s in [
+            PostOrderStatus::Matched,
+            PostOrderStatus::Live,
+            PostOrderStatus::Delayed,
+            PostOrderStatus::Unmatched,
+        ] {
+            assert_eq!(PostOrderStatus::deserialize_from_str(s.as_str()), s);
+        }
+    }
+
+    impl PostOrderStatus {
+        fn deserialize_from_str(s: &str) -> Self {
+            serde_json::from_value(serde_json::Value::String(s.into())).unwrap()
+        }
+    }
 }

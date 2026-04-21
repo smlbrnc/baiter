@@ -16,6 +16,7 @@ use crate::slug::SlugInfo;
 use crate::time::{now_secs, t_minus_15};
 
 use super::ctx::Ctx;
+use super::signal::observed_snapshot;
 use super::{event, persist, shutdown, tick, zone};
 
 /// Tek bir market penceresini yönetir.
@@ -155,15 +156,18 @@ fn connect_streams(ctx: &Ctx, session: &MarketSession, label: &str) -> WindowStr
     ipc::log_line(label, "🔌 Connecting to Market WebSocket...");
     // Buffer 2048: burst'lerde drop'u düşürür (~400KB worst-case bellek).
     let (ev_tx, ev_rx) = mpsc::channel::<PolymarketEvent>(2048);
+    // `clob_ws_base` field'ı tek noktada clone edilir; market_ws her zaman bir
+    // kopya alır, user_ws (varsa) binding'i move ile devralır.
+    let ws_base = ctx.env_.clob_ws_base.clone();
     let market_ws = tokio::spawn(run_market_ws(
-        ctx.env_.clob_ws_base.clone(),
+        ws_base.clone(),
         vec![session.yes_token_id.clone(), session.no_token_id.clone()],
         ev_tx.clone(),
     ));
     let user_ws = ctx.creds.as_ref().map(|c| {
         ipc::log_line(label, "🔌 Connecting to User WebSocket...");
         tokio::spawn(run_user_ws(
-            ctx.env_.clob_ws_base.clone(),
+            ws_base,
             c.clone(),
             vec![session.condition_id.clone()],
             ev_tx,
@@ -218,9 +222,10 @@ async fn run_trading_loop(
             }
             _ = tick_timer.tick() => tick::tick(ctx, &mut sess).await,
             _ = frontend_timer.tick() => {
-                zone::emit_frontend_snapshot(ctx, &sess, slug).await;
+                let sig = observed_snapshot(ctx, &sess).await;
+                zone::emit_frontend_snapshot(ctx, &sess, slug, &sig);
                 persist::snapshot_pnl(&ctx.pool, &sess);
-                persist::snapshot_tick(ctx, &sess).await;
+                persist::snapshot_tick(ctx, &sess, &sig);
                 if !rtds_open_persisted && sess.market_session_id > 0 {
                     rtds_open_persisted =
                         persist::maybe_persist_rtds_window_open(ctx, &sess).await;

@@ -7,11 +7,20 @@ use crate::slug::SlugInfo;
 use crate::time::now_ms;
 
 use super::ctx::Ctx;
-use super::signal::observed_snapshot;
+use super::signal::SignalSnapshot;
 
 /// 1 sn cadence: book fiyatlarını ve Binance sinyal skorunu frontend'e
 /// push'lar. Değişim filtresi yok — frontend her saniye güncel snapshot alır.
-pub async fn emit_frontend_snapshot(ctx: &Ctx, sess: &MarketSession, slug: SlugInfo) {
+///
+/// Çağıran (`window.rs::run_trading_loop`) `observed_snapshot`'ı tek seferde
+/// hesaplayıp ref geçer; aynı tick'te `persist::snapshot_tick` de aynı snapshot'ı
+/// alır — RwLock + composite hesabı tek noktaya indirgenir.
+pub fn emit_frontend_snapshot(
+    ctx: &Ctx,
+    sess: &MarketSession,
+    slug: SlugInfo,
+    sig: &SignalSnapshot,
+) {
     let ts_ms = now_ms();
 
     ipc::emit(&FrontendEvent::BestBidAsk {
@@ -23,7 +32,6 @@ pub async fn emit_frontend_snapshot(ctx: &Ctx, sess: &MarketSession, slug: SlugI
         ts_ms,
     });
 
-    let sig = observed_snapshot(ctx, sess).await;
     ipc::emit(&FrontendEvent::SignalUpdate {
         bot_id: ctx.bot_id,
         symbol: slug.asset.binance_symbol().to_string(),
@@ -34,16 +42,12 @@ pub async fn emit_frontend_snapshot(ctx: &Ctx, sess: &MarketSession, slug: SlugI
         ts_ms,
     });
 
-    if ctx.cfg.strategy_params.rtds_enabled_or_default() {
-        let (current_price, window_open_price, window_delta_bps) = {
-            let snap = ctx.rtds_state.read().await;
-            (snap.current_price, snap.window_open_price, snap.window_delta_bps)
-        };
+    if let Some(rtds_snap) = sig.rtds {
         ipc::emit(&FrontendEvent::RtdsUpdate {
             bot_id: ctx.bot_id,
-            current_price,
-            window_open_price,
-            window_delta_bps,
+            current_price: rtds_snap.current_price,
+            window_open_price: rtds_snap.window_open_price,
+            window_delta_bps: rtds_snap.window_delta_bps,
             ts_ms,
         });
     }

@@ -10,8 +10,7 @@ use crate::time::MarketZone;
 use crate::types::Outcome;
 
 use super::state::{
-    HarvestContext, HarvestState, AVG_DOWN_REASON_PREFIX, HEDGE_REASON_PREFIX,
-    PYRAMID_REASON_PREFIX,
+    avg_down_reason, hedge_reason, pyramid_reason, HarvestContext, HarvestState,
 };
 
 pub fn handle(filled_side: Outcome, ctx: &HarvestContext) -> (HarvestState, Decision) {
@@ -65,7 +64,10 @@ pub fn handle(filled_side: Outcome, ctx: &HarvestContext) -> (HarvestState, Deci
                 return (same, Decision::PlaceOrders(vec![order]));
             }
         }
-        MarketZone::DeepTrade | MarketZone::StopTrade => {}
+        MarketZone::DeepTrade => {}
+        MarketZone::StopTrade => {
+            unreachable!("harvest::decide() short-circuits StopTrade before reaching position_open")
+        }
     }
     (same, Decision::NoOp)
 }
@@ -106,7 +108,7 @@ fn build_hedge(filled_side: Outcome, ctx: &HarvestContext) -> Option<PlannedOrde
         ctx.token_id(hedge_side),
         target,
         imbalance.abs(),
-        format!("{}{}", HEDGE_REASON_PREFIX, hedge_side.as_lowercase()),
+        hedge_reason(hedge_side),
     ))
 }
 
@@ -148,7 +150,7 @@ fn try_avg_down(filled_side: Outcome, ctx: &HarvestContext) -> Option<PlannedOrd
         ctx.token_id(filled_side),
         price,
         size,
-        format!("{}{}", AVG_DOWN_REASON_PREFIX, filled_side.as_lowercase()),
+        avg_down_reason(filled_side),
     ))
 }
 
@@ -182,6 +184,6 @@ fn try_pyramid(filled_side: Outcome, ctx: &HarvestContext) -> Option<PlannedOrde
         ctx.token_id(rising),
         price,
         size,
-        format!("{}{}", PYRAMID_REASON_PREFIX, rising.as_lowercase()),
+        pyramid_reason(rising),
     ))
 }

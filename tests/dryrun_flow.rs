@@ -326,7 +326,7 @@ async fn harvest_v2_pending_blocks_opener_when_signal_not_ready() {
 /// `LiveExecutor::place`'in yaptığı atomic adımlar:
 ///   - `open_orders.push(size_matched = planned.size)` → marker;
 ///   - `last_averaging_ms = now_ms()` (averaging-like reason'larda).
-/// WS event geldiğinde `extract_our_fills` → `metrics.ingest_fill` (gerçek
+/// WS event geldiğinde `extract_fills` → `metrics.ingest_fill` (gerçek
 /// price) + `record_fill_and_prune_if_full` marker'ı düşürür.
 #[tokio::test]
 async fn live_matched_response_does_not_ingest_metrics_directly() {
