@@ -13,21 +13,18 @@ pub struct StrategyMetrics {
     pub shares_no: f64,
     /// `shares_yes - shares_no`.
     pub imbalance: f64,
-    /// YES tarafı VWAP.
+    /// YES tarafı VWAP (BUY fill'lerinde güncellenir; SELL'de değişmez).
     pub avg_yes: f64,
     /// NO tarafı VWAP.
     pub avg_no: f64,
-    /// `avg_yes + avg_no` — Harvest PairComplete profit-lock eşiğiyle karşılaştırılır.
+    /// `avg_yes + avg_no` — Harvest profit-lock eşiğiyle karşılaştırılır.
     pub avg_sum: f64,
-    /// Per-side son MATCHED fill fiyatı — Harvest averaging "price_fell" kaynağı.
+    /// Per-side son MATCHED fill fiyatı — UI / debug.
     pub last_fill_price_yes: f64,
     pub last_fill_price_no: f64,
     /// Brüt hacim (tüm stratejilerde).
     pub sum_yes: f64,
     pub sum_no: f64,
-    /// Per-side notional maliyet (`Σ price × size`); fee dahil DEĞİL.
-    pub imb_cost_up: f64,
-    pub imb_cost_down: f64,
     /// Polymarket taker fee toplamı (`Σ size × feeRate × price × (1−price)`).
     /// Maker fill'leri 0 ile gelir (Polymarket policy: makers pay 0%).
     pub fee_total: f64,
@@ -35,9 +32,12 @@ pub struct StrategyMetrics {
 
 impl StrategyMetrics {
     /// MATCHED fill event'ini absorbla. `side=Sell` → pozisyondan çıkış:
-    /// `shares_*` azalır (0'a clamp), `imb_cost_*` notional cash-in kadar
-    /// düşer (negatife inebilir = realized profit), VWAP **değişmez** (kalan
-    /// pozisyonun ortalama maliyeti korunur). `size` her zaman pozitif.
+    /// `shares_*` azalır (0'a clamp), VWAP **değişmez** (kalan pozisyonun
+    /// ortalama maliyeti korunur). `size` her zaman pozitif.
+    ///
+    /// Notional cost takibi (eski `imb_cost_*`) kaldırıldı; PnL hesabı
+    /// VWAP × shares formülünden türetilir. Bu nedenle SELL realized profit
+    /// `cost_basis`'te gözükmez; sadece `mtm_pnl` üzerinden değerlenir.
     pub fn ingest_fill(
         &mut self,
         outcome: Outcome,
@@ -61,7 +61,6 @@ impl StrategyMetrics {
                 }
                 self.shares_yes = (self.shares_yes + signed).max(0.0);
                 self.sum_yes += size;
-                self.imb_cost_up += signed * price;
                 self.last_fill_price_yes = price;
             }
             Outcome::Down => {
@@ -74,7 +73,6 @@ impl StrategyMetrics {
                 }
                 self.shares_no = (self.shares_no + signed).max(0.0);
                 self.sum_no += size;
-                self.imb_cost_down += signed * price;
                 self.last_fill_price_no = price;
             }
         }
@@ -92,7 +90,11 @@ impl StrategyMetrics {
 /// Market × bot PnL snapshot (§17).
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
 pub struct MarketPnL {
-    /// Notional cost (`Σ price × size`); fee hariç. Polymarket UI ile birebir.
+    /// Notional cost (`avg_yes × shares_yes + avg_no × shares_no`); fee hariç.
+    /// VWAP × shares formülü olduğu için SELL realized profit burada gözükmez
+    /// (avg_*'lar SELL'de değişmediğinden shares azaldıkça cost_basis doğal
+    /// olarak düşer). Polymarket UI ile birebir eşleşmeyebilir; gerçek realized
+    /// profit takibi için `mtm_pnl` veya tarihsel trade ledger kullanılır.
     pub cost_basis: f64,
     /// Polymarket taker fee toplamı (sadece bilgi/UI için ayrı kart).
     pub fee_total: f64,
@@ -108,13 +110,10 @@ pub struct MarketPnL {
 }
 
 impl MarketPnL {
-    /// Polymarket'in profit-lock mantığıyla uyumlu PnL:
-    /// - `cost_basis` notional only (fee ayrı satırda).
-    /// - `mtm_pnl` kilitli pair'i $1 redemption, imbalance'ı best_bid ile değerler.
+    /// VWAP × shares formülü ile cost_basis hesaplanır.
+    /// `mtm_pnl` kilitli pair'i $1 redemption, imbalance'ı best_bid ile değerler.
     pub fn from_metrics(m: &StrategyMetrics, best_bid_yes: f64, best_bid_no: f64) -> Self {
-        // `StrategyMetrics::ingest_fill` shares'i 0'a clamp ediyor (SELL
-        // overflow garantisi); burada ek `.max(0.0)` çağrısı gereksiz.
-        let cost_basis = m.imb_cost_up + m.imb_cost_down;
+        let cost_basis = m.avg_yes * m.shares_yes + m.avg_no * m.shares_no;
         let shares_yes = m.shares_yes;
         let shares_no = m.shares_no;
         let pair_count = shares_yes.min(shares_no);
@@ -165,14 +164,13 @@ mod tests {
         m.ingest_fill(Outcome::Up, Side::Buy, 0.5, 10.0, 0.0);
         m.ingest_fill(Outcome::Down, Side::Buy, 0.48, 10.0, 0.0);
         let pnl = MarketPnL::from_metrics(&m, 0.6, 0.4);
-        // cost_basis = 0.5*10 + 0.48*10 = 9.80 (notional only)
+        // cost_basis = 0.5*10 + 0.48*10 = 9.80 (VWAP × shares)
         assert!((pnl.cost_basis - 9.80).abs() < 1e-9);
         assert!((pnl.pnl_if_up - 0.20).abs() < 1e-9);
         assert!((pnl.pnl_if_down - 0.20).abs() < 1e-9);
     }
 
     /// Pair-locked MTM = pair_count × $1 − notional (fee hariç).
-    /// Bot 52 senaryosu ilk pair: UP @ 0.52 × 10 + DOWN @ 0.45 × 10.
     #[test]
     fn pair_locked_mtm_uses_redemption_value() {
         let mut m = StrategyMetrics::default();
@@ -186,8 +184,6 @@ mod tests {
         assert!((pnl.pnl_if_down - 0.30).abs() < 1e-9);
     }
 
-    /// İmbalance kısmı best_bid ile değerlenir; pair_count kısmı $1 redemption.
-    /// Bot 52 senaryosu üç trade sonrası: UP=20, DOWN=10.
     #[test]
     fn imbalance_marked_at_best_bid() {
         let mut m = StrategyMetrics::default();
@@ -195,8 +191,12 @@ mod tests {
         m.ingest_fill(Outcome::Down, Side::Buy, 0.45, 10.0, 0.0);
         m.ingest_fill(Outcome::Up, Side::Buy, 0.50, 10.0, 0.0);
         let pnl = MarketPnL::from_metrics(&m, 0.51, 0.45);
-        // cost_basis = 5.20 + 5.00 + 4.50 = 14.70
-        assert!((pnl.cost_basis - 14.70).abs() < 1e-9);
+        // cost_basis = avg_yes(0.51) × 20 + avg_no(0.45) × 10 = 10.2 + 4.5 = 14.70
+        assert!(
+            (pnl.cost_basis - 14.70).abs() < 1e-9,
+            "cost_basis={}",
+            pnl.cost_basis
+        );
         assert!((pnl.fee_total - 0.2496).abs() < 1e-9);
         // mtm = pair_count(10) + imb_yes(10) * 0.51 + imb_no(0) - 14.70 = 10 + 5.1 - 14.70 = 0.40
         assert!((pnl.mtm_pnl - 0.40).abs() < 1e-9);
@@ -209,77 +209,41 @@ mod tests {
         m.ingest_fill(Outcome::Up, Side::Buy, 0.5, 10.0, 0.0);
         m.ingest_fill(Outcome::Down, Side::Buy, 0.5, 10.0, 0.0);
         assert_eq!(m.fee_total, 0.0);
-        assert!((m.imb_cost_up + m.imb_cost_down - 10.0).abs() < 1e-9);
+        // VWAP × shares = 0.5 × 10 + 0.5 × 10 = 10.0
+        let pnl = MarketPnL::from_metrics(&m, 0.5, 0.5);
+        assert!((pnl.cost_basis - 10.0).abs() < 1e-9);
     }
 
-    /// Bot 2 senaryosu: 9 BUY UP (toplam 98.99 share, ~25.29 cost) sonra
-    /// taker SELL UP 98.41 @ 0.92 → shares_yes ≈ 0.58, cost_basis negatife
-    /// iner (realized profit), VWAP korunur.
+    /// SELL VWAP'ı korur; shares düşer. cost_basis = avg × shares formülü olduğu
+    /// için satıştan gelen realized profit `cost_basis`'te DEĞİL `mtm_pnl`'de
+    /// görünür (eski `imb_cost_*` cash-flow takibi kaldırıldı).
     #[test]
-    fn sell_reduces_shares_and_cost_realized_profit() {
+    fn sell_preserves_vwap_reduces_shares() {
         let mut m = StrategyMetrics::default();
-        // Yığılmış BUY pozisyonu (Bot 2 history'sinden basitleştirilmiş).
-        m.ingest_fill(Outcome::Up, Side::Buy, 0.45, 11.0, 0.27225);
-        m.ingest_fill(Outcome::Up, Side::Buy, 0.30, 17.0, 0.0);
-        m.ingest_fill(Outcome::Up, Side::Buy, 0.17, 10.0, 0.0);
-        m.ingest_fill(Outcome::Up, Side::Buy, 0.17, 6.0, 0.0);
-        m.ingest_fill(Outcome::Up, Side::Buy, 0.17, 0.68, 0.0);
-        m.ingest_fill(Outcome::Up, Side::Buy, 0.17, 3.31, 0.0);
-        m.ingest_fill(Outcome::Up, Side::Buy, 0.17, 10.0, 0.0);
-        m.ingest_fill(Outcome::Up, Side::Buy, 0.15, 34.0, 0.0);
-        m.ingest_fill(Outcome::Up, Side::Buy, 0.72, 7.0, 0.14112);
-        let buy_shares = 11.0 + 17.0 + 10.0 + 6.0 + 0.68 + 3.31 + 10.0 + 34.0 + 7.0;
-        let buy_cost = 0.45 * 11.0
-            + 0.30 * 17.0
-            + 0.17 * 10.0
-            + 0.17 * 6.0
-            + 0.17 * 0.68
-            + 0.17 * 3.31
-            + 0.17 * 10.0
-            + 0.15 * 34.0
-            + 0.72 * 7.0;
-        assert!((m.shares_yes - buy_shares).abs() < 1e-9);
-        assert!((m.imb_cost_up - buy_cost).abs() < 1e-9);
-        let avg_yes_before_sell = m.avg_yes;
+        m.ingest_fill(Outcome::Up, Side::Buy, 0.30, 20.0, 0.0);
+        let avg_before = m.avg_yes;
+        let cost_before = m.avg_yes * m.shares_yes; // 6.0
 
-        // Manuel taker SELL.
-        m.ingest_fill(Outcome::Up, Side::Sell, 0.92, 98.41, 0.7242976);
+        m.ingest_fill(Outcome::Up, Side::Sell, 0.50, 10.0, 0.0);
 
-        let expected_remaining = buy_shares - 98.41;
-        let expected_cost = buy_cost - 0.92 * 98.41;
         assert!(
-            (m.shares_yes - expected_remaining).abs() < 1e-9,
-            "shares_yes={} vs {}",
-            m.shares_yes,
-            expected_remaining
-        );
-        assert!(
-            (m.imb_cost_up - expected_cost).abs() < 1e-9,
-            "cost_basis={} (negatif olmalı)",
-            m.imb_cost_up
-        );
-        assert!(m.imb_cost_up < 0.0, "SELL > BUY notional ⇒ realized profit");
-        assert!(
-            (m.avg_yes - avg_yes_before_sell).abs() < 1e-9,
+            (m.avg_yes - avg_before).abs() < 1e-9,
             "VWAP SELL'de değişmemeli"
         );
-        assert!(m.shares_yes >= 0.0);
+        assert!((m.shares_yes - 10.0).abs() < 1e-9);
+        let cost_after = m.avg_yes * m.shares_yes; // 3.0
+        assert!(cost_after < cost_before, "cost shares ile düştü");
     }
 
-    /// SELL miktar > mevcut shares: shares 0'a clamp; cost negatife iner;
-    /// PnL formülü `max(0)` koruması ile sağlam.
+    /// SELL miktar > mevcut shares: shares 0'a clamp; cost_basis 0 olur.
     #[test]
     fn sell_overflow_clamps_shares_to_zero() {
         let mut m = StrategyMetrics::default();
         m.ingest_fill(Outcome::Up, Side::Buy, 0.20, 5.0, 0.0);
         m.ingest_fill(Outcome::Up, Side::Sell, 0.50, 10.0, 0.0);
         assert_eq!(m.shares_yes, 0.0);
-        // imb_cost = 1.00 - 5.00 = -4.00 (realized profit korunur).
-        assert!((m.imb_cost_up + 4.0).abs() < 1e-9);
         let pnl = MarketPnL::from_metrics(&m, 0.5, 0.5);
         assert_eq!(pnl.shares_yes, 0.0);
-        assert!((pnl.cost_basis + 4.0).abs() < 1e-9);
-        // mtm = 0 + 0 + 0 - (-4.0) = 4.0
-        assert!((pnl.mtm_pnl - 4.0).abs() < 1e-9);
+        assert!(pnl.cost_basis.abs() < 1e-9, "shares=0 → cost_basis=0");
     }
 }

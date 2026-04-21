@@ -71,15 +71,15 @@ export const api = {
     ),
   sessionDetail: (id: number, slug: string) =>
     req<SessionDetail | null>(`/bots/${id}/sessions/${slug}`),
-  sessionTicks: (id: number, slug: string, sinceMs = 0, limit = 2000) =>
+  sessionTicks: (id: number, slug: string, sinceMs = 0, limit = 800) =>
     req<MarketTick[]>(
       `/bots/${id}/sessions/${slug}/ticks?${historyQs(sinceMs, limit)}`,
     ),
-  sessionPnlHistory: (id: number, slug: string, sinceMs = 0, limit = 2000) =>
+  sessionPnlHistory: (id: number, slug: string, sinceMs = 0, limit = 500) =>
     req<PnLSnapshot[]>(
       `/bots/${id}/sessions/${slug}/pnl?${historyQs(sinceMs, limit)}`,
     ),
-  sessionTrades: (id: number, slug: string, sinceMs = 0, limit = 2000) =>
+  sessionTrades: (id: number, slug: string, sinceMs = 0, limit = 500) =>
     req<TradeRow[]>(
       `/bots/${id}/sessions/${slug}/trades?${historyQs(sinceMs, limit)}`,
     ),

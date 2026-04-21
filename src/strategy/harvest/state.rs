@@ -18,6 +18,11 @@ pub const AVG_DOWN_REASON_PREFIX: &str = "harvest_v2:avg_down:";
 /// AggTrade/FakTrade pyramiding GTC (doc §8).
 pub const PYRAMID_REASON_PREFIX: &str = "harvest_v2:pyramid:";
 
+/// Pyramid trend dead zone: `|yes_bid − 0.5| < RISING_EPS` ise yön belirsiz
+/// kabul edilir (pyramid skip). 5 dk BTC pazarında 0.50 sınırında oynaşmadan
+/// kaynaklanan yapısal eksi marj pyramid'lerini engeller.
+pub const RISING_EPS: f64 = 0.05;
+
 /// `passive.rs`/`executor.rs` cooldown (last_averaging_ms) tetikleyicisi.
 /// Avg-down ve pyramid fill'leri kapsadığı gibi opener fill'lerini de kapsar:
 /// session reset / FSM Pending'e dönüş senaryolarında peş peşe opener spam'ini
@@ -64,6 +69,12 @@ pub enum HarvestState {
     /// drift atomic `CancelAndPlace` ile yeniden fiyatlandırılır, missing
     /// hedge `PlaceOrders([replacement])` ile re-place edilir.
     PositionOpen { filled_side: Outcome },
+    /// `avg_yes + avg_no <= avg_threshold` koşulu sağlandığında geçilir
+    /// (her iki tarafta da en az bir fill var). Bot HOLD modunda: yeni
+    /// avg-down/pyramid emir atılmaz, hedge re-place yapılmaz, kitaptaki
+    /// hedge'ler settlement'a kadar tutulur. `MarketResolved` veya
+    /// `StopTrade` override eder ve `Done`'a düşürür.
+    ProfitLocked { filled_side: Outcome },
     /// Pair kapandı; kalan açık emirler temizlenip `Done`'a geçilir.
     PairComplete,
     Done,
@@ -146,19 +157,56 @@ impl<'a> HarvestContext<'a> {
         }
     }
 
-    pub(super) fn last_fill(&self, side: Outcome) -> f64 {
-        match side {
-            Outcome::Up => self.metrics.last_fill_price_yes,
-            Outcome::Down => self.metrics.last_fill_price_no,
+    /// Cost-balanced hedge size formülünün temeli: tarafın notional maliyeti
+    /// (`avg_filled × shares`). Hedge `target_notional / hedge_price` ile
+    /// planlanır → hedge dolarsa `cost_up == cost_down` invariant'ı sağlanır.
+    pub(super) fn cost_filled(&self, side: Outcome) -> f64 {
+        self.avg_filled(side) * self.shares(side)
+    }
+
+    /// Profit-lock tetik koşulu: her iki tarafta da en az bir BUY fill var
+    /// VE `avg_sum ≤ avg_threshold`. Cost eşitliği (`cost_up = cost_down`)
+    /// hedge size formülü ile invariant olarak sağlandığından burada
+    /// ek olarak kontrol edilmez. Shares dengesi gerekli DEĞİLDİR.
+    /// ProfitLock: covered pair (her iki tarafta da fill) ve shares parity
+    /// (`|shares_yes − shares_no| < api_min_order_size`). Share-balanced hedge
+    /// `target_price = avg_threshold − avg_filled(majority)` ile planlandığı
+    /// için parity sağlandığında `avg_sum ≤ avg_threshold` otomatik garanti
+    /// edilir; resolution PnL ≥ `pair_count × (1 − avg_threshold)`.
+    pub(super) fn profit_locked(&self) -> bool {
+        let m = self.metrics;
+        if m.shares_yes <= 0.0 || m.shares_no <= 0.0 {
+            return false;
+        }
+        (m.shares_yes - m.shares_no).abs() < self.api_min_order_size
+    }
+
+    /// Doc §8: pyramiding hedef tarafı. `yes_bid` 0.5 ± `RISING_EPS` dead zone'da
+    /// ise yön belirsiz → `None` (pyramid skip). Düz BTC piyasalarında 0.50'de
+    /// oynaşma sebebiyle yapısal eksi marj pyramid'lerini engeller.
+    pub(super) fn rising_side(&self) -> Option<Outcome> {
+        let bid = self.yes_best_bid;
+        if bid > 0.5 + RISING_EPS {
+            Some(Outcome::Up)
+        } else if bid < 0.5 - RISING_EPS {
+            Some(Outcome::Down)
+        } else {
+            None
         }
     }
 
-    /// Doc §8: pyramiding hedef tarafı — `yes_bid > 0.5` ise UP, aksi DOWN.
-    pub(super) fn rising_side(&self) -> Outcome {
-        if self.yes_best_bid > 0.5 {
-            Outcome::Up
+    /// Pozisyon ağırlığına göre hedge tarafı.
+    /// `None` → shares neredeyse dengeli (`api_min_order_size` altında imbalance);
+    /// hedge planlanmaz, pair complete'a yakın kabul edilir.
+    pub(super) fn majority_side(&self) -> Option<Outcome> {
+        let diff = self.metrics.shares_yes - self.metrics.shares_no;
+        if diff.abs() < self.api_min_order_size {
+            return None;
+        }
+        if diff > 0.0 {
+            Some(Outcome::Up)
         } else {
-            Outcome::Down
+            Some(Outcome::Down)
         }
     }
 

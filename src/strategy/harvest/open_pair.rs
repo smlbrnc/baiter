@@ -1,14 +1,17 @@
 //! `Pending` açılışı ve `OpenPair` fill monitoring (doc §4, §5).
 
-use crate::strategy::{order_size, planned_buy_gtc, Decision};
+use crate::strategy::{order_size, planned_buy_gtc, Decision, MIN_NOTIONAL_USD};
 use crate::types::Outcome;
 
 use super::state::{hedge_reason, open_reason, HarvestContext, HarvestState};
 
 /// `Pending` → `OpenPair`: sinyal yönüne göre opener + ProfitLock hedge (doc §5).
+///
+/// Hedge size **share-balanced**: hedge_size = open_size. Hedge tamamen dolarsa
+/// shares_yes = shares_no (covered pair). Hedge price formülü
+/// (`avg_threshold − open_price`) sayesinde resolution sonrası net PnL
+/// `pair_count × (1 − avg_sum) ≥ pair_count × (1 − avg_threshold)` garantilenir.
 pub fn pending(ctx: &HarvestContext) -> (HarvestState, Decision) {
-    // Sinyal hazır değil (RTDS window_open daha gelmedi) → opener basma.
-    // Bir sonraki tick'te (RTDS event'i set olduktan sonra) tekrar denenir.
     if !ctx.signal_ready {
         return (HarvestState::Pending, Decision::NoOp);
     }
@@ -17,12 +20,16 @@ pub fn pending(ctx: &HarvestContext) -> (HarvestState, Decision) {
     }
     let (open_side, open_price) = open_price(ctx);
     let hedge_side = open_side.opposite();
-    let hedge_price = ctx.snap_clamp(ctx.avg_threshold - open_price);
+    let raw_hedge_price = ctx.avg_threshold - open_price;
+    if !ctx.price_in_band(raw_hedge_price) {
+        return (HarvestState::Pending, Decision::NoOp);
+    }
+    let hedge_price = ctx.snap_clamp(raw_hedge_price);
 
-    // Hedge size opener size'ına eşit: pair'i her zaman dengeli açar, opener fill'inde
-    // PairComplete'a `imbalance ≈ 0` ile gidilir (doc §5 + §10 imbalance kuralı).
     let open_size = order_size(ctx.order_usdc, open_price, ctx.api_min_order_size);
-    let hedge_size = open_size;
+    let hedge_size = open_size
+        .max(MIN_NOTIONAL_USD / hedge_price)
+        .max(ctx.api_min_order_size);
 
     let orders = vec![
         planned_buy_gtc(

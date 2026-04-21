@@ -43,12 +43,18 @@ pub(crate) fn decide(state: HarvestState, ctx: &HarvestContext) -> (HarvestState
         HarvestState::Pending => open_pair::pending(ctx),
         HarvestState::OpenPair => open_pair::monitor(ctx),
         HarvestState::PositionOpen { filled_side } => position_open::handle(filled_side, ctx),
+        HarvestState::ProfitLocked { filled_side } => {
+            // HOLD: yeni emir atılmaz, hedge'ler kitapta tutulur. Settlement
+            // (MarketResolved) veya StopTrade override eder.
+            (HarvestState::ProfitLocked { filled_side }, Decision::NoOp)
+        }
         HarvestState::PairComplete => (HarvestState::Done, cancel_all(ctx.open_orders)),
         HarvestState::Done => (HarvestState::Done, Decision::NoOp),
     }
 }
 
 /// Doc §6/§13: StopTrade bölgesinde yeni emir yok; kalanlar iptal, state `Done`.
+/// `ProfitLocked` da StopTrade override'ı tarafından `Done`'a düşürülür.
 fn stop_trade(state: HarvestState, ctx: &HarvestContext) -> (HarvestState, Decision) {
     match state {
         HarvestState::Done => (HarvestState::Done, Decision::NoOp),

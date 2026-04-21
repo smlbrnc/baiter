@@ -72,9 +72,13 @@ function toRows(snaps: PnLSnapshot[]): Row[] {
 /** `avg_up` / `avg_down` (YES/NO VWAP) zaman serisi — `AVG SUM = avg_up + avg_down` tooltip'te. */
 export function AvgSumChart({ data, session }: Props) {
   const rows = useMemo(() => toRows(data), [data]);
+  const ticks = useMemo(
+    () => (session ? timeTicks(session) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [session?.start, session?.end],
+  );
 
   if (!session) return null;
-  const ticks = timeTicks(session);
 
   return (
     <Card className={cn(SIGNAL_PAIR_CARD_CLASS, "min-w-0")}>

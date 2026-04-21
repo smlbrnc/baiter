@@ -75,10 +75,20 @@ pub struct PlannedOrder {
     pub reason: String,
 }
 
+/// Polymarket alt sınırı + bot tasarım kararı: tüm BUY emirlerinin notional'ı
+/// (`size × price`) en az 1 USD olmalı. Çok düşük cost imbalance senaryolarında
+/// (hedge re-place vs.) `(target_notional / price) < (1 / price)` ise size bu
+/// minimuma yükseltilir; aksi takdirde emir Polymarket tarafından reddedilir
+/// veya işlem başına fee oranı ekonomik anlamını yitirir.
+pub const MIN_NOTIONAL_USD: f64 = 1.0;
+
 /// Tüm stratejiler için emir boyutu formülü (`strategies.md § emir boyutu`).
+/// `order_usdc` notional hedefi `price`'a bölünür; sonuç hem `api_min_order_size`
+/// hem `MIN_NOTIONAL_USD / price` ile clamp edilir.
 pub fn order_size(order_usdc: f64, price: f64, api_min_order_size: f64) -> f64 {
     let base = (order_usdc / price.max(1e-9)).ceil();
-    base.max(api_min_order_size)
+    let min_notional = MIN_NOTIONAL_USD / price.max(1e-9);
+    base.max(api_min_order_size).max(min_notional)
 }
 
 #[cfg(test)]
@@ -89,6 +99,17 @@ mod tests {
     fn order_size_respects_min() {
         assert_eq!(order_size(5.0, 0.5, 1.0), 10.0);
         assert_eq!(order_size(0.1, 0.99, 5.0), 5.0);
+    }
+
+    #[test]
+    fn order_size_clamps_to_min_notional_usd() {
+        // order_usdc=0, api_min=0.1 → base=0 → fallback MIN_NOTIONAL_USD/price.
+        let size = order_size(0.0, 0.50, 0.1);
+        assert!(
+            (size * 0.50 - MIN_NOTIONAL_USD).abs() < 1e-9,
+            "notional={}",
+            size * 0.50
+        );
     }
 
     #[test]

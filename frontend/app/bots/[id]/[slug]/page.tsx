@@ -67,13 +67,13 @@ export default function MarketDetailPage() {
     fetchInitial: fetchTicks,
     isLive,
     pollMs: 1500,
-    maxItems: 3000,
+    maxItems: 800,
   });
   const pnlHistory = useHistoryStream<PnLSnapshot>({
     fetchInitial: fetchPnl,
     isLive,
     pollMs: 1500,
-    maxItems: 1000,
+    maxItems: 500,
   });
 
   const sessionRange = useMemo(

@@ -169,14 +169,23 @@ async fn harvest_v2_normal_trade_avg_down_places_bid_when_ask_below_avg() {
 
     let t = now_ms() + COOLDOWN + 1_000;
     let dec = sess.tick(&cfg, t, 5.0, true);
-    let orders = match dec {
-        Decision::PlaceOrders(o) => o,
-        other => panic!("expected PlaceOrders, got {:?}", other),
+    // Yeni davranış: avg-down + hedge re-place atomic CancelAndPlace.
+    let (cancels, places) = match dec {
+        Decision::CancelAndPlace { cancels, places } => (cancels, places),
+        other => panic!("expected CancelAndPlace (atomic avg-down+hedge), got {:?}", other),
     };
-    assert_eq!(orders.len(), 1);
-    assert_eq!(orders[0].outcome, Outcome::Up);
-    assert!(orders[0].reason.starts_with("harvest_v2:avg_down:"));
-    assert!((orders[0].price - 0.46).abs() < 1e-9);
+    assert_eq!(cancels, vec!["hedge-1".to_string()]);
+    let avg = places
+        .iter()
+        .find(|o| o.reason.starts_with("harvest_v2:avg_down:"))
+        .expect("avg_down");
+    let hedge = places
+        .iter()
+        .find(|o| o.reason.starts_with("harvest_v2:hedge:"))
+        .expect("new hedge");
+    assert_eq!(avg.outcome, Outcome::Up);
+    assert!((avg.price - 0.46).abs() < 1e-9);
+    assert_eq!(hedge.outcome, Outcome::Down);
 }
 
 #[tokio::test]
@@ -188,12 +197,13 @@ async fn harvest_v2_agg_trade_pyramid_same_side_with_signal() {
     sess.harvest_state = HarvestState::PositionOpen {
         filled_side: Outcome::Up,
     };
+    // Hedge cost-balanced: cost_filled = 0.55*10 = 5.5, size = 5.5/0.43 ≈ 12.79.
     sess.open_orders.push(OpenOrder {
         id: "hedge-1".into(),
         outcome: Outcome::Down,
         side: Side::Buy,
         price: 0.43,
-        size: 10.0,
+        size: 12.79,
         reason: "harvest_v2:hedge:down".into(),
         size_matched: 0.0,
         placed_at_ms: 0,
@@ -208,13 +218,17 @@ async fn harvest_v2_agg_trade_pyramid_same_side_with_signal() {
 
     let t = now_ms() + COOLDOWN + 1_000;
     let dec = sess.tick(&cfg, t, 8.0, true);
-    let orders = match dec {
-        Decision::PlaceOrders(o) => o,
-        other => panic!("expected PlaceOrders, got {:?}", other),
+    // Yeni davranış: pyramid + hedge re-place atomic CancelAndPlace.
+    let (cancels, places) = match dec {
+        Decision::CancelAndPlace { cancels, places } => (cancels, places),
+        other => panic!("expected CancelAndPlace (atomic pyramid+hedge), got {:?}", other),
     };
-    assert_eq!(orders.len(), 1);
-    assert_eq!(orders[0].outcome, Outcome::Up);
-    assert!(orders[0].reason.starts_with("harvest_v2:pyramid:"));
+    assert_eq!(cancels, vec!["hedge-1".to_string()]);
+    let pyr = places
+        .iter()
+        .find(|o| o.reason.starts_with("harvest_v2:pyramid:"))
+        .expect("pyramid order");
+    assert_eq!(pyr.outcome, Outcome::Up);
 }
 
 #[tokio::test]

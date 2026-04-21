@@ -173,7 +173,7 @@ export function useHistoryStream<T extends { ts_ms: number }>(opts: {
         lastTsRef.current = rows.length
           ? rows[rows.length - 1].ts_ms
           : 0;
-        setItems(rows);
+        setItems(maxItems ? rows.slice(-maxItems) : rows);
         return;
       }
       if (rows.length === 0) return;
@@ -226,10 +226,6 @@ export function useHistoryStream<T extends { ts_ms: number }>(opts: {
     if (!isLive || !pollMs) return;
     let t: ReturnType<typeof setInterval> | null = null;
 
-    const start = () => {
-      reload(lastTsRef.current);
-      t = setInterval(() => reload(lastTsRef.current), pollMs);
-    };
     const stop = () => {
       if (t !== null) {
         clearInterval(t);
@@ -237,10 +233,23 @@ export function useHistoryStream<T extends { ts_ms: number }>(opts: {
       }
     };
 
-    const onVisibility = () => (document.hidden ? stop() : start());
+    const startInterval = () => {
+      stop();
+      t = setInterval(() => reload(lastTsRef.current), pollMs);
+    };
+
+    const onVisibility = () => {
+      if (document.hidden) {
+        stop();
+      } else {
+        reload(lastTsRef.current);
+        startInterval();
+      }
+    };
+
     document.addEventListener("visibilitychange", onVisibility);
 
-    if (!document.hidden) start();
+    if (!document.hidden) startInterval();
 
     return () => {
       stop();

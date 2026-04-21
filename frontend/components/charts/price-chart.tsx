@@ -116,10 +116,18 @@ function toRows(ticks: MarketTick[]): Row[] {
 
 export function PriceChart({ data, session }: Props) {
   const rows = useMemo(() => toRows(data), [data]);
+  const ticks = useMemo(
+    () => (session ? timeTicks(session) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [session?.start, session?.end],
+  );
+  const zoneLines = useMemo(
+    () => (session ? zoneBoundaryTimes(session) : []),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [session?.start, session?.end],
+  );
 
   if (!session) return null;
-  const ticks = timeTicks(session);
-  const zoneLines = zoneBoundaryTimes(session);
   const latest = rows.length > 0 ? rows[rows.length - 1] : null;
 
   return (
