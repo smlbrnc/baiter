@@ -28,6 +28,7 @@ fn mk_order(
         size,
         reason: reason.into(),
         placed_at_ms,
+        size_matched: 0.0,
     }
 }
 

@@ -153,6 +153,7 @@ impl LiveExecutor {
                 size: planned.size,
                 reason: planned.reason.clone(),
                 placed_at_ms: now_ms(),
+                size_matched: 0.0,
             });
         }
         let executed = ExecutedOrder {
@@ -225,6 +226,7 @@ impl Simulator {
                 size: planned.size,
                 reason: planned.reason.clone(),
                 placed_at_ms: now_ms(),
+                size_matched: 0.0,
             });
             return ExecutedOrder {
                 order_id,

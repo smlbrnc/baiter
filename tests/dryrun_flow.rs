@@ -127,6 +127,7 @@ async fn harvest_v2_stop_trade_cancels_all_open_orders() {
         price: 0.48,
         size: 10.0,
         reason: "harvest_v2:hedge:down".into(),
+        size_matched: 0.0,
         placed_at_ms: now_ms(),
     });
     // StopTrade zone'a sok.
@@ -159,6 +160,7 @@ async fn harvest_v2_normal_trade_avg_down_places_bid_when_ask_below_avg() {
         price: 0.48,
         size: 10.0,
         reason: "harvest_v2:hedge:down".into(),
+        size_matched: 0.0,
         placed_at_ms: 0,
     });
     sess.yes_best_bid = 0.46;
@@ -193,6 +195,7 @@ async fn harvest_v2_agg_trade_pyramid_same_side_with_signal() {
         price: 0.43,
         size: 10.0,
         reason: "harvest_v2:hedge:down".into(),
+        size_matched: 0.0,
         placed_at_ms: 0,
     });
     sess.yes_best_bid = 0.60;
@@ -234,6 +237,7 @@ async fn harvest_v2_avg_down_match_triggers_hedge_reprice() {
         price: 0.48,
         size: 10.0,
         reason: "harvest_v2:hedge:down".into(),
+        size_matched: 0.0,
         placed_at_ms: 0,
     });
 

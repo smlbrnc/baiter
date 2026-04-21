@@ -21,6 +21,13 @@ pub struct OpenOrder {
     pub size: f64,
     pub reason: String,
     pub placed_at_ms: u64,
+    /// Bu OpenOrder'a karşı kümülatif maker fill toplamı.
+    /// Trade event'leriyle (`absorb_trade_matched` sonrası) artar; `>= size`
+    /// olunca emir `open_orders` listesinden düşürülür → FSM `PairComplete`
+    /// transition'ı tetiklenebilir. WS UPDATE ile ayrıca sync ETMİYORUZ —
+    /// trade event ordering yarış koşulundan kaçınmak için.
+    #[serde(default)]
+    pub size_matched: f64,
 }
 
 /// `Side::Buy` + `OrderType::Gtc` PlannedOrder kısayolu — strateji içi

@@ -90,6 +90,8 @@ pub fn handle_event(
                 price, order_type, status, lifecycle_type, timestamp_ms, raw,
             },
         ),
+        // ^ `sess: &mut` gerekli; `on_order` CANCELLATION'da `open_orders`'tan
+        //   emri düşürür.
         PolymarketEvent::MarketResolved {
             market, winning_outcome, winning_asset_id, timestamp_ms,
         } => on_market_resolved(
@@ -165,7 +167,15 @@ struct OurFill {
     /// `true` → bizim emir maker_orders'taydı (Polymarket policy: maker fee=0).
     /// `false` → biz taker'ız (concave fee uygulanır).
     is_maker: bool,
+    /// Maker dalında bizim `OpenOrder.id`; taker fallback'ında `None`.
+    /// `on_trade` bunu kullanarak `OpenOrder.size_matched`'i artırır ve
+    /// full-fill durumunda emri `open_orders`'tan düşürür.
+    order_id: Option<String>,
 }
+
+/// Polymarket dust toleransı: `1e-6` shares (Polymarket minimum tick'inden çok
+/// küçük). `size_matched >= size − FILL_EPSILON` olan emir "fully filled" sayılır.
+const FILL_EPSILON: f64 = 1e-6;
 
 fn on_trade(sess: &mut MarketSession, pool: &SqlitePool, ev: TradeMsg) {
     let bot_id = sess.bot_id;
@@ -203,6 +213,27 @@ fn on_trade(sess: &mut MarketSession, pool: &SqlitePool, ev: TradeMsg) {
         .collect();
     let total_fee: f64 = fees_per_fill.iter().sum();
 
+    // ⚡ Sıralama: önce strateji-kritik in-memory state (metrics + open_orders +
+    // FSM tetikleyicisi), SONRA audit DB persist. DB zaten `spawn_db` ile
+    // fire-and-forget olduğu için bloke etmiyor; bu sıralama mantıksal
+    // önceliği netleştirir.
+    if status_upper == "MATCHED" {
+        for (f, fee_per_fill) in our_fills.iter().zip(&fees_per_fill) {
+            absorb_trade_matched(sess, f.outcome, f.price, f.size, *fee_per_fill);
+            record_fill_and_prune_if_full(sess, f.order_id.as_deref(), f.size, &label);
+            log_fill_and_position(&label, sess, f.outcome, f.size, f.price);
+            ipc::emit(&FrontendEvent::Fill {
+                bot_id,
+                trade_id: trade_id.clone(),
+                outcome: f.outcome,
+                price: f.price,
+                size: f.size,
+                status: status_upper.clone(),
+                ts_ms: now_ms(),
+            });
+        }
+    }
+
     // Persist view: tek satır/trade_id. our_fills doluysa bizim aggregate'i
     // yaz; boşsa (bilinmeyen asset veya MATCHED-dışı) top-level'ı yaz (audit).
     let (p_outcome, p_asset, p_side, p_price, p_size) = if !our_fills.is_empty() {
@@ -219,38 +250,49 @@ fn on_trade(sess: &mut MarketSession, pool: &SqlitePool, ev: TradeMsg) {
     let record = db::trades::TradeRecord::from_user_ws(db::trades::WsTradeInput {
         bot_id,
         market_session_id: sess.market_session_id,
-        trade_id: trade_id.clone(),
+        trade_id,
         market: ev.market,
         asset_id: p_asset.unwrap_or_default(),
         side: p_side,
         outcome: p_outcome,
         size: p_size,
         price: p_price,
-        status: status_upper.clone(),
+        status: status_upper,
         fee: total_fee,
         ts_ms: ev.timestamp_ms as i64,
         raw: &raw,
     });
     db::trades::persist_trade(pool, record, "user_ws upsert_trade");
+}
 
-    if status_upper != "MATCHED" {
-        return;
+/// Maker fill'i ilgili `OpenOrder.size_matched`'e ekle; full-fill ise emri
+/// `open_orders`'tan düşür → harvest FSM `PairComplete` transition'ı
+/// (state.rs:154) doğru tetiklenebilir.
+///
+/// `order_id=None` (taker fallback) veya bilinmeyen id → no-op.
+fn record_fill_and_prune_if_full(
+    sess: &mut MarketSession,
+    order_id: Option<&str>,
+    fill_size: f64,
+    label: &str,
+) {
+    let Some(id) = order_id else { return };
+    let mut fully_filled = false;
+    if let Some(o) = sess.open_orders.iter_mut().find(|o| o.id == id) {
+        o.size_matched += fill_size;
+        fully_filled = o.size_matched >= o.size - FILL_EPSILON;
+        if fully_filled {
+            ipc::log_line(
+                label,
+                format!(
+                    "🧹 open_order fully filled — pruning id={id} size={} matched={}",
+                    o.size, o.size_matched
+                ),
+            );
+        }
     }
-
-    // Pozisyon math: her bireysel fill ayrı `absorb_trade_matched` (mixed-outcome
-    // edge case'inde her iki tarafın pozisyonu da doğru güncellenir).
-    for (f, fee_per_fill) in our_fills.into_iter().zip(fees_per_fill) {
-        absorb_trade_matched(sess, f.outcome, f.price, f.size, fee_per_fill);
-        log_fill_and_position(&label, sess, f.outcome, f.size, f.price);
-        ipc::emit(&FrontendEvent::Fill {
-            bot_id,
-            trade_id: trade_id.clone(),
-            outcome: f.outcome,
-            price: f.price,
-            size: f.size,
-            status: status_upper.clone(),
-            ts_ms: now_ms(),
-        });
+    if fully_filled {
+        sess.open_orders.retain(|o| o.id != id);
     }
 }
 
@@ -311,6 +353,7 @@ fn extract_our_fills(
                         price,
                         size: amount,
                         is_maker: true,
+                        order_id: Some(id.to_string()),
                     })
                 })
                 .collect()
@@ -329,6 +372,7 @@ fn extract_our_fills(
                 price: top_price,
                 size: top_size,
                 is_maker: false,
+                order_id: None,
             }]
         })
         .unwrap_or_default()
@@ -416,7 +460,7 @@ fn log_fill_and_position(label: &str, sess: &MarketSession, outcome: Outcome, si
     );
 }
 
-fn on_order(sess: &MarketSession, pool: &SqlitePool, ev: OrderMsg) {
+fn on_order(sess: &mut MarketSession, pool: &SqlitePool, ev: OrderMsg) {
     let bot_id = sess.bot_id;
     let label = bot_id.to_string();
     match ev.lifecycle_type.as_str() {
@@ -432,6 +476,10 @@ fn on_order(sess: &MarketSession, pool: &SqlitePool, ev: OrderMsg) {
             ipc::log_line(&label, format!("📬 WS order {}", parts.join(" ")));
         }
         "UPDATE" => {
+            // NOT: full-fill prune'unu burada DEĞİL `on_trade`'de yapıyoruz —
+            // WS UPDATE, ilgili `trade MATCHED` event'inden önce gelirse
+            // `extract_our_fills` order_id'i bulamaz ve maker fill yanlış
+            // attribute edilir. Trade-driven prune yarış koşulundan kaçınır.
             let mut parts = vec!["type=UPDATE".to_string(), format!("id={}", ev.order_id)];
             if let Some(sm) = ev.size_matched {
                 parts.push(format!("size_matched={sm}"));
@@ -443,6 +491,20 @@ fn on_order(sess: &MarketSession, pool: &SqlitePool, ev: OrderMsg) {
         }
         "CANCELLATION" => {
             ipc::log_line(&label, format!("📬 WS order type=CANCELLATION id={}", ev.order_id));
+            // Polymarket bizim adımıza emri iptal etti (kendi `cancel_batch`
+            // çağrımız zaten lokal listeden düşürüyor — bu kol expiry / external
+            // cancel için savunma mekanizması).
+            let before = sess.open_orders.len();
+            sess.open_orders.retain(|o| o.id != ev.order_id);
+            if sess.open_orders.len() < before {
+                ipc::log_line(
+                    &label,
+                    format!(
+                        "🧹 open_order canceled — pruning id={} (WS CANCELLATION)",
+                        ev.order_id
+                    ),
+                );
+            }
         }
         other => {
             ipc::log_line(
@@ -594,6 +656,7 @@ mod tests {
             size: 16.0,
             reason: "test".into(),
             placed_at_ms: 0,
+            size_matched: 0.0,
         }
     }
 
@@ -640,6 +703,11 @@ mod tests {
         assert!((f.price - 0.33).abs() < 1e-9);
         assert!((f.size - 9.33).abs() < 1e-9);
         assert!(f.is_maker, "maker dalında is_maker=true olmalı");
+        assert_eq!(
+            f.order_id.as_deref(),
+            Some("0xMINE"),
+            "maker dalı OpenOrder.id'yi geri vermeli"
+        );
     }
 
     /// Taker rolü: `maker_orders[]` ya boş ya da bizim id yok → top-level
@@ -670,6 +738,7 @@ mod tests {
         assert!((f.price - 0.57).abs() < 1e-9);
         assert!((f.size - 9.0).abs() < 1e-9);
         assert!(!f.is_maker, "taker fallback'ında is_maker=false olmalı");
+        assert!(f.order_id.is_none(), "taker fallback'ında order_id=None");
     }
 
     /// `maker_orders` alanı hiç yoksa ve top-level asset bilinmiyorsa → boş.
@@ -748,6 +817,7 @@ mod tests {
                 price: 0.32,
                 size: 5.0,
                 is_maker: true,
+                order_id: Some("0xMINE".into()),
             },
             OurFill {
                 outcome: Outcome::Up,
@@ -756,6 +826,7 @@ mod tests {
                 price: 0.34,
                 size: 10.0,
                 is_maker: true,
+                order_id: Some("0xMINE".into()),
             },
         ];
         let (outcome, asset, side, price, size) = aggregate_for_persist("test", &fills, None);
@@ -779,6 +850,7 @@ mod tests {
                 price: 0.58,
                 size: 9.0,
                 is_maker: true,
+                order_id: Some("0xUP".into()),
             },
             OurFill {
                 outcome: Outcome::Down,
@@ -787,6 +859,7 @@ mod tests {
                 price: 0.40,
                 size: 4.0,
                 is_maker: false,
+                order_id: None,
             },
         ];
         let (outcome, asset, _side, price, size) = aggregate_for_persist("test", &fills, None);
@@ -806,6 +879,7 @@ mod tests {
             price: 0.50,
             size: 10.0,
             is_maker: true,
+            order_id: Some("0xMINE".into()),
         };
         assert_eq!(compute_fee(&f, Some(1000.0)), 0.0);
         assert_eq!(compute_fee(&f, Some(720.0)), 0.0);
@@ -823,6 +897,7 @@ mod tests {
             price: 0.52,
             size: 10.0,
             is_maker: false,
+            order_id: None,
         };
         let fee = compute_fee(&f, Some(1000.0));
         assert!((fee - 0.2496).abs() < 1e-9, "expected 0.2496, got {fee}");
@@ -838,6 +913,7 @@ mod tests {
             price: 0.50,
             size: 10.0,
             is_maker: false,
+            order_id: None,
         };
         let fee = compute_fee(&f, Some(1000.0));
         assert!((fee - 0.25).abs() < 1e-9);
@@ -853,7 +929,96 @@ mod tests {
             price: 0.52,
             size: 10.0,
             is_maker: false,
+            order_id: None,
         };
         assert_eq!(compute_fee(&f, None), 0.0);
+    }
+
+    /// Tek maker fill, full-fill threshold'una ulaşırsa emir prune edilir.
+    #[test]
+    fn record_fill_full_prunes_order() {
+        let mut sess = make_session();
+        let mut o = open("0xHEDGE");
+        o.size = 10.0;
+        sess.open_orders.push(o);
+
+        record_fill_and_prune_if_full(&mut sess, Some("0xHEDGE"), 10.0, "test");
+        assert!(sess.open_orders.is_empty(), "full-fill prune olmalı");
+    }
+
+    /// Partial fill — emir korunur, size_matched birikir.
+    #[test]
+    fn record_fill_partial_keeps_order() {
+        let mut sess = make_session();
+        let mut o = open("0xHEDGE");
+        o.size = 10.0;
+        sess.open_orders.push(o);
+
+        record_fill_and_prune_if_full(&mut sess, Some("0xHEDGE"), 1.886_791, "test");
+        assert_eq!(sess.open_orders.len(), 1);
+        assert!((sess.open_orders[0].size_matched - 1.886_791).abs() < 1e-9);
+    }
+
+    /// Taker fallback (order_id=None) → no-op, OpenOrder etkilenmez.
+    #[test]
+    fn record_fill_taker_is_noop() {
+        let mut sess = make_session();
+        sess.open_orders.push(open("0xMINE"));
+
+        record_fill_and_prune_if_full(&mut sess, None, 5.0, "test");
+        assert_eq!(sess.open_orders[0].size_matched, 0.0);
+    }
+
+    /// Bilinmeyen order_id (başka bot/expired) → no-op.
+    #[test]
+    fn record_fill_unknown_id_is_noop() {
+        let mut sess = make_session();
+        sess.open_orders.push(open("0xMINE"));
+
+        record_fill_and_prune_if_full(&mut sess, Some("0xOTHER"), 5.0, "test");
+        assert_eq!(sess.open_orders[0].size_matched, 0.0);
+    }
+
+    /// Dust toleransı: `size_matched >= size − 1e-6` full-fill sayılır.
+    #[test]
+    fn record_fill_dust_tolerance() {
+        let mut sess = make_session();
+        let mut o = open("0xHEDGE");
+        o.size = 10.0;
+        o.size_matched = 9.999_999;
+        sess.open_orders.push(o);
+
+        // Hiç fill eklemeden bile dust threshold'a yakın → partial fill bırak,
+        // gerçek dust simulation:
+        record_fill_and_prune_if_full(&mut sess, Some("0xHEDGE"), 0.000_001, "test");
+        assert!(sess.open_orders.is_empty());
+    }
+
+    /// Bot 53 regresyon: hedge 3 ayrı trade event'inde dolduğunda, kümülatif
+    /// fill 10'a ulaşınca emir düşer → harvest FSM `PairComplete`'e geçebilir.
+    #[test]
+    fn bot53_three_fills_complete_hedge() {
+        let mut sess = make_session();
+        let mut hedge = open("0xfb68");
+        hedge.size = 10.0;
+        hedge.outcome = Outcome::Down;
+        sess.open_orders.push(hedge);
+
+        record_fill_and_prune_if_full(&mut sess, Some("0xfb68"), 1.886_791, "test");
+        assert_eq!(sess.open_orders.len(), 1, "1. fill sonrası: partial");
+
+        record_fill_and_prune_if_full(&mut sess, Some("0xfb68"), 3.26, "test");
+        assert_eq!(sess.open_orders.len(), 1, "2. fill sonrası: partial");
+
+        record_fill_and_prune_if_full(&mut sess, Some("0xfb68"), 4.840_376, "test");
+        // 1.886791 + 3.26 + 4.840376 = 9.987167 → dust kalır; gerçek
+        // Polymarket akışında 4. mini fill veya WS CANCELLATION ile düşer.
+        assert_eq!(sess.open_orders.len(), 1, "9.987 < 10 dust beyond epsilon");
+
+        record_fill_and_prune_if_full(&mut sess, Some("0xfb68"), 0.012_833, "test");
+        assert!(
+            sess.open_orders.is_empty(),
+            "tüm 10 dolduğunda hedge pruned → FSM PairComplete'e gider"
+        );
     }
 }
