@@ -116,6 +116,7 @@ impl LiveExecutor {
             expiration_secs: exp,
             neg_risk: session.neg_risk,
             fee_rate_bps: session.fee_rate_bps,
+            tick_size: session.tick_size,
         })?;
         let sig = sign_order(&order, &self.creds, self.chain_id, session.neg_risk).await?;
         let body = order_to_json(&order, &sig);

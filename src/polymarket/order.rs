@@ -68,6 +68,29 @@ pub struct BuildArgs<'a> {
     /// Maker fee rate (basis points). CLOB `GET /fee-rate?token_id=...`'den.
     /// 0 göndermek market'in `mbf`'ine eşit değilse server 400 döner.
     pub fee_rate_bps: u32,
+    /// Market tick size (ör. 0.01) — `makerAmount`/`takerAmount` yuvarlaması
+    /// (py-clob-client paritesi) için. Server'da derive edilen `price`'ın tick
+    /// grid'ini bozmaması için size & USDC fixed-point yuvarlaması bu değere
+    /// göre yapılır. Varsayılan tick: 0.01 (binary BTC/ETH markets).
+    pub tick_size: f64,
+}
+
+/// py-clob-client `ROUNDING_CONFIG` paritesi: tick_size'a göre `(price_decimals,
+/// size_decimals, amount_decimals)`. Default tick (0.01) için (2, 2, 4).
+/// `size_dec + price_dec == amount_dec` invariant'i her config için sağlanır;
+/// integer math `size_units * price_ticks * 10^(6 - amount_dec)` exact USDC
+/// 1e6-base sonucu üretir → derived `price = maker/taker` tick grid'inde.
+fn rounding_config(tick_size: f64) -> (u32, u32, u32) {
+    if (tick_size - 0.0001).abs() < 1e-9 {
+        (4, 2, 6)
+    } else if (tick_size - 0.001).abs() < 1e-9 {
+        (3, 2, 5)
+    } else if (tick_size - 0.1).abs() < 1e-9 {
+        (1, 2, 3)
+    } else {
+        // Default: 0.01 (binary markets).
+        (2, 2, 4)
+    }
 }
 
 /// `neg_risk`'e göre verifying_contract adresi.
@@ -83,10 +106,39 @@ fn verifying_contract(neg_risk: bool) -> Address {
 /// türetimi). Buradan dönen struct, `sign_order` ile imzalanır ve
 /// `order_to_json` ile CLOB body'sine serialize edilir.
 pub fn build_order(args: &BuildArgs<'_>) -> Result<Order, AppError> {
-    // 6-ondalık fixed-point: f64 → u256 (taban USDC/CTF kuralları).
-    let scale: f64 = 10f64.powi(TOKEN_DECIMALS as i32);
-    let size_units = (args.size * scale).round() as u128;
-    let usdc_units = (args.size * args.price * scale).round() as u128;
+    // Bot 1 / btc-updown-5m-1776791700 regresyonu: naive `(size*price*1e6).round()`
+    // hedge re-place 30+ kez 400 alıyordu çünkü `usdc/size` server-derived price
+    // tick 0.01'i bozuyordu (size 28.996743, price 0.60 → 0.6000000068973264).
+    //
+    // Çözüm: integer math (py-clob-client paritesi). Önce tick_size'a göre
+    // decimals config çek; size DOWN-round, price tick'e snap; amount = size_2dec
+    // × price_ticks (her ikisi de tamsayı) → 6-dec USDC base'e tek bir tamsayı
+    // çarpımı. `size_dec + price_dec == amount_dec` invariant'i sayesinde
+    // `usdc_units / size_units` derived price daima tick grid'inde.
+    let (price_dec, size_dec, amount_dec) = rounding_config(args.tick_size);
+    let size_factor = 10u128.pow(size_dec);
+    let price_factor = 10u128.pow(price_dec);
+    let amount_to_token = 10u128.pow(TOKEN_DECIMALS - amount_dec); // 6 - amount_dec ≥ 0
+    let token_per_size = 10u128.pow(TOKEN_DECIMALS - size_dec);
+
+    let size_low = (args.size * size_factor as f64).floor() as u128; // round_down
+    if size_low == 0 {
+        return Err(AppError::Clob(format!(
+            "size {} rounds to 0 at tick_size {} (size_decimals={size_dec})",
+            args.size, args.tick_size
+        )));
+    }
+    let price_ticks = (args.price * price_factor as f64).round() as u128;
+    if price_ticks == 0 || price_ticks >= price_factor {
+        return Err(AppError::Clob(format!(
+            "price {} out of (0,1) range at tick_size {}",
+            args.price, args.tick_size
+        )));
+    }
+    // `usdc_amount_units` = size_2dec × price_ticks (10^amount_dec base).
+    // 6-dec USDC base'e çevrim için × amount_to_token.
+    let usdc_units = size_low * price_ticks * amount_to_token;
+    let size_units = size_low * token_per_size;
 
     let (maker_amount, taker_amount, side_byte) = match args.side {
         // BUY: makerAmount = USDC, takerAmount = CTF.
@@ -251,6 +303,7 @@ mod tests {
             expiration_secs: 0,
             neg_risk: false,
             fee_rate_bps: 30,
+            tick_size: 0.01,
         }
     }
 
@@ -286,6 +339,72 @@ mod tests {
         let sig = sign_order(&order, &creds, 137, false).await.unwrap();
         assert!(sig.starts_with("0x"));
         assert_eq!(sig.len(), 2 + 65 * 2); // 0x + 65 byte hex
+    }
+
+    /// Bot 1 / `btc-updown-5m-1776791700` regresyonu: hedge size=28.996743,
+    /// price=0.60 → eski naive math `usdc_units / size_units = 0.60000000689…`
+    /// → CLOB 400 "breaks minimum tick size 0.01". Yeni rounding (size→2dec,
+    /// amount→4dec UP) tick grid'i bozmamalı.
+    #[test]
+    fn build_order_buy_amount_snaps_to_tick() {
+        let creds = fake_creds();
+        let mut a = args(&creds, Side::Buy);
+        a.size = 28.996743;
+        a.price = 0.60;
+        a.tick_size = 0.01;
+        let order = build_order(&a).unwrap();
+        let maker = u128::from_le_bytes(order.makerAmount.to_le_bytes::<32>()[..16].try_into().unwrap());
+        let taker = u128::from_le_bytes(order.takerAmount.to_le_bytes::<32>()[..16].try_into().unwrap());
+        assert_eq!(taker, 28_990_000, "size 28.996743 → round_down 28.99 → 28_990_000");
+        assert_eq!(maker, 17_394_000, "28.99 * 0.60 = 17.394 → 17_394_000");
+        // Derived price (server-side validation): maker * 100 == taker * price_ticks(60).
+        assert_eq!(maker * 100, taker * 60);
+    }
+
+    /// Tick 0.001 → size 2 dec, amount 5 dec. 33.33 * 0.123 = 4.09959.
+    #[test]
+    fn build_order_buy_supports_finer_tick() {
+        let creds = fake_creds();
+        let mut a = args(&creds, Side::Buy);
+        a.size = 33.337;
+        a.price = 0.123;
+        a.tick_size = 0.001;
+        let order = build_order(&a).unwrap();
+        let maker = u128::from_le_bytes(order.makerAmount.to_le_bytes::<32>()[..16].try_into().unwrap());
+        let taker = u128::from_le_bytes(order.takerAmount.to_le_bytes::<32>()[..16].try_into().unwrap());
+        assert_eq!(taker, 33_330_000);
+        // 33.33 * 0.123 = 4.09959 → 4_099_590 (5 dec exact).
+        assert_eq!(maker, 4_099_590);
+        // Server-side: maker * 1000 == taker * price_ticks(123).
+        assert_eq!(maker * 1000, taker * 123);
+    }
+
+    /// SELL: maker (CTF) = size, taker (USDC) = round_down(size*price).
+    #[test]
+    fn build_order_sell_rounds_taker_amount_down() {
+        let creds = fake_creds();
+        let mut a = args(&creds, Side::Sell);
+        a.size = 28.996743;
+        a.price = 0.60;
+        a.tick_size = 0.01;
+        let order = build_order(&a).unwrap();
+        let maker = u128::from_le_bytes(order.makerAmount.to_le_bytes::<32>()[..16].try_into().unwrap());
+        let taker = u128::from_le_bytes(order.takerAmount.to_le_bytes::<32>()[..16].try_into().unwrap());
+        assert_eq!(maker, 28_990_000);
+        // Integer math: size_2dec(2899) * price_ticks(60) = 173940 → × 100 (tick→6dec).
+        assert_eq!(taker, 17_394_000);
+        // SELL derived price = taker / maker; tick rule (taker * 100 == maker * 60).
+        assert_eq!(taker * 100, maker * 60);
+    }
+
+    /// `size` size_decimals altında ise `round_down` 0 üretir → açık hata.
+    #[test]
+    fn build_order_rejects_subtick_size() {
+        let creds = fake_creds();
+        let mut a = args(&creds, Side::Buy);
+        a.size = 0.001; // round_down to 2 dec → 0.00
+        let err = build_order(&a).err().expect("subtick size must be rejected");
+        assert!(matches!(err, AppError::Clob(msg) if msg.contains("rounds to 0")));
     }
 
     #[test]
