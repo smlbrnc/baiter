@@ -22,7 +22,6 @@ use super::{ExecutedOrder, MarketSession};
 /// DryRun fee oranı (%0.02).
 pub const DRYRUN_FEE_RATE: f64 = 0.0002;
 
-/// Emir yürütme sözleşmesi — `Simulator` (dryrun) ve `LiveExecutor` (CLOB) sağlar.
 #[async_trait::async_trait]
 pub trait OrderSink: Send + Sync {
     async fn place(
@@ -43,7 +42,7 @@ pub enum Executor {
     Live(LiveExecutor),
 }
 
-/// Live mod CLOB emir yürütücü — EIP-712 imza + CLOB POST /order.
+/// Live CLOB yürütücü — EIP-712 imza + POST /order.
 pub struct LiveExecutor {
     pub client: Arc<ClobClient>,
     pub creds: Credentials,
@@ -99,8 +98,7 @@ impl OrderSink for Simulator {
 }
 
 impl LiveExecutor {
-    /// PlannedOrder → EIP-712 → POST /order. GTC/FAK/FOK için `expiration=0`,
-    /// GTD için `now + timeout`.
+    /// PlannedOrder → EIP-712 → POST /order. GTD için `now + timeout`, diğerleri `0`.
     pub async fn place(
         &self,
         session: &mut MarketSession,
@@ -132,26 +130,9 @@ impl LiveExecutor {
                 resp.error_msg
             )));
         }
-        // `Matched` REST yanıtı **tam fill garantisi DEĞİL** — Polymarket GTC
-        // için kısmi match'te de `status=matched` döner (kalan kitapta canlı).
-        // Eski kod `Matched` görünce marker olarak `size_matched = planned.size`
-        // basardı; sonra User WS `trade MATCHED` event aynı fill'i tekrar
-        // `size_matched += fill_size` eklediğinden çift sayım oluşur ve
-        // `record_fill_and_prune_if_full` opener'ı erken prune ederdi → kitapta
-        // unutulmuş partial leg + bozulmuş hedge size hesabı (Bot 4 /
-        // btc-updown-5m-1776795600 regresyonu: DOWN opener 11 → 6.78 fill,
-        // marker=11 + WS 6.78 = 17.78 → prune; kalan 4.22 kitapta canlı kaldı).
-        //
-        // Tüm statülerde `size_matched = 0.0` push. Hem metrics hem size
-        // akümülasyonu **User WS `trade MATCHED` event'inin tek sorumluluğu**:
-        // - Metrics: REST `planned.price` book best fiyatından farklı olabilir,
-        //   VWAP'ı bozar (Bot 6 / btc-updown-5m-1776776400).
-        // - Size: REST yanıtı `makingAmount/takingAmount` taşımadığı için
-        //   gerçek partial fill miktarı yalnız WS'den gelir.
-        //
-        // Race riski yok: `select!` loop `place()`'i await ederken WS mpsc
-        // event'leri buffer'da bekler; `place()` döndükten sonra processed olur
-        // ve o zamana dek `open_orders` entry mevcuttur.
+        // REST `status=matched` partial fill'i de işaretler. `size_matched=0` push;
+        // gerçek fill miktarı + metrics yalnız User WS `trade MATCHED`'den toplanır
+        // (REST `planned.price` VWAP'ı bozabilir, partial size REST'te yok).
         let filled = resp.status.is_filled();
         session.open_orders.push(OpenOrder {
             id: resp.order_id.clone(),
@@ -163,8 +144,6 @@ impl LiveExecutor {
             placed_at_ms: now_ms(),
             size_matched: 0.0,
         });
-        // Cooldown `place_batch`'te (her live emir gönderiminde) tek noktadan
-        // tetiklenir — burada ayrıca arm etmek çift güncelleme demek.
         Ok(ExecutedOrder {
             order_id: resp.order_id,
             planned: planned.clone(),
@@ -209,8 +188,6 @@ impl Simulator {
 
         let fill_size = planned.size;
         apply_dryrun_fill(session, planned.outcome, fill_price, fill_size);
-        // `last_averaging_ms` `place_batch` sonunda tek noktada güncellenir
-        // (averaging cooldown takibi için tek kaynak).
 
         ExecutedOrder {
             order_id,
@@ -222,7 +199,6 @@ impl Simulator {
     }
 }
 
-/// Karşı taraf fiyatı — DryRun fill kararı için.
 pub(crate) fn counter_price_for(session: &MarketSession, outcome: Outcome, side: Side) -> f64 {
     match side {
         Side::Buy => match outcome {
@@ -236,8 +212,7 @@ pub(crate) fn counter_price_for(session: &MarketSession, outcome: Outcome, side:
     }
 }
 
-/// Emir karşı taraf en iyi fiyatı geçtiyse fill fiyatını döndürür.
-/// `Simulator::fill` (taker) ve `simulate_passive_fills` (resting) için ortak.
+/// Emir karşı best fiyatı geçtiyse fill fiyatını döndürür (taker + passive ortak).
 pub(crate) fn dryrun_cross(
     session: &MarketSession,
     outcome: Outcome,
@@ -255,8 +230,7 @@ pub(crate) fn dryrun_cross(
     crosses.then_some(counter)
 }
 
-/// DryRun fill ortak kuyruğu: fee hesaplar ve `metrics`'i günceller.
-/// `last_averaging_ms` caller'a aittir (taker vs passive farklı politika).
+/// DryRun fill: fee hesaplar ve metrics'i günceller. Cooldown caller'a aittir.
 pub(crate) fn apply_dryrun_fill(
     session: &mut MarketSession,
     outcome: Outcome,
@@ -269,25 +243,21 @@ pub(crate) fn apply_dryrun_fill(
         .ingest_fill(outcome, Side::Buy, fill_price, fill_size, fee);
 }
 
-/// Eğer `reason` averaging-like (`harvest_v2:open|avg_down|pyramid:*`) ise
-/// `last_averaging_ms`'yi `now_ms()`'e ileri alır. `place_batch` her live
-/// emir gönderiminde, `simulate_passive_fills` passive fill anında çağırır;
-/// Live executor REST yanıtında ayrıca tetiklemez (çift güncelleme yapmamak
-/// için tek noktada toplanmıştır).
+/// Averaging-like reason ise cooldown saatini ileri al. Tek tetik noktası
+/// `place_batch` (Live + DryRun) ve `simulate_passive_fills`.
 pub(crate) fn maybe_arm_averaging_cooldown(session: &mut MarketSession, reason: &str) {
     if is_averaging_like(reason) {
         session.last_averaging_ms = now_ms();
     }
 }
 
-/// `execute()` çıktısı.
 #[derive(Debug, Default)]
 pub struct ExecuteOutput {
     pub placed: Vec<ExecutedOrder>,
     pub canceled: Vec<CancelResponse>,
 }
 
-/// Global price guard: `[min_price, max_price]` dışındaysa reject.
+/// `[min_price, max_price]` dışındaysa reject.
 fn within_price_bounds(session: &MarketSession, planned: &PlannedOrder) -> bool {
     if planned.price < session.min_price || planned.price > session.max_price {
         tracing::info!(
@@ -314,10 +284,7 @@ pub async fn execute<S: OrderSink + ?Sized>(
         Decision::PlaceOrders(orders) => place_batch(session, exec, orders, &mut out).await?,
         Decision::CancelOrders(ids) => cancel_batch(session, exec, &ids, &mut out).await?,
         Decision::CancelAndPlace { cancels, places } => {
-            // Sıra önemli: önce cancel (eski hedge book'tan düşsün), sonra
-            // place (yeni hedge aynı tick'te kitapta olsun). REST'ler atomic
-            // değil ama tek bir tick içinde sıralı yürütülür → fill geldikten
-            // sonra hedge fiyatı update'i için ek tick gecikmesi yok.
+            // Sıra: önce cancel, sonra place — yeni hedge aynı tick'te kitapta olsun.
             if !cancels.is_empty() {
                 cancel_batch(session, exec, &cancels, &mut out).await?;
             }
@@ -353,11 +320,8 @@ async fn cancel_batch<S: OrderSink + ?Sized>(
     out: &mut ExecuteOutput,
 ) -> Result<(), AppError> {
     let label = session.bot_id.to_string();
-    // Sadece Polymarket'in **gerçekten** iptal ettiği id'leri lokal state'ten
-    // sil. `not_canceled` (örn. "matched orders can't be canceled") emir hâlâ
-    // canlı veya match'te demektir; silersek ardından gelen MATCHED event'inde
-    // `extract_fills` bu id'yi `open_orders` setinde bulamaz ve maker fill
-    // atlanır.
+    // Yalnız Polymarket'in gerçekten iptal ettiği id'leri lokal state'ten sil;
+    // `not_canceled` emir hâlâ canlı/matched, MATCHED event'inde maker fill için lazım.
     let mut truly_canceled: HashSet<String> = HashSet::new();
     for id in ids {
         let resp = exec.cancel(session, id).await?;

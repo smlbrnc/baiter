@@ -1,14 +1,8 @@
-//! `PositionOpen` — NormalTrade averaging-down + AggTrade/FakTrade pyramiding +
-//! hedge drift / missing-hedge / hedge-side flip tespiti (doc §7, §8, §9, §10, §11).
+//! `PositionOpen` — avg-down + pyramid + hedge drift / missing / flip
+//! (doc §7, §8, §9, §10, §11).
 //!
-//! Hedge tarafı **dinamik**: `majority_side().opposite()` ile her tick'te
-//! yeniden hesaplanır. Pyramid karşı tarafa basıp imbalance flip ettiğinde
-//! eski hedge cancel edilir, yeni hedge majority'nin tersine basılır
-//! (Findings Öneri B / RİSK 1).
-//!
-//! Avg-down ve pyramid emirlerinden ÖNCE `would_lock_loss` projection gate
-//! çalıştırılır: hipotetik fill'in `pair_avg_sum > avg_threshold` üreteceği
-//! emirler reddedilir (RİSK 3).
+//! Hedge tarafı dinamik: `majority_side().opposite()`. Avg-down ve pyramid'ler
+//! atomic `Decision::CancelAndPlace` ile hedge re-place'i ile birlikte gönderilir.
 
 use crate::strategy::{planned_buy_gtc, Decision, PlannedOrder, MIN_NOTIONAL_USD};
 use crate::time::MarketZone;
@@ -21,28 +15,23 @@ use super::state::{
 pub fn handle(filled_side: Outcome, ctx: &HarvestContext) -> (HarvestState, Decision) {
     let same = HarvestState::PositionOpen { filled_side };
 
-    // ProfitLock: shares parity (`|shares_yes − shares_no| < api_min_order_size`)
-    // ve her iki tarafta da fill. Share-balanced hedge sayesinde parity =>
-    // avg_sum ≤ avg_threshold otomatik garanti.
     if ctx.profit_locked() {
         return (HarvestState::ProfitLocked { filled_side }, Decision::NoOp);
     }
 
     let majority = ctx.majority_side();
 
-    // §11: stale avg/pyramid GTC'ler → cancel.
+    // §11: stale avg/pyramid GTC'ler.
     let stale = ctx.stale_avg_or_pyramid_ids();
     if !stale.is_empty() {
         return (same, Decision::CancelOrders(stale));
     }
 
-    // Hedge tarafı: majority varsa onun tersi; yoksa (dust imbalance) filled_side fallback.
     let hedge_side = majority
         .map(|m| m.opposite())
         .unwrap_or_else(|| filled_side.opposite());
 
-    // RİSK 1: hedge tarafı flip olduysa eski (yanlış) tarafta kalan hedge cancel edilir.
-    // Aynı tick'te yeni hedge atılırsa atomic CancelAndPlace, yoksa sadece cancel.
+    // Hedge tarafı flip olduysa eski hedge cancel + (varsa) yeni hedge place.
     if let Some(stale_hedge) = ctx.hedge_order(hedge_side.opposite()) {
         let cancels = vec![stale_hedge.id.clone()];
         return match build_hedge(hedge_side, ctx) {
@@ -57,12 +46,12 @@ pub fn handle(filled_side: Outcome, ctx: &HarvestContext) -> (HarvestState, Deci
         };
     }
 
-    // §9: hedge yoksa (cancel race / API hata / manuel) → re-place.
+    // §9: hedge yoksa re-place.
     if ctx.hedge_order(hedge_side).is_none() {
         return replace_missing_hedge(hedge_side, ctx);
     }
 
-    // §9 adım 2-4: hedge fiyat veya size sapması → atomic cancel + re-place.
+    // §9: hedge fiyat veya size sapması.
     if let Some(cancel) = hedge_needs_replace(hedge_side, ctx) {
         return match build_hedge(hedge_side, ctx) {
             Some(replacement) => (
@@ -95,11 +84,8 @@ pub fn handle(filled_side: Outcome, ctx: &HarvestContext) -> (HarvestState, Deci
     (same, Decision::NoOp)
 }
 
-/// Avg-down ya da pyramid emri tetiklendiğinde hedge'i ANLIK olarak (aynı tick)
-/// yeniden planla. Yeni hedge tarafı **projeksiyon sonrası majority** üzerinden
-/// hesaplanır (pyramid karşı tarafa basıp imbalance flip edebilir). Eski hedge
-/// (hangi tarafta olursa olsun) cancel + yeni hedge place tek `Decision::CancelAndPlace`
-/// ile atomik gönderilir.
+/// Avg-down/pyramid + hedge re-place'i atomic gönderir; hedge tarafı projeksiyon
+/// sonrası majority'ye göre belirlenir.
 fn atomic_avg_with_hedge(
     filled_side: Outcome,
     ctx: &HarvestContext,
@@ -109,7 +95,6 @@ fn atomic_avg_with_hedge(
     let mut cancels = Vec::new();
     let mut places = vec![new_order.clone()];
 
-    // Mevcut hedge order'larının hepsini topla (her iki olası tarafta da olabilir).
     for side in [Outcome::Up, Outcome::Down] {
         if let Some(hedge) = ctx.hedge_order(side) {
             cancels.push(hedge.id.clone());
@@ -127,9 +112,7 @@ fn atomic_avg_with_hedge(
     }
 }
 
-/// Missing hedge (cancel race / API hata / manuel müdahale) tespitinde yeniden
-/// hedge planla. `build_hedge` `None` dönerse (target band dışı) `PairComplete`'a
-/// düşer; aksi halde `PositionOpen` korunur.
+/// Missing hedge tespitinde re-place; band dışı ise `PairComplete`.
 fn replace_missing_hedge(
     hedge_side: Outcome,
     ctx: &HarvestContext,
@@ -144,14 +127,9 @@ fn replace_missing_hedge(
     }
 }
 
-/// `shares_up = shares_down` invariant'ı için hedge planı (share-balanced).
-/// `hedge_side` argüman olarak verilir → karşı taraf (`hedge_side.opposite()`)
-/// majority'dir, share referansı odur.
-///
-/// - **Fiyat**: `avg_threshold − avg_filled(majority)` — hedge dolarsa
-///   `avg_sum ≤ avg_threshold` invariant'ı korunur.
-/// - **Size**: `shares(majority) − shares(hedge_side)`. `MIN_NOTIONAL_USD /
-///   hedge_price` ve `api_min_order_size` ile alttan clamp.
+/// Share-balanced hedge planı.
+/// - Fiyat: `avg_threshold − avg_filled(majority)`.
+/// - Size: `shares(majority) − shares(hedge_side)`, `MIN_NOTIONAL_USD/price` ve `api_min` ile alttan clamp.
 fn build_hedge(hedge_side: Outcome, ctx: &HarvestContext) -> Option<PlannedOrder> {
     let majority = hedge_side.opposite();
     let raw_price = ctx.avg_threshold - ctx.avg_filled(majority);
@@ -175,11 +153,7 @@ fn build_hedge(hedge_side: Outcome, ctx: &HarvestContext) -> Option<PlannedOrder
     ))
 }
 
-/// Avg-down/pyramid emrinin TAM dolacağı varsayımı ile hedge'i taze metrikler
-/// üzerinden planla. Hedge tarafı PROJEKSIYON sonrası majority'ye göre belirlenir;
-/// pyramid karşı tarafa basıp dengeyi flip ettiğinde hedge de yeni majority'nin
-/// tersine planlanır. Projeksiyon balanced çıkarsa (`majority = None`) yeni
-/// hedge gerekmez (`None`).
+/// Yeni avg/pyramid emrinin tam dolduğu varsayımı ile hedge planı; balanced çıkarsa `None`.
 fn build_hedge_with_projected_fill(
     ctx: &HarvestContext,
     new_order: &PlannedOrder,
@@ -249,12 +223,7 @@ fn build_hedge_with_projected_fill(
     ))
 }
 
-/// Hedge için fiyat veya size sapması — cancel ID döndür. `hedge_side` argüman
-/// olarak verilir; karşı taraf majority'dir.
-///
-/// - **Fiyat sapması**: `|hedge.price − (avg_threshold − avg(majority))| ≥ tick/2`.
-/// - **Size sapması**: `|remaining − (shares(majority) − shares(hedge_side))|
-///   ≥ api_min_order_size` (re-place sonrası order yine api_min'i geçmek zorunda).
+/// Hedge fiyat (`|drift| ≥ tick/2`) veya size (`|drift| ≥ api_min`) sapmasında cancel ID döndür.
 fn hedge_needs_replace(hedge_side: Outcome, ctx: &HarvestContext) -> Option<String> {
     let majority = hedge_side.opposite();
     let hedge = ctx.hedge_order(hedge_side)?;
@@ -297,10 +266,7 @@ fn try_avg_down(filled_side: Outcome, ctx: &HarvestContext) -> Option<PlannedOrd
     ))
 }
 
-/// Doc §8: rising_side'a `best_ask + |delta|` GTC. Tetik koşulu: `best_ask(rising) >
-/// avg_filled(rising)` — trend tarafındaki VWAP anlık fiyatın altında kaldığı
-/// sürece momentum'a katılır. RİSK 5: `rising_side` `Option` döner; 0.5 ± ε
-/// dead zone'da pyramid skip.
+/// Doc §8: rising_side'a `best_ask + |delta|` GTC; trend gate sadece `rising == filled_side`'da.
 fn try_pyramid(filled_side: Outcome, ctx: &HarvestContext) -> Option<PlannedOrder> {
     if !ctx.cooldown_ok() {
         return None;

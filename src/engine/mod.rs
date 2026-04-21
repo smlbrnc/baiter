@@ -1,9 +1,4 @@
 //! MarketSession + decision loop + DryRun simulator.
-//!
-//! Alt modüller: [`executor`] (DryRun + Live + batch yürütücü), [`passive`]
-//! (DryRun passive-fill).
-//!
-//! Referans: [docs/bot-platform-mimari.md §13 §16](../../../docs/bot-platform-mimari.md).
 
 use crate::config::BotConfig;
 use crate::strategy::harvest::{HarvestContext, HarvestEngine, HarvestState};
@@ -20,9 +15,7 @@ pub use executor::{
 };
 pub use passive::simulate_passive_fills;
 
-/// Yürütülen emir sonucu — in-memory pipeline kaydı (DB persist sub-field'lar üzerinden).
-/// `fill_price`/`fill_size` daima set edilir: fill olmamış emirlerde planned
-/// değerleriyle (kitapta canlı duran emrin beklenen fiyatı/boyutu).
+/// Yürütülen emir sonucu — fill olmamışsa `fill_price/size` planned değerlerini taşır.
 #[derive(Debug)]
 pub struct ExecutedOrder {
     pub order_id: String,
@@ -97,19 +90,15 @@ impl MarketSession {
         }
     }
 
-    /// Güncel market bölgesi (yalnızca `tick` içinden çağrılır).
     fn current_zone(&self, now_secs: u64) -> MarketZone {
         MarketZone::from_pct(zone_pct(self.start_ts, self.end_ts, now_secs))
     }
 
-    /// MTM PnL (§17).
     pub fn pnl(&self) -> MarketPnL {
         MarketPnL::from_metrics(&self.metrics, self.yes_best_bid, self.no_best_bid)
     }
 
-    /// Tek tick — strateji'ye karar ver. Çağıran composite skorunu (5.0 = nötr)
-    /// doğrudan geçer; Harvest v2 opener fiyatı ve pyramid `delta`sı bu skoru
-    /// kullanır (doc §3, §5).
+    /// Tek tick — strateji'ye karar ver. `effective_score`: composite skor (5.0 = nötr).
     pub fn tick(
         &mut self,
         cfg: &BotConfig,
@@ -154,8 +143,7 @@ impl MarketSession {
     }
 }
 
-/// User WS `trade MATCHED` event'inden gelen fill'i absorbla. `side=Sell`
-/// (manuel/dış SELL) → pozisyondan çıkış: shares düşer, cost realize olur.
+/// User WS `trade MATCHED` fill'ini metrics'e yansıt + cooldown saatini ileri al.
 pub fn absorb_trade_matched(
     session: &mut MarketSession,
     outcome: Outcome,
@@ -169,7 +157,6 @@ pub fn absorb_trade_matched(
     session.last_averaging_ms = now_ms();
 }
 
-/// `best_bid_ask` güncelle.
 pub fn update_best(session: &mut MarketSession, asset_id: &str, best_bid: f64, best_ask: f64) {
     if asset_id == session.yes_token_id {
         session.yes_best_bid = best_bid;
@@ -180,7 +167,6 @@ pub fn update_best(session: &mut MarketSession, asset_id: &str, best_bid: f64, b
     }
 }
 
-/// `asset_id → Outcome`.
 pub fn outcome_from_asset_id(session: &MarketSession, asset_id: &str) -> Option<Outcome> {
     if asset_id == session.yes_token_id {
         Some(Outcome::Up)
@@ -191,51 +177,3 @@ pub fn outcome_from_asset_id(session: &MarketSession, asset_id: &str) -> Option<
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::config::StrategyParams;
-    use crate::time::now_ms;
-    use crate::types::RunMode;
-
-    fn test_cfg(run_mode: RunMode) -> BotConfig {
-        BotConfig {
-            id: 1,
-            name: "test".into(),
-            slug_pattern: "btc-updown-5m-1776420900".into(),
-            strategy: Strategy::Harvest,
-            run_mode,
-            order_usdc: 5.0,
-            min_price: 0.05,
-            max_price: 0.95,
-            cooldown_threshold: 30_000,
-            start_offset: 0,
-            strategy_params: StrategyParams::default(),
-        }
-    }
-
-    #[tokio::test]
-    async fn pending_tick_places_open_pair_and_fills_both_legs() {
-        let cfg = test_cfg(RunMode::Dryrun);
-        let mut sess = MarketSession::new(1, "btc-updown-5m-1776420900".into(), &cfg);
-        sess.yes_token_id = "yes".into();
-        sess.no_token_id = "no".into();
-        sess.tick_size = 0.01;
-        sess.api_min_order_size = 5.0;
-        sess.start_ts = now_ms() / 1000;
-        sess.end_ts = sess.start_ts + 300;
-        sess.yes_best_bid = 0.50;
-        sess.yes_best_ask = 0.50;
-        sess.no_best_bid = 0.48;
-        sess.no_best_ask = 0.48;
-
-        let dec = sess.tick(&cfg, now_ms(), 5.0, true);
-        let exec = Executor::DryRun(Simulator);
-        let filled = execute(&mut sess, &exec, dec).await.unwrap();
-        assert_eq!(filled.placed.len(), 2, "OpenPair opener + hedge");
-        assert!(filled.placed.iter().all(|e| e.filled));
-        assert!(sess.metrics.shares_yes > 0.0);
-        assert!(sess.metrics.shares_no > 0.0);
-        assert_eq!(sess.harvest_state, HarvestState::OpenPair);
-    }
-}

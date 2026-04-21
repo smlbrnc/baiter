@@ -6,11 +6,6 @@ use crate::types::Outcome;
 use super::state::{hedge_reason, open_reason, HarvestContext, HarvestState};
 
 /// `Pending` → `OpenPair`: sinyal yönüne göre opener + ProfitLock hedge (doc §5).
-///
-/// Hedge size **share-balanced**: hedge_size = open_size. Hedge tamamen dolarsa
-/// shares_yes = shares_no (covered pair). Hedge price formülü
-/// (`avg_threshold − open_price`) sayesinde resolution sonrası net PnL
-/// `pair_count × (1 − avg_sum) ≥ pair_count × (1 − avg_threshold)` garantilenir.
 pub fn pending(ctx: &HarvestContext) -> (HarvestState, Decision) {
     if !ctx.signal_ready {
         return (HarvestState::Pending, Decision::NoOp);
@@ -50,8 +45,7 @@ pub fn pending(ctx: &HarvestContext) -> (HarvestState, Decision) {
     (HarvestState::OpenPair, Decision::PlaceOrders(orders))
 }
 
-/// `OpenPair` monitor: shares durumuna göre `PositionOpen`/`PairComplete`/`OpenPair`
-/// transition (doc §4). Decision daima `NoOp` — akış karar anlarını tetiklemez.
+/// `OpenPair` monitor: shares durumuna göre transition (doc §4).
 pub fn monitor(ctx: &HarvestContext) -> (HarvestState, Decision) {
     let up_filled = ctx.shares(Outcome::Up) > 0.0;
     let down_filled = ctx.shares(Outcome::Down) > 0.0;

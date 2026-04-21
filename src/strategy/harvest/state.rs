@@ -1,6 +1,4 @@
 //! Harvest v2 — state makinesi, ctx ve helper'lar.
-//!
-//! Spesifikasyon: [docs/harvest-v2.md](../../../../docs/harvest-v2.md) §2, §4, §16.
 
 use serde::{Deserialize, Serialize};
 
@@ -9,35 +7,21 @@ use crate::strategy::OpenOrder;
 use crate::time::MarketZone;
 use crate::types::{Outcome, Side};
 
-/// OpenPair açılış emri — taker/neutral leg (doc §16).
 pub const OPEN_REASON_PREFIX: &str = "harvest_v2:open:";
-/// OpenPair hedge emri + re-price edilen tüm hedge'ler.
 pub const HEDGE_REASON_PREFIX: &str = "harvest_v2:hedge:";
-/// NormalTrade averaging-down GTC (doc §7).
 pub const AVG_DOWN_REASON_PREFIX: &str = "harvest_v2:avg_down:";
-/// AggTrade/FakTrade pyramiding GTC (doc §8).
 pub const PYRAMID_REASON_PREFIX: &str = "harvest_v2:pyramid:";
 
-/// Pyramid trend dead zone: `|yes_bid − 0.5| < RISING_EPS` ise yön belirsiz
-/// kabul edilir (pyramid skip). 5 dk BTC pazarında 0.50 sınırında oynaşmadan
-/// kaynaklanan yapısal eksi marj pyramid'lerini engeller.
+/// Pyramid trend dead zone: `|yes_bid − 0.5| < RISING_EPS` ise yön belirsiz.
 pub const RISING_EPS: f64 = 0.05;
 
-/// `passive.rs`/`executor.rs` cooldown (last_averaging_ms) tetikleyicisi.
-/// Avg-down ve pyramid fill'leri kapsadığı gibi opener fill'lerini de kapsar:
-/// session reset / FSM Pending'e dönüş senaryolarında peş peşe opener spam'ini
-/// (Bot 4 / btc-updown-5m-1776773400 regresyonu) engellemek için cooldown
-/// saati opener matched yanıtında da ileri alınır. Hedge fill'leri pencereyi
-/// açmaz çünkü hedge passive olarak market hareketi ile dolar.
+/// Cooldown tetikleyicisi — opener / avg-down / pyramid fill'lerini kapsar.
 pub fn is_averaging_like(reason: &str) -> bool {
     reason.starts_with(AVG_DOWN_REASON_PREFIX)
         || reason.starts_with(PYRAMID_REASON_PREFIX)
         || reason.starts_with(OPEN_REASON_PREFIX)
 }
 
-/// Reason string builder'ları — `Outcome` lowercase suffix ile prefix birleştirir.
-/// `open_pair.rs` / `position_open.rs` 4 call site bu helper'lara delege eder;
-/// inline `format!("{prefix}{outcome}")` tekrarı kaldırılır.
 pub fn open_reason(side: Outcome) -> String {
     format!("{OPEN_REASON_PREFIX}{}", side.as_lowercase())
 }
@@ -54,9 +38,7 @@ pub fn pyramid_reason(side: Outcome) -> String {
     format!("{PYRAMID_REASON_PREFIX}{}", side.as_lowercase())
 }
 
-/// Harvest v2 FSM (doc §4).
-///
-/// Persist edilmez — `MarketSession` yeniden oluşturulduğunda `Pending`'ten başlar.
+/// Harvest v2 FSM (doc §4). Persist edilmez — `Pending`'ten başlar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum HarvestState {
@@ -65,22 +47,14 @@ pub enum HarvestState {
     /// İki GTC (opener + hedge) kitapta.
     OpenPair,
     /// Tek leg MATCHED; hedge kitapta; avg-down/pyramid eligible.
-    /// Hedge drift veya missing-hedge senaryolarında bu state'te kalınır;
-    /// drift atomic `CancelAndPlace` ile yeniden fiyatlandırılır, missing
-    /// hedge `PlaceOrders([replacement])` ile re-place edilir.
     PositionOpen { filled_side: Outcome },
-    /// `avg_yes + avg_no <= avg_threshold` koşulu sağlandığında geçilir
-    /// (her iki tarafta da en az bir fill var). Bot HOLD modunda: yeni
-    /// avg-down/pyramid emir atılmaz, hedge re-place yapılmaz, kitaptaki
-    /// hedge'ler settlement'a kadar tutulur. `MarketResolved` veya
-    /// `StopTrade` override eder ve `Done`'a düşürür.
+    /// Covered pair + shares parity; HOLD modu, settlement'a kadar yeni emir yok.
     ProfitLocked { filled_side: Outcome },
     /// Pair kapandı; kalan açık emirler temizlenip `Done`'a geçilir.
     PairComplete,
     Done,
 }
 
-/// `HarvestEngine::decide` girdi ctx — ownership `MarketSession::tick` tarafından.
 #[derive(Debug, Clone)]
 pub struct HarvestContext<'a> {
     pub metrics: &'a StrategyMetrics,
@@ -92,23 +66,16 @@ pub struct HarvestContext<'a> {
     pub no_best_ask: f64,
     pub api_min_order_size: f64,
     pub order_usdc: f64,
-    /// Composite skor `[0, 10]`; 5.0 = nötr.
     pub effective_score: f64,
     pub zone: MarketZone,
     pub now_ms: u64,
-    /// Son avg-down/pyramid MATCHED zamanı — cooldown referansı.
     pub last_averaging_ms: u64,
     pub tick_size: f64,
     pub open_orders: &'a [OpenOrder],
-    /// ProfitLock / hedge eşiği (default 0.98).
     pub avg_threshold: f64,
     pub min_price: f64,
     pub max_price: f64,
     pub cooldown_threshold: u64,
-    /// Sinyal hazır mı? RTDS aktif iken `window_open_price.is_some()`,
-    /// RTDS pasif iken her zaman `true`. `Pending` opener gate'i (doc §3, §5):
-    /// pencere değişiminin ilk 0.5-1 sn'sinde sahte momentum sinyali ile
-    /// opener basılmasını engeller.
     pub signal_ready: bool,
 }
 
@@ -157,22 +124,11 @@ impl<'a> HarvestContext<'a> {
         }
     }
 
-    /// Cost-balanced hedge size formülünün temeli: tarafın notional maliyeti
-    /// (`avg_filled × shares`). Hedge `target_notional / hedge_price` ile
-    /// planlanır → hedge dolarsa `cost_up == cost_down` invariant'ı sağlanır.
     pub(super) fn cost_filled(&self, side: Outcome) -> f64 {
         self.avg_filled(side) * self.shares(side)
     }
 
-    /// Profit-lock tetik koşulu: her iki tarafta da en az bir BUY fill var
-    /// VE `avg_sum ≤ avg_threshold`. Cost eşitliği (`cost_up = cost_down`)
-    /// hedge size formülü ile invariant olarak sağlandığından burada
-    /// ek olarak kontrol edilmez. Shares dengesi gerekli DEĞİLDİR.
-    /// ProfitLock: covered pair (her iki tarafta da fill) ve shares parity
-    /// (`|shares_yes − shares_no| < api_min_order_size`). Share-balanced hedge
-    /// `target_price = avg_threshold − avg_filled(majority)` ile planlandığı
-    /// için parity sağlandığında `avg_sum ≤ avg_threshold` otomatik garanti
-    /// edilir; resolution PnL ≥ `pair_count × (1 − avg_threshold)`.
+    /// ProfitLock: covered pair + shares parity (`|shares_yes − shares_no| < api_min`).
     pub(super) fn profit_locked(&self) -> bool {
         let m = self.metrics;
         if m.shares_yes <= 0.0 || m.shares_no <= 0.0 {
@@ -181,9 +137,7 @@ impl<'a> HarvestContext<'a> {
         (m.shares_yes - m.shares_no).abs() < self.api_min_order_size
     }
 
-    /// Doc §8: pyramiding hedef tarafı. `yes_bid` 0.5 ± `RISING_EPS` dead zone'da
-    /// ise yön belirsiz → `None` (pyramid skip). Düz BTC piyasalarında 0.50'de
-    /// oynaşma sebebiyle yapısal eksi marj pyramid'lerini engeller.
+    /// Doc §8: pyramiding hedef tarafı; 0.5 ± `RISING_EPS` dead zone'da `None`.
     pub(super) fn rising_side(&self) -> Option<Outcome> {
         let bid = self.yes_best_bid;
         if bid > 0.5 + RISING_EPS {
@@ -195,9 +149,7 @@ impl<'a> HarvestContext<'a> {
         }
     }
 
-    /// Pozisyon ağırlığına göre hedge tarafı.
-    /// `None` → shares neredeyse dengeli (`api_min_order_size` altında imbalance);
-    /// hedge planlanmaz, pair complete'a yakın kabul edilir.
+    /// Pozisyon ağırlığına göre hedge tarafı; dust imbalance'ta `None`.
     pub(super) fn majority_side(&self) -> Option<Outcome> {
         let diff = self.metrics.shares_yes - self.metrics.shares_no;
         if diff.abs() < self.api_min_order_size {
@@ -224,12 +176,7 @@ impl<'a> HarvestContext<'a> {
         price >= self.min_price && price <= self.max_price
     }
 
-    /// Hedge tarafına ait kitapta açık BUY GTC. Hem `harvest_v2:hedge:*`
-    /// (re-price edilmiş hedge) hem `harvest_v2:open:*` (OpenPair'de hedge
-    /// leg taker fill alıp opener live kalan senaryoda) reason prefix'leri
-    /// kapsanır — bot 6 / `btc-updown-5m-1776776400` regresyonu: opener
-    /// kitapta dururken `replace_missing_hedge` ikinci hedge basıp aynı
-    /// fiyattan çift fill almıştı.
+    /// Hedge tarafına ait kitapta açık BUY GTC — hem `hedge:*` hem `open:*` reason'lar.
     pub(super) fn hedge_order(&self, hedge_side: Outcome) -> Option<&OpenOrder> {
         self.open_orders.iter().find(|o| {
             o.outcome == hedge_side
