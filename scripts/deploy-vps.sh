@@ -9,15 +9,16 @@
 #   chmod +x scripts/deploy-vps.sh
 #   ./scripts/deploy-vps.sh
 #
-# Örnek (domain ile SSE URL):
-#   BAITER_PUBLIC_URL=https://panel.example.com ./scripts/deploy-vps.sh
+# Üretim domain: hudme.com (SSE ve istemci yolu için HTTPS önerilir; sertifika:
+# scripts/setup-ssl-hudme.sh).
+# Geçici olarak sadece IP: BAITER_PUBLIC_URL=http://52.18.245.113 ./scripts/deploy-vps.sh
 #
 set -euo pipefail
 
 APP_DIR="${APP_DIR:-/opt/baiter-pro}"
 GIT_REMOTE="${GIT_REMOTE:-origin}"
 GIT_BRANCH="${GIT_BRANCH:-main}"
-BAITER_PUBLIC_URL="${BAITER_PUBLIC_URL:-http://52.18.245.113}"
+BAITER_PUBLIC_URL="${BAITER_PUBLIC_URL:-https://hudme.com}"
 
 cd "$APP_DIR"
 
@@ -36,6 +37,11 @@ export BAITER_BACKEND_URL=http://127.0.0.1:3000
 export NEXT_PUBLIC_BAITER_SSE_URL="${BAITER_PUBLIC_URL}/api/events"
 npm run build
 
+if [[ -f "$APP_DIR/deploy/nginx-site.conf" ]]; then
+  sudo install -m 644 "$APP_DIR/deploy/nginx-site.conf" /etc/nginx/sites-available/baiter-pro
+  sudo ln -sf /etc/nginx/sites-available/baiter-pro /etc/nginx/sites-enabled/baiter-pro
+fi
+
 sudo systemctl restart baiter-supervisor baiter-frontend
 sudo nginx -t
 sudo systemctl reload nginx
@@ -43,4 +49,4 @@ sudo systemctl reload nginx
 echo "--- local health ---"
 curl -sS -m 5 "http://127.0.0.1/api/health" || true
 echo
-echo "Deploy finished. If the site is still unreachable from the internet, open TCP 80 (and 443) in the EC2 security group."
+echo "Deploy finished. EC2 security group: TCP 80 and 443 open. DNS: hudme.com (and www) A record → this host. TLS: run scripts/setup-ssl-hudme.sh when DNS is ready."
