@@ -242,15 +242,28 @@ async fn harvest_v2_avg_down_match_triggers_hedge_reprice() {
     });
 
     let dec = sess.tick(&cfg, now_ms(), 5.0, true);
+    // Atomic re-price: state PositionOpen'da kalır (HedgeUpdating ara state'i
+    // atlanır), Decision::CancelAndPlace ile aynı tick'te eski hedge cancel
+    // + yeni hedge `0.98 − 0.475 = 0.505` fiyatıyla place edilir.
     assert_eq!(
         sess.harvest_state,
-        HarvestState::HedgeUpdating {
+        HarvestState::PositionOpen {
             filled_side: Outcome::Up
         }
     );
     match dec {
-        Decision::CancelOrders(ids) => assert_eq!(ids, vec!["hedge-old".to_string()]),
-        other => panic!("expected CancelOrders, got {:?}", other),
+        Decision::CancelAndPlace { cancels, places } => {
+            assert_eq!(cancels, vec!["hedge-old".to_string()]);
+            assert_eq!(places.len(), 1);
+            assert_eq!(places[0].outcome, Outcome::Down);
+            // 0.98 - 0.475 = 0.505, tick=0.01 → snap'e göre 0.50 veya 0.51.
+            assert!(
+                (places[0].price - 0.505).abs() <= 0.01,
+                "hedge price {} should be ~0.50/0.51",
+                places[0].price
+            );
+        }
+        other => panic!("expected CancelAndPlace, got {:?}", other),
     }
 }
 
@@ -304,6 +317,73 @@ async fn harvest_v2_pending_blocks_opener_when_signal_not_ready() {
     let dec = sess.tick(&cfg, now_ms() + 1, 5.0, true);
     assert_eq!(sess.harvest_state, HarvestState::OpenPair);
     assert!(matches!(dec, Decision::PlaceOrders(_)));
+}
+
+/// Bot 4 (`btc-updown-5m-1776773400`) regresyonu — REST `status=matched`
+/// yanıtının lokal `metrics`'i tek noktadan ingest etmesi ve aynı fill için
+/// sonradan gelen WS `trade MATCHED` event'inin idempotency setinde ID'yi
+/// bulup atlaması. `LiveExecutor::place`'in yaptığı atomic adımları
+/// `MarketSession`'ın public helper'larıyla simüle eder; çift sayım olmaz.
+#[tokio::test]
+async fn live_matched_response_single_source_of_truth_for_metrics() {
+    use baiter_pro::polymarket::polymarket_taker_fee;
+    use baiter_pro::time::now_ms;
+
+    let cfg = dryrun_cfg();
+    let mut sess = session(&cfg);
+    sess.fee_rate_bps = 30;
+
+    // 1) REST `POST /order` `status=matched` simülasyonu — `LiveExecutor::place`
+    //    tam olarak bunu yapar: ingest_fill → note_recent_fill → cooldown set.
+    let order_id = "0xMATCHED_REST".to_string();
+    let price = 0.40;
+    let size = 10.0;
+    let fee = polymarket_taker_fee(price, size, sess.fee_rate_bps);
+    sess.metrics
+        .ingest_fill(Outcome::Up, Side::Buy, price, size, fee);
+    sess.note_recent_fill(order_id.clone());
+    sess.last_averaging_ms = now_ms();
+
+    let shares_after_rest = sess.metrics.shares_yes;
+    assert!((shares_after_rest - size).abs() < 1e-9);
+
+    // 2) Aynı fill için User WS `trade MATCHED` event'i geldi → idempotency
+    //    seti ID'yi tüketir, fill atlanır → metrics çift sayılmaz.
+    assert!(
+        sess.consume_recent_fill(&order_id),
+        "ID set'te bulunmalı (REST'te ingest edildi)"
+    );
+    assert!(
+        !sess.consume_recent_fill(&order_id),
+        "ID tek tüketilir; ikinci consume false"
+    );
+    assert!(
+        (sess.metrics.shares_yes - shares_after_rest).abs() < 1e-9,
+        "WS event metrics'i ikinci kez ingest etmemeli"
+    );
+}
+
+/// Bot 4 regresyonu — opener fill `is_averaging_like` kapsamında olduğu için
+/// `place_batch` `last_averaging_ms`'i ileri alır. Bu, session reset / FSM
+/// Pending'e dönüş senaryosunda peş peşe avg-down/pyramid spam'ini engeller.
+#[tokio::test]
+async fn opener_fill_sets_averaging_cooldown_dryrun() {
+    use baiter_pro::time::now_ms;
+
+    let cfg = dryrun_cfg();
+    let mut sess = session(&cfg);
+    let exec = Executor::DryRun(Simulator);
+
+    let before = sess.last_averaging_ms;
+    let dec = sess.tick(&cfg, now_ms(), 5.0, true);
+    let _ = execute(&mut sess, &exec, dec).await.unwrap();
+
+    assert!(
+        sess.last_averaging_ms > before,
+        "opener fill sonrası last_averaging_ms ileri alınmalı (last={}, before={})",
+        sess.last_averaging_ms,
+        before
+    );
 }
 
 #[tokio::test]

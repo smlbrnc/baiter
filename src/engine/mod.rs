@@ -5,6 +5,8 @@
 //!
 //! Referans: [docs/bot-platform-mimari.md §13 §16](../../../docs/bot-platform-mimari.md).
 
+use std::collections::HashSet;
+
 use crate::config::BotConfig;
 use crate::strategy::harvest::{HarvestContext, HarvestEngine, HarvestState};
 use crate::strategy::metrics::{MarketPnL, StrategyMetrics};
@@ -61,6 +63,14 @@ pub struct MarketSession {
 
     pub run_mode: RunMode,
     pub open_orders: Vec<OpenOrder>,
+    /// Live `POST /order` `status=matched` yanıtında lokal `metrics`'i tek
+    /// noktadan ingest edip ID'yi buraya yazıyoruz; aynı fill için sonradan
+    /// gelen User WS `trade MATCHED` event'i `bot/event.rs::extract_our_fills`
+    /// içinde ID'yi bu set'te bulup atlar (REST + WS çift sayım koruması,
+    /// Bot 4 / btc-updown-5m-1776773400 spam regresyonu). WS event geldiği
+    /// anda set'ten çıkarılır → kendi kendini temizler. WS hiç gelmeyen edge
+    /// case'te `note_recent_fill` üst sınır aşılırsa set sıfırlanır.
+    pub recently_filled_order_ids: HashSet<String>,
 
     pub min_price: f64,
     pub max_price: f64,
@@ -98,6 +108,7 @@ impl MarketSession {
             no_best_ask: 0.0,
             run_mode: cfg.run_mode,
             open_orders: Vec::new(),
+            recently_filled_order_ids: HashSet::new(),
             min_price: cfg.min_price,
             max_price: cfg.max_price,
             cooldown_threshold: cfg.cooldown_threshold,
@@ -114,6 +125,22 @@ impl MarketSession {
     /// MTM PnL (§17).
     pub fn pnl(&self) -> MarketPnL {
         MarketPnL::from_metrics(&self.metrics, self.yes_best_bid, self.no_best_bid)
+    }
+
+    /// Live REST `status=matched` ID'sini idempotency setine yaz. Set 1024
+    /// üstüne çıkarsa (WS hiç gelmeyen patolojik durum) sıfırla — yarış
+    /// penceresi dışındaki ID'leri tutmanın anlamı yok.
+    pub fn note_recent_fill(&mut self, order_id: String) {
+        if self.recently_filled_order_ids.len() > 1024 {
+            self.recently_filled_order_ids.clear();
+        }
+        self.recently_filled_order_ids.insert(order_id);
+    }
+
+    /// WS trade event'inden gelen ID daha önce REST'te ingest edildiyse
+    /// `true` döndürür ve set'ten çıkarır (yarış penceresi kapandı).
+    pub fn consume_recent_fill(&mut self, order_id: &str) -> bool {
+        self.recently_filled_order_ids.remove(order_id)
     }
 
     /// Tek tick — strateji'ye karar ver. Çağıran composite skorunu (5.0 = nötr)

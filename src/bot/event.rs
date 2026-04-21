@@ -296,16 +296,23 @@ fn compute_fee(f: &OurFill, fee_rate_bps: Option<f64>) -> f64 {
 ///   (her biri kendi asset/side/price/matched_amount'ı taşır; NEG_RISK'te asset
 ///   top-level'dan farklı outcome olabilir).
 /// - **Taker**: bizim id maker_orders'ta yok → top-level (asset_id, side, price,
-///   size) bizim view'ımız.
+///   size) bizim view'ımız; bizim id ise `taker_order_id` field'ında olur.
+///
+/// REST `POST /order` `status=matched` yanıtında `LiveExecutor::place` lokal
+/// `metrics`'i tek noktadan ingest edip ID'yi `recently_filled_order_ids`
+/// setine yazar. Aynı fill için sonradan gelen WS event'inde ID set'te
+/// bulunursa (REST + WS yarış penceresi açık) çift sayımı önlemek için fill
+/// atlanır ve set'ten çıkarılır.
 fn extract_our_fills(
-    sess: &MarketSession,
+    sess: &mut MarketSession,
     raw: &serde_json::Value,
     top_asset_id: &str,
     top_side: Option<&str>,
     top_price: f64,
     top_size: f64,
 ) -> Vec<OurFill> {
-    let our_ids: HashSet<&str> = sess.open_orders.iter().map(|o| o.id.as_str()).collect();
+    let our_ids: HashSet<String> =
+        sess.open_orders.iter().map(|o| o.id.clone()).collect();
 
     let maker: Vec<OurFill> = raw
         .get("maker_orders")
@@ -315,6 +322,9 @@ fn extract_our_fills(
                 .filter_map(|m| {
                     let id = m.get("order_id")?.as_str()?;
                     if !our_ids.contains(id) {
+                        return None;
+                    }
+                    if sess.consume_recent_fill(id) {
                         return None;
                     }
                     let asset = m.get("asset_id")?.as_str()?;
@@ -336,6 +346,12 @@ fn extract_our_fills(
         .unwrap_or_default();
     if !maker.is_empty() {
         return maker;
+    }
+
+    if let Some(taker_id) = raw.get("taker_order_id").and_then(|v| v.as_str()) {
+        if sess.consume_recent_fill(taker_id) {
+            return Vec::new();
+        }
     }
 
     let Some(outcome) = outcome_from_asset_id(sess, top_asset_id) else {
@@ -611,7 +627,7 @@ mod tests {
             ]
         });
 
-        let fills = extract_our_fills(&sess, &raw, "DOWN_TOKEN", Some("SELL"), 0.67, 97.0);
+        let fills = extract_our_fills(&mut sess, &raw, "DOWN_TOKEN", Some("SELL"), 0.67, 97.0);
         assert_eq!(fills.len(), 1);
         let f = &fills[0];
         assert_eq!(f.outcome, Outcome::Up);
@@ -634,7 +650,7 @@ mod tests {
             ]
         });
 
-        let fills = extract_our_fills(&sess, &raw, "UP_TOKEN", Some("BUY"), 0.57, 9.0);
+        let fills = extract_our_fills(&mut sess, &raw, "UP_TOKEN", Some("BUY"), 0.57, 9.0);
         assert_eq!(fills.len(), 1);
         let f = &fills[0];
         assert_eq!(f.outcome, Outcome::Up);
@@ -648,9 +664,9 @@ mod tests {
     /// maker_orders yok ve top-level asset bilinmiyor → boş, panik atmamalı.
     #[test]
     fn extract_our_fills_unknown_asset_returns_empty() {
-        let sess = make_session();
+        let mut sess = make_session();
         let raw = json!({});
-        let fills = extract_our_fills(&sess, &raw, "UNKNOWN_ASSET", Some("BUY"), 0.5, 1.0);
+        let fills = extract_our_fills(&mut sess, &raw, "UNKNOWN_ASSET", Some("BUY"), 0.5, 1.0);
         assert!(fills.is_empty());
     }
 
@@ -672,7 +688,7 @@ mod tests {
             ]
         });
 
-        let fills = extract_our_fills(&sess, &raw, "UP_TOKEN", Some("SELL"), 0.6, 10.0);
+        let fills = extract_our_fills(&mut sess, &raw, "UP_TOKEN", Some("SELL"), 0.6, 10.0);
         assert_eq!(fills.len(), 2);
         assert!(fills.iter().any(|f| f.outcome == Outcome::Up));
         assert!(fills.iter().any(|f| f.outcome == Outcome::Down));
@@ -691,7 +707,7 @@ mod tests {
             ]
         });
 
-        let fills = extract_our_fills(&sess, &raw, "DOWN_TOKEN", Some("BUY"), 0.42, 50.50);
+        let fills = extract_our_fills(&mut sess, &raw, "DOWN_TOKEN", Some("BUY"), 0.42, 50.50);
         assert_eq!(fills.len(), 1);
         let f = &fills[0];
         assert_eq!(f.outcome, Outcome::Up);

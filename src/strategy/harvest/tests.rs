@@ -347,6 +347,8 @@ fn position_open_agg_trade_pyramid_opposite_skips_trend_gate() {
 fn position_open_hedge_drift_triggers_cancel() {
     // avg_yes = 0.45 (iki fill: 0.55 + 0.35). Hedge kitapta @ 0.48 (eski).
     // target = 0.98 − 0.45 = 0.53, |0.48 − 0.53| = 0.05 > tick/2 → drift.
+    // Yeni davranış: cancel + re-place atomic `CancelAndPlace`; HedgeUpdating
+    // ara state'i atlanır, state PositionOpen'da kalır.
     let mut metrics = StrategyMetrics::default();
     metrics.ingest_fill(Outcome::Up, Side::Buy, 0.55, 10.0, 0.0);
     metrics.ingest_fill(Outcome::Up, Side::Buy, 0.35, 10.0, 0.0);
@@ -367,92 +369,30 @@ fn position_open_hedge_drift_triggers_cancel() {
     );
     assert_eq!(
         state,
-        HarvestState::HedgeUpdating {
-            filled_side: Outcome::Up
-        }
-    );
-    match dec {
-        Decision::CancelOrders(ids) => assert_eq!(ids, vec!["hedge1".to_string()]),
-        other => panic!("expected CancelOrders, got {:?}", other),
-    }
-}
-
-#[test]
-fn hedge_updating_cancel_ok_reprices() {
-    // Hedge gitti (open_orders=[]), shares_yes=20, shares_no=0 → imbalance=20 > api_min.
-    // target = 0.98 − avg_yes.
-    let mut metrics = StrategyMetrics::default();
-    metrics.ingest_fill(Outcome::Up, Side::Buy, 0.50, 20.0, 0.0);
-    let opens: Vec<OpenOrder> = vec![];
-    let ctx = default_ctx(&metrics, &opens);
-    let (state, dec) = decide(
-        HarvestState::HedgeUpdating {
-            filled_side: Outcome::Up,
-        },
-        &ctx,
-    );
-    assert_eq!(
-        state,
         HarvestState::PositionOpen {
             filled_side: Outcome::Up
         }
     );
-    let orders = match dec {
-        Decision::PlaceOrders(o) => o,
-        other => panic!("expected PlaceOrders, got {:?}", other),
-    };
-    assert_eq!(orders.len(), 1);
-    assert_eq!(orders[0].outcome, Outcome::Down);
-    assert!(orders[0].reason.starts_with(HEDGE_REASON_PREFIX));
-    assert!((orders[0].price - 0.48).abs() < 1e-9);
-    assert!((orders[0].size - 20.0).abs() < 1e-9);
-}
-
-#[test]
-fn hedge_updating_cancel_race_to_pair_complete() {
-    // Hedge fill oldu (shares_no > 0), imbalance ≈ 0 < api_min → PairComplete.
-    let mut metrics = StrategyMetrics::default();
-    metrics.ingest_fill(Outcome::Up, Side::Buy, 0.50, 10.0, 0.0);
-    metrics.ingest_fill(Outcome::Down, Side::Buy, 0.48, 10.0, 0.0);
-    let opens: Vec<OpenOrder> = vec![];
-    let ctx = default_ctx(&metrics, &opens);
-    let (state, dec) = decide(
-        HarvestState::HedgeUpdating {
-            filled_side: Outcome::Up,
-        },
-        &ctx,
-    );
-    assert_eq!(state, HarvestState::PairComplete);
-    assert!(matches!(dec, Decision::NoOp));
-}
-
-#[test]
-fn hedge_updating_cancel_pending_returns_noop() {
-    // Hedge hâlâ kitapta → cancel response bekleniyor → NoOp.
-    let mut metrics = StrategyMetrics::default();
-    metrics.ingest_fill(Outcome::Up, Side::Buy, 0.50, 10.0, 0.0);
-    let opens = vec![mk_order(
-        "hedge",
-        Outcome::Down,
-        "harvest_v2:hedge:down",
-        0.48,
-        10.0,
-        0,
-    )];
-    let ctx = default_ctx(&metrics, &opens);
-    let (state, dec) = decide(
-        HarvestState::HedgeUpdating {
-            filled_side: Outcome::Up,
-        },
-        &ctx,
-    );
-    assert_eq!(
-        state,
-        HarvestState::HedgeUpdating {
-            filled_side: Outcome::Up
+    match dec {
+        Decision::CancelAndPlace { cancels, places } => {
+            assert_eq!(cancels, vec!["hedge1".to_string()]);
+            assert_eq!(places.len(), 1, "tek hedge re-place beklenir");
+            let h = &places[0];
+            assert_eq!(h.outcome, Outcome::Down);
+            assert!(
+                (h.price - 0.53).abs() < 1e-9,
+                "hedge target = 0.98 − 0.45 = 0.53, got {}",
+                h.price
+            );
+            assert!(
+                (h.size - metrics.shares_yes).abs() < 1e-9,
+                "hedge size = imbalance ({}), got {}",
+                metrics.shares_yes,
+                h.size
+            );
         }
-    );
-    assert!(matches!(dec, Decision::NoOp));
+        other => panic!("expected CancelAndPlace, got {:?}", other),
+    }
 }
 
 #[test]
@@ -602,10 +542,11 @@ fn position_open_hedge_passive_fill_completes_pair() {
 /// Bot 2 (`btc-updown-5m-1776766500`) regresyonu: hedge cancel race / API
 /// hata sonrası `open_orders`'tan düştü ve `shares(opposite)==0` kaldı. Eski
 /// kod `position_open` içinde sessiz NoOp dönüyordu → bot avg-down yığarken
-/// profit-lock'u kaçırıyordu. Yeni davranış: `hedge_update::handle`'a delege
-/// → DOWN @ (0.98 − avg_yes) re-place edilir.
+/// profit-lock'u kaçırıyordu. Yeni davranış: `position_open::handle` aynı
+/// tick'te `Decision::PlaceOrders([replacement])` döndürür (cancel edilecek
+/// hedge yok → `CancelAndPlace` değil).
 #[test]
-fn position_open_missing_hedge_replaces_via_hedge_update() {
+fn position_open_missing_hedge_replaces() {
     let mut metrics = StrategyMetrics::default();
     metrics.ingest_fill(Outcome::Up, Side::Buy, 0.45, 11.0, 0.0);
     metrics.ingest_fill(Outcome::Up, Side::Buy, 0.30, 17.0, 0.0);
@@ -627,7 +568,7 @@ fn position_open_missing_hedge_replaces_via_hedge_update() {
     );
     let orders = match dec {
         Decision::PlaceOrders(o) => o,
-        other => panic!("expected hedge re-place, got {:?}", other),
+        other => panic!("expected PlaceOrders, got {:?}", other),
     };
     assert_eq!(orders.len(), 1, "tek hedge order beklenir");
     let h = &orders[0];
@@ -645,5 +586,62 @@ fn position_open_missing_hedge_replaces_via_hedge_update() {
         "hedge size = imbalance ({}) , got {}",
         metrics.shares_yes,
         h.size
+    );
+}
+
+/// Drift tespit edilse bile yeni hedge planlanamıyorsa (target band dışı /
+/// imbalance dust) eski hedge cancel edilmez — ProfitLock garantisini
+/// bozmamak için cancel-only yapılmaz; bir sonraki tick'te avg değişince
+/// yeniden değerlendirilir. (Strategy refactor: cancel-only fallback kaldırıldı.)
+#[test]
+fn position_open_drift_with_unbuildable_hedge_keeps_old_hedge() {
+    // Çok düşük avg_yes (≈0.10) → target = 0.98 − 0.10 = 0.88. max_price'ı
+    // 0.80'e indirip target'ı band dışına it; drift olsa da `build_hedge=None`
+    // → `Decision::NoOp`, hedge open_orders'ta kalır.
+    let mut metrics = StrategyMetrics::default();
+    metrics.ingest_fill(Outcome::Up, Side::Buy, 0.10, 50.0, 0.0);
+    let opens = vec![mk_order(
+        "hedge_old",
+        Outcome::Down,
+        "harvest_v2:hedge:down",
+        0.50,
+        50.0,
+        0,
+    )];
+    let mut ctx = default_ctx(&metrics, &opens);
+    ctx.max_price = 0.80;
+
+    let (state, dec) = decide(
+        HarvestState::PositionOpen {
+            filled_side: Outcome::Up,
+        },
+        &ctx,
+    );
+    assert_eq!(
+        state,
+        HarvestState::PositionOpen {
+            filled_side: Outcome::Up
+        }
+    );
+    assert!(
+        matches!(dec, Decision::NoOp),
+        "band dışı hedge için NoOp beklenir, got {:?}",
+        dec
+    );
+}
+
+/// Bot 4 (`btc-updown-5m-1776773400`) regresyonu: opener fill'leri de
+/// `last_averaging_ms` cooldown'unu tetiklemeli — session reset / Pending'e
+/// dönüş senaryolarında peş peşe opener spam'ini engellemek için.
+#[test]
+fn is_averaging_like_includes_opener() {
+    use crate::strategy::harvest::is_averaging_like;
+    assert!(is_averaging_like("harvest_v2:open:up"));
+    assert!(is_averaging_like("harvest_v2:open:down"));
+    assert!(is_averaging_like("harvest_v2:avg_down:up"));
+    assert!(is_averaging_like("harvest_v2:pyramid:down"));
+    assert!(
+        !is_averaging_like("harvest_v2:hedge:up"),
+        "hedge fill'leri averaging penceresini açmaz"
     );
 }

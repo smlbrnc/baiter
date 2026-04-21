@@ -25,6 +25,15 @@ impl Outcome {
             Self::Down => "DOWN",
         }
     }
+
+    /// Lowercase form ("up" / "down") — Harvest reason etiketleri için
+    /// (`harvest_v2:open:up` vb.).
+    pub fn as_lowercase(self) -> &'static str {
+        match self {
+            Self::Up => "up",
+            Self::Down => "down",
+        }
+    }
 }
 
 /// CLOB emir yönü — REST `side` alanı.

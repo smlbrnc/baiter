@@ -13,7 +13,7 @@ use crate::ipc;
 use crate::polymarket::order::{
     build_order, expiration_for, order_to_json, sign_order, BuildArgs,
 };
-use crate::polymarket::{CancelResponse, ClobClient};
+use crate::polymarket::{polymarket_taker_fee, CancelResponse, ClobClient};
 use crate::strategy::harvest::is_averaging_like;
 use crate::strategy::{Decision, OpenOrder, PlannedOrder};
 use crate::time::now_ms;
@@ -139,12 +139,35 @@ impl LiveExecutor {
                 resp.status, resp.error_msg
             )));
         }
-        // `status=matched` REST yanıtı bilgi amaçlı (`filled` flag → persist
-        // post_status). Pozisyon math'ini User WS `trade MATCHED` event'i tek
-        // kaynak olarak yazar (`absorb_trade_matched`); REST'te `ingest_fill`
-        // çağırmak çift sayıma yol açar. Bkz. plan: fix-trade-fill-accounting.
+        // `status` enumu (Polymarket CLOB `POST /order` sözleşmesi):
+        //   "matched"   → karşı taraf at execution time'da var, fill REST
+        //                  yanıtında garantili → in-memory ingest tek kaynak
+        //                  (Bot 4 / btc-updown-5m-1776773400 spam fix).
+        //   "live"      → kitaba girdi, passive bekliyor → `open_orders` push.
+        //   "delayed"   → CLOB asenkron eşleştirme kuyruğunda; sonuç User WS
+        //                  `trade MATCHED` ile gelir → `open_orders` push;
+        //                  WS event'inde idempotency kontrolü gerek değil.
+        //   "unmatched" → reject (success=false ile zaten yukarıda yakalandı).
+        // Bkz. <https://docs.polymarket.com/developers/CLOB/orders/create-an-order>.
         let filled = resp.status.eq_ignore_ascii_case("matched");
-        if !filled {
+        if filled {
+            // Atomic in-memory update: REST yanıtı geldiği anda metrics
+            // güncellenir, opener cooldown'u tetiklenir, ID idempotency
+            // setine yazılır → sonradan gelen User WS `trade MATCHED` event'i
+            // aynı fill'i ikinci kez `ingest_fill` etmez.
+            let fee = polymarket_taker_fee(planned.price, planned.size, session.fee_rate_bps);
+            session.metrics.ingest_fill(
+                planned.outcome,
+                planned.side,
+                planned.price,
+                planned.size,
+                fee,
+            );
+            session.note_recent_fill(resp.order_id.clone());
+            if is_averaging_like(&planned.reason) {
+                session.last_averaging_ms = now_ms();
+            }
+        } else {
             session.open_orders.push(OpenOrder {
                 id: resp.order_id.clone(),
                 outcome: planned.outcome,
@@ -332,6 +355,18 @@ pub async fn execute<S: OrderSink + ?Sized>(
         Decision::NoOp => {}
         Decision::PlaceOrders(orders) => place_batch(session, exec, orders, &mut out).await?,
         Decision::CancelOrders(ids) => cancel_batch(session, exec, &ids, &mut out).await?,
+        Decision::CancelAndPlace { cancels, places } => {
+            // Sıra önemli: önce cancel (eski hedge book'tan düşsün), sonra
+            // place (yeni hedge aynı tick'te kitapta olsun). REST'ler atomic
+            // değil ama tek bir tick içinde sıralı yürütülür → fill geldikten
+            // sonra hedge fiyatı update'i için ek tick gecikmesi yok.
+            if !cancels.is_empty() {
+                cancel_batch(session, exec, &cancels, &mut out).await?;
+            }
+            if !places.is_empty() {
+                place_batch(session, exec, places, &mut out).await?;
+            }
+        }
     }
     Ok(out)
 }

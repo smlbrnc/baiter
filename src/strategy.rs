@@ -46,13 +46,20 @@ pub trait DecisionEngine {
 }
 
 /// `decide()` döndüğü aksiyon — engine tarafından yürütülür.
-/// Harvest FSM yalnızca üç varyantı üretir; `Batch`/`Complete` gibi v1
-/// kalıntıları kaldırıldı (doc §11).
+///
+/// `CancelAndPlace` hedge re-pricing gibi senaryolarda eski emrin cancel'ı
+/// + yeni emrin placement'ı tek tick'te atomic olarak yapılsın diye ayrı
+/// bir varyanttır. Executor önce cancel REST, sonra place REST sırasını
+/// uygular; ara `HedgeUpdating` tick'i beklenmez (doc §9 atomic re-price).
 #[derive(Debug, Clone)]
 pub enum Decision {
     NoOp,
     PlaceOrders(Vec<PlannedOrder>),
     CancelOrders(Vec<String>),
+    CancelAndPlace {
+        cancels: Vec<String>,
+        places: Vec<PlannedOrder>,
+    },
 }
 
 /// Strateji motorunun ürettiği emir planı; Live (CLOB REST) ve DryRun (Simulator)

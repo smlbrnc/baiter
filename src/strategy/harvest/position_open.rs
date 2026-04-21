@@ -1,13 +1,17 @@
 //! `PositionOpen` — NormalTrade averaging-down + AggTrade/FakTrade pyramiding +
-//! hedge drift tespiti (doc §7, §8, §9, §10, §11).
+//! hedge drift / missing-hedge tespiti (doc §7, §8, §9, §10, §11).
+//!
+//! Hedge drift atomic `Decision::CancelAndPlace` ile aynı tick'te re-price
+//! edilir; missing hedge `Decision::PlaceOrders([replacement])` ile yeniden
+//! konur. Ayrı `HedgeUpdating` ara state'i yoktur.
 
 use crate::strategy::{order_size, planned_buy_gtc, Decision, PlannedOrder};
 use crate::time::MarketZone;
 use crate::types::Outcome;
 
-use super::hedge_update;
 use super::state::{
-    HarvestContext, HarvestState, AVG_DOWN_REASON_PREFIX, PYRAMID_REASON_PREFIX,
+    HarvestContext, HarvestState, AVG_DOWN_REASON_PREFIX, HEDGE_REASON_PREFIX,
+    PYRAMID_REASON_PREFIX,
 };
 
 pub fn handle(filled_side: Outcome, ctx: &HarvestContext) -> (HarvestState, Decision) {
@@ -25,19 +29,28 @@ pub fn handle(filled_side: Outcome, ctx: &HarvestContext) -> (HarvestState, Deci
     }
 
     // §9: hedge yoksa (cancel race / API hata / manuel) → re-place.
-    // `hedge_update::handle` aynı imbalance + band kontrolünü yapar; hedge
-    // yoksa doğrudan PlaceOrders üretir, böylece avg-down yığıldıkça
-    // profit-lock kaçmaz (Bot 2 / btc-updown-5m-1776766500 regresyonu).
+    // Bot 2 / btc-updown-5m-1776766500 regresyonu: avg-down yığıldıkça
+    // profit-lock kaçmasın diye missing hedge aynı tick'te yeniden konur.
     if ctx.hedge_order().is_none() {
-        return hedge_update::handle(filled_side, ctx);
+        return replace_missing_hedge(filled_side, ctx);
     }
 
-    // §9 adım 2-4: hedge drift → HedgeUpdating.
+    // §9 adım 2-4: hedge drift → atomic cancel + re-place. Aynı tick içinde
+    // eski hedge düşer, yeni hedge `0.98 − avg_filled` hedef fiyatıyla kitaba
+    // girer. Yeni hedge planlanamıyorsa (target band dışı / imbalance dust)
+    // eski hedge bırakılır — ProfitLock garantisini bozmamak için cancel-only
+    // yapılmaz; bir sonraki tick'te avg değişince tekrar değerlendirilir.
     if let Some(cancel) = hedge_drift_cancel(filled_side, ctx) {
-        return (
-            HarvestState::HedgeUpdating { filled_side },
-            Decision::CancelOrders(vec![cancel]),
-        );
+        return match build_hedge(filled_side, ctx) {
+            Some(replacement) => (
+                same,
+                Decision::CancelAndPlace {
+                    cancels: vec![cancel],
+                    places: vec![replacement],
+                },
+            ),
+            None => (same, Decision::NoOp),
+        };
     }
 
     match ctx.zone {
@@ -54,6 +67,46 @@ pub fn handle(filled_side: Outcome, ctx: &HarvestContext) -> (HarvestState, Deci
         MarketZone::DeepTrade | MarketZone::StopTrade => {}
     }
     (same, Decision::NoOp)
+}
+
+/// Missing hedge (cancel race / API hata / manuel müdahale) tespitinde yeniden
+/// hedge planla. Imbalance dust ise `PairComplete`'a düşer.
+fn replace_missing_hedge(
+    filled_side: Outcome,
+    ctx: &HarvestContext,
+) -> (HarvestState, Decision) {
+    let imbalance = ctx.shares(filled_side) - ctx.shares(filled_side.opposite());
+    if imbalance.abs() < ctx.api_min_order_size {
+        return (HarvestState::PairComplete, Decision::NoOp);
+    }
+    match build_hedge(filled_side, ctx) {
+        Some(order) => (
+            HarvestState::PositionOpen { filled_side },
+            Decision::PlaceOrders(vec![order]),
+        ),
+        None => (HarvestState::PositionOpen { filled_side }, Decision::NoOp),
+    }
+}
+
+/// Doc §9 adım 7: `imbalance.abs()` boyutlu `Buy GTC` hedge planı; target band
+/// dışında veya imbalance dust ise `None`.
+fn build_hedge(filled_side: Outcome, ctx: &HarvestContext) -> Option<PlannedOrder> {
+    let imbalance = ctx.shares(filled_side) - ctx.shares(filled_side.opposite());
+    if imbalance.abs() < ctx.api_min_order_size {
+        return None;
+    }
+    let hedge_side = filled_side.opposite();
+    let target = ctx.snap_clamp(ctx.avg_threshold - ctx.avg_filled(filled_side));
+    if !ctx.price_in_band(target) {
+        return None;
+    }
+    Some(planned_buy_gtc(
+        hedge_side,
+        ctx.token_id(hedge_side),
+        target,
+        imbalance.abs(),
+        format!("{}{}", HEDGE_REASON_PREFIX, hedge_side.as_lowercase()),
+    ))
 }
 
 /// Doc §9 adım 2-4: beklenen hedge = `avg_threshold − avg_filled_side`; mevcut
@@ -94,11 +147,7 @@ fn try_avg_down(filled_side: Outcome, ctx: &HarvestContext) -> Option<PlannedOrd
         ctx.token_id(filled_side),
         price,
         size,
-        format!(
-            "{}{}",
-            AVG_DOWN_REASON_PREFIX,
-            HarvestContext::outcome_str(filled_side)
-        ),
+        format!("{}{}", AVG_DOWN_REASON_PREFIX, filled_side.as_lowercase()),
     ))
 }
 
@@ -132,10 +181,6 @@ fn try_pyramid(filled_side: Outcome, ctx: &HarvestContext) -> Option<PlannedOrde
         ctx.token_id(rising),
         price,
         size,
-        format!(
-            "{}{}",
-            PYRAMID_REASON_PREFIX,
-            HarvestContext::outcome_str(rising)
-        ),
+        format!("{}{}", PYRAMID_REASON_PREFIX, rising.as_lowercase()),
     ))
 }

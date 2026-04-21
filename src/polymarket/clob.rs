@@ -183,6 +183,24 @@ impl ClobClient {
 
 // -------------------------- DTO'lar --------------------------
 
+/// Polymarket CLOB `POST /order` response.
+///
+/// Spec: <https://docs.polymarket.com/developers/CLOB/orders/create-an-order>
+///
+/// `status` enum (string):
+/// - `"matched"`   — karşı taraf REST anında bulundu, fill garanti.
+///                    `LiveExecutor::place` lokal `metrics`'i atomic ingest
+///                    eder ve `MarketSession::recently_filled_order_ids`
+///                    setine ID'yi yazar; sonradan gelen User WS
+///                    `trade MATCHED` event'i `extract_our_fills` içinde
+///                    bu ID'yi tüketip atlar (çift sayım yok).
+/// - `"live"`      — kitaba (orderbook) girdi, passive bekliyor →
+///                    `LiveExecutor::place` `open_orders`'a push.
+/// - `"delayed"`   — CLOB asenkron eşleştirme kuyruğunda; sonuç User WS
+///                    `trade MATCHED` ile gelir → `open_orders`'a push.
+/// - `"unmatched"` — reject; `success=false` ile birlikte `error_msg`
+///                    doldurulur ve `LiveExecutor::place` `AppError::Clob`
+///                    döndürür.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PostOrderResponse {
     pub success: bool,

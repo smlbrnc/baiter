@@ -190,33 +190,6 @@ fn log_state_transition(c: &TickLogCtx) {
                 ),
             );
         }
-        (HarvestState::PositionOpen { filled_side }, HarvestState::HedgeUpdating { .. }) => {
-            ipc::log_line(
-                label,
-                format!(
-                    "🔁 Hedge drift detected (side={}, avg={:.4}, threshold={:.2}) → HedgeUpdating",
-                    filled_side.as_str(),
-                    match filled_side {
-                        Outcome::Up => snap.avg_yes,
-                        Outcome::Down => snap.avg_no,
-                    },
-                    snap.avg_threshold,
-                ),
-            );
-        }
-        (HarvestState::HedgeUpdating { .. }, HarvestState::PositionOpen { filled_side }) => {
-            ipc::log_line(
-                label,
-                format!(
-                    "✳️ Hedge re-priced (side={}, imbalance={:+.2}) → PositionOpen",
-                    filled_side.as_str(),
-                    snap.imbalance,
-                ),
-            );
-        }
-        (HarvestState::HedgeUpdating { .. }, HarvestState::PairComplete) => {
-            ipc::log_line(label, "🎯 Hedge cancel-race (hedge passive fill) → PairComplete");
-        }
         (HarvestState::PositionOpen { .. }, HarvestState::PairComplete) => {
             ipc::log_line(
                 label,
@@ -237,6 +210,27 @@ fn log_state_transition(c: &TickLogCtx) {
                 ),
             );
         }
+        // Atomic drift re-price (CancelAndPlace) — state aynı kaldığı için
+        // FSM transition arm'larına düşmez; Decision'a bakıp özel log basıyoruz.
+        (
+            HarvestState::PositionOpen { filled_side },
+            HarvestState::PositionOpen { .. },
+        ) => {
+            if matches!(decision, Decision::CancelAndPlace { .. }) {
+                ipc::log_line(
+                    label,
+                    format!(
+                        "🔁 Hedge drift atomic re-price (side={}, avg={:.4}, threshold={:.2})",
+                        filled_side.as_str(),
+                        match filled_side {
+                            Outcome::Up => snap.avg_yes,
+                            Outcome::Down => snap.avg_no,
+                        },
+                        snap.avg_threshold,
+                    ),
+                );
+            }
+        }
         _ => {}
     }
 }
@@ -244,6 +238,7 @@ fn log_state_transition(c: &TickLogCtx) {
 fn log_cancel_request(decision: &Decision, label: &str) {
     let cancel_ids: &[String] = match decision {
         Decision::CancelOrders(ids) => ids,
+        Decision::CancelAndPlace { cancels, .. } => cancels,
         Decision::NoOp | Decision::PlaceOrders(_) => return,
     };
     if cancel_ids.is_empty() {

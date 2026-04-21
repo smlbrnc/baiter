@@ -112,12 +112,14 @@ impl MarketPnL {
     /// - `cost_basis` notional only (fee ayrı satırda).
     /// - `mtm_pnl` kilitli pair'i $1 redemption, imbalance'ı best_bid ile değerler.
     pub fn from_metrics(m: &StrategyMetrics, best_bid_yes: f64, best_bid_no: f64) -> Self {
+        // `StrategyMetrics::ingest_fill` shares'i 0'a clamp ediyor (SELL
+        // overflow garantisi); burada ek `.max(0.0)` çağrısı gereksiz.
         let cost_basis = m.imb_cost_up + m.imb_cost_down;
-        let shares_yes = m.shares_yes.max(0.0);
-        let shares_no = m.shares_no.max(0.0);
-        let pair_count = shares_yes.min(shares_no).max(0.0);
-        let imb_yes = (shares_yes - pair_count).max(0.0);
-        let imb_no = (shares_no - pair_count).max(0.0);
+        let shares_yes = m.shares_yes;
+        let shares_no = m.shares_no;
+        let pair_count = shares_yes.min(shares_no);
+        let imb_yes = shares_yes - pair_count;
+        let imb_no = shares_no - pair_count;
         Self {
             cost_basis,
             fee_total: m.fee_total,

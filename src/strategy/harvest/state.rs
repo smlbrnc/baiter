@@ -18,11 +18,16 @@ pub const AVG_DOWN_REASON_PREFIX: &str = "harvest_v2:avg_down:";
 /// AggTrade/FakTrade pyramiding GTC (doc §8).
 pub const PYRAMID_REASON_PREFIX: &str = "harvest_v2:pyramid:";
 
-/// `passive.rs`/`executor.rs` cooldown (last_averaging_ms) tetikleyicisi —
-/// yalnız avg-down ve pyramid fill'leri cooldown saatini ileri alır; open/hedge
-/// fill'leri averaging penceresini açmaz (doc §11, §16).
+/// `passive.rs`/`executor.rs` cooldown (last_averaging_ms) tetikleyicisi.
+/// Avg-down ve pyramid fill'leri kapsadığı gibi opener fill'lerini de kapsar:
+/// session reset / FSM Pending'e dönüş senaryolarında peş peşe opener spam'ini
+/// (Bot 4 / btc-updown-5m-1776773400 regresyonu) engellemek için cooldown
+/// saati opener matched yanıtında da ileri alınır. Hedge fill'leri pencereyi
+/// açmaz çünkü hedge passive olarak market hareketi ile dolar.
 pub fn is_averaging_like(reason: &str) -> bool {
-    reason.starts_with(AVG_DOWN_REASON_PREFIX) || reason.starts_with(PYRAMID_REASON_PREFIX)
+    reason.starts_with(AVG_DOWN_REASON_PREFIX)
+        || reason.starts_with(PYRAMID_REASON_PREFIX)
+        || reason.starts_with(OPEN_REASON_PREFIX)
 }
 
 /// Harvest v2 FSM (doc §4).
@@ -36,9 +41,10 @@ pub enum HarvestState {
     /// İki GTC (opener + hedge) kitapta.
     OpenPair,
     /// Tek leg MATCHED; hedge kitapta; avg-down/pyramid eligible.
+    /// Hedge drift veya missing-hedge senaryolarında bu state'te kalınır;
+    /// drift atomic `CancelAndPlace` ile yeniden fiyatlandırılır, missing
+    /// hedge `PlaceOrders([replacement])` ile re-place edilir.
     PositionOpen { filled_side: Outcome },
-    /// Hedge cancel gönderildi, response bekleniyor (transient).
-    HedgeUpdating { filled_side: Outcome },
     /// Pair kapandı; kalan açık emirler temizlenip `Done`'a geçilir.
     PairComplete,
     Done,
@@ -179,12 +185,5 @@ impl<'a> HarvestContext<'a> {
             })
             .map(|o| o.id.clone())
             .collect()
-    }
-
-    pub(super) fn outcome_str(side: Outcome) -> &'static str {
-        match side {
-            Outcome::Up => "up",
-            Outcome::Down => "down",
-        }
     }
 }

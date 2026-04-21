@@ -9,10 +9,12 @@
 
 pub mod auth;
 pub mod clob;
+pub mod fees;
 pub mod gamma;
 pub mod order;
 pub mod ws;
 
 pub use clob::{shared_http_client, CancelResponse, ClobClient};
+pub use fees::polymarket_taker_fee;
 pub use gamma::{GammaClient, GammaMarket};
 pub use ws::{run_market_ws, run_user_ws, PolymarketEvent, PriceChangeLevel};

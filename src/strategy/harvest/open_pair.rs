@@ -32,22 +32,14 @@ pub fn pending(ctx: &HarvestContext) -> (HarvestState, Decision) {
             ctx.token_id(open_side),
             open_price,
             open_size,
-            format!(
-                "{}{}",
-                OPEN_REASON_PREFIX,
-                HarvestContext::outcome_str(open_side)
-            ),
+            format!("{}{}", OPEN_REASON_PREFIX, open_side.as_lowercase()),
         ),
         planned_buy_gtc(
             hedge_side,
             ctx.token_id(hedge_side),
             hedge_price,
             hedge_size,
-            format!(
-                "{}{}",
-                HEDGE_REASON_PREFIX,
-                HarvestContext::outcome_str(hedge_side)
-            ),
+            format!("{}{}", HEDGE_REASON_PREFIX, hedge_side.as_lowercase()),
         ),
     ];
     (HarvestState::OpenPair, Decision::PlaceOrders(orders))
