@@ -260,8 +260,8 @@ export function useHistoryStream<T extends { ts_ms: number }>(opts: {
   return items;
 }
 
-/** Tek bir bot için detay + 1 sn poll. */
-export function useBot(id: number | null, pollMs = 1000) {
+/** Tek bir bot için detay + poll. `withPnl` false ise `/pnl` endpoint'i çağrılmaz. */
+export function useBot(id: number | null, pollMs = 3000, withPnl = false) {
   const [bot, setBot] = useState<BotRow | null>(null);
   const [pnl, setPnl] = useState<PnLSnapshot | null>(null);
 
@@ -270,10 +270,13 @@ export function useBot(id: number | null, pollMs = 1000) {
     let cancelled = false;
     const tick = async () => {
       try {
-        const [b, p] = await Promise.all([api.getBot(id), api.botPnl(id)]);
+        const [b, p] = await Promise.all([
+          api.getBot(id),
+          withPnl ? api.botPnl(id) : Promise.resolve(null),
+        ]);
         if (!cancelled) {
           setBot(b);
-          setPnl(p);
+          if (withPnl) setPnl(p);
         }
       } catch {
         /* yut */
@@ -285,7 +288,7 @@ export function useBot(id: number | null, pollMs = 1000) {
       cancelled = true;
       clearInterval(t);
     };
-  }, [id, pollMs]);
+  }, [id, pollMs, withPnl]);
 
   return { bot, pnl };
 }

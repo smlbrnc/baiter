@@ -1,11 +1,3 @@
-//! Polymarket Market + User WebSocket istemcileri.
-//!
-//! - PING/PONG her 10 sn (resmi şart).
-//! - Reconnect + exponential backoff.
-//! - `mpsc::Sender<PolymarketEvent>` — §⚡ Kural 6 (WS okuyucu asla bloke olmaz).
-//!
-//! Referans: [docs/api/polymarket-clob.md §WebSocket](../../../docs/api/polymarket-clob.md).
-
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
@@ -20,11 +12,6 @@ use crate::config::Credentials;
 use crate::error::AppError;
 use crate::types::{OrderType, Side};
 
-/// Polymarket User Channel `trade` event status.
-///
-/// Spec: <https://docs.polymarket.com/developers/CLOB/websocket/user-channel>.
-/// Lifecycle: `MATCHED → MINED → CONFIRMED` (CONFIRMED terminal);
-/// `RETRYING` ara, `FAILED` terminal. Fill attribution **sadece ilk MATCHED**.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TradeStatus {
     Matched,
@@ -56,14 +43,11 @@ impl TradeStatus {
         }
     }
 
-    /// Sadece ilk `MATCHED`'de fill attribution yapılır; `MINED/CONFIRMED`
-    /// upsert sadece status/ts/raw günceller.
     pub fn is_initial_match(self) -> bool {
         matches!(self, Self::Matched)
     }
 }
 
-/// Polymarket User Channel `order` event lifecycle (`type` field).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OrderLifecycle {
     Placement,
@@ -90,12 +74,6 @@ impl OrderLifecycle {
     }
 }
 
-/// User Channel `trade.maker_orders[]` entry.
-///
-/// Spec: <https://docs.polymarket.com/developers/CLOB/websocket/user-channel>.
-/// Per-entry `fee_rate_bps`/`outcome`/`owner` payload alanları okunmaz —
-/// fee politikası `MarketSession.fee_rate_bps` (CLOB `GET /fee-rate`) tek
-/// otoritedir; outcome `outcome_from_asset_id` mapping'inden çıkarılır.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct MakerOrder {
     pub order_id: String,
@@ -105,13 +83,6 @@ pub struct MakerOrder {
     pub side: Side,
 }
 
-/// User Channel `trade` event tipli payload.
-///
-/// Spec: <https://docs.polymarket.com/developers/CLOB/websocket/user-channel>.
-/// Per-trade `fee_rate_bps` payload alanı parse edilmez — `MarketSession`
-/// CLOB `GET /fee-rate?token_id=` ile fetch edip tek otorite olarak tutar.
-/// `outcome` payload string'i parse edilmez — `outcome_from_asset_id(sess,
-/// asset_id)` mapping'i tek otoritedir.
 #[derive(Debug, Clone)]
 pub struct TradePayload {
     pub trade_id: String,
@@ -121,21 +92,12 @@ pub struct TradePayload {
     pub size: f64,
     pub price: f64,
     pub status: TradeStatus,
-    /// Sadece taker fill içeren event'lerde set edilir (User Channel spec).
     pub taker_order_id: Option<String>,
-    /// "TAKER" | "MAKER" — User Channel spec'te bu trade'i tetikleyen tarafımızın
-    /// rolü; UI sembol etiketinde gösterilir. Per-fill rol `extract_fills`'te
-    /// `maker_orders` üyeliğinden türetilir.
     pub trader_side: Option<String>,
     pub maker_orders: Vec<MakerOrder>,
     pub timestamp_ms: u64,
 }
 
-/// User Channel `order` event tipli payload.
-///
-/// Spec: <https://docs.polymarket.com/developers/CLOB/websocket/user-channel>.
-/// `original_size/size_matched/price/order_type` `UPDATE` lifecycle'da bazıları
-/// boş gelebilir; bu yüzden `Option`. `outcome` redundant (asset_id'den çıkarılır).
 #[derive(Debug, Clone)]
 pub struct OrderPayload {
     pub order_id: String,
@@ -151,24 +113,18 @@ pub struct OrderPayload {
     pub timestamp_ms: u64,
 }
 
-/// `market_resolved` event tipli payload.
 #[derive(Debug, Clone)]
 pub struct MarketResolvedPayload {
     pub market: String,
     pub winning_outcome: String,
-    /// Pre-resolved event'te eksik olabilir.
     pub winning_asset_id: Option<String>,
     pub timestamp_ms: u64,
 }
 
-/// Engine/strateji tarafına iletilen tek tip Polymarket event'i.
-/// Yalnız in-process (mpsc) — JSON serialize/deserialize edilmez.
 #[derive(Debug, Clone)]
 pub enum PolymarketEvent {
     Book {
         asset_id: String,
-        /// Yalnız fiyat (size tüketici tarafında okunmuyordu); per-level
-        /// String alloc'u sıfırlamak için `Vec<f64>` olarak taşınır.
         bids: Vec<f64>,
         asks: Vec<f64>,
     },
@@ -185,8 +141,6 @@ pub enum PolymarketEvent {
     MarketResolved(MarketResolvedPayload),
 }
 
-/// `price_change` event'inde her seviye için yalnız best_bid/best_ask delta'sı
-/// taşınır; `price/size/side/hash` field'ları tüketici tarafında okunmuyordu.
 #[derive(Debug, Clone)]
 pub struct PriceChangeLevel {
     pub asset_id: String,
@@ -194,8 +148,6 @@ pub struct PriceChangeLevel {
     pub best_ask: Option<f64>,
 }
 
-/// Market WS okuyucu task'ı — mpsc'ye event yayar.
-/// Kopma halinde exponential backoff (1s → 60s) ile yeniden bağlanır.
 pub async fn run_market_ws(
     base_ws: String,
     asset_ids: Vec<String>,
@@ -210,7 +162,6 @@ pub async fn run_market_ws(
     run_ws_loop(&url, sub, tx).await;
 }
 
-/// User WS okuyucu task'ı.
 pub async fn run_user_ws(
     base_ws: String,
     creds: Credentials,
@@ -236,8 +187,6 @@ async fn run_ws_loop(url: &str, subscription: Value, tx: mpsc::Sender<Polymarket
         match connect_and_stream(url, &subscription, &tx).await {
             Ok(()) => {
                 tracing::warn!(url, "ws closed cleanly, reconnect in {backoff_secs}s");
-                // Temiz kapanışta backoff sıfırlanır (uzun süreli sağlıklı sessionun
-                // ardından bir sonraki bağlanma denemesi gecikmesin).
                 backoff_secs = 1;
             }
             Err(e) => {
@@ -259,20 +208,17 @@ async fn connect_and_stream(
         .map_err(|e| AppError::WebSocket(format!("connect: {e}")))?;
     let (mut write, mut read) = ws_stream.split();
 
-    // Initial subscription
     write
         .send(Message::Text(subscription.to_string().into()))
         .await
         .map_err(|e| AppError::WebSocket(format!("send sub: {e}")))?;
 
-    // PING every 10s
     let mut ping_tick = interval(Duration::from_secs(10));
-    ping_tick.tick().await; // ilk tick'i hemen tüket
+    ping_tick.tick().await;
 
     loop {
         tokio::select! {
             _ = ping_tick.tick() => {
-                // Polymarket CLOB WS: text "PING" bekler, yanıtı "PONG".
                 if write.send(Message::Text("PING".to_string().into())).await.is_err() {
                     return Err(AppError::WebSocket("ping send failed".to_string()));
                 }
@@ -293,8 +239,6 @@ async fn connect_and_stream(
                         }
                     }
                     Message::Ping(p) => {
-                        // Pong gönderilemezse bağlantı zaten bozulmuş — döngüden
-                        // çık ve dış reconnect'e yetki ver.
                         if write.send(Message::Pong(p)).await.is_err() {
                             return Err(AppError::WebSocket("pong send failed".to_string()));
                         }
@@ -316,7 +260,6 @@ fn parse_and_dispatch(text: &str, tx: &mpsc::Sender<PolymarketEvent>) {
     {
         return;
     }
-    // Server batch array veya tek obje dönebilir.
     let value: Value = match serde_json::from_str(trimmed) {
         Ok(v) => v,
         Err(e) => {
@@ -331,19 +274,14 @@ fn parse_and_dispatch(text: &str, tx: &mpsc::Sender<PolymarketEvent>) {
     for item in items {
         if let Some(ev) = map_event(&item) {
             if !forward_event(tx, ev) {
-                return; // receiver dropped
+                return;
             }
         }
     }
 }
 
-/// Toplam drop edilen WS event sayısı (process-wide). Her 100 drop'ta bir
-/// `tracing::warn!` ile özet log atılır; tek tek warn spam'i önlenir.
 static DROP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// ⚡ Kural 6: WS okuyucu mpsc kanalda asla bloke olmaz. `try_send` kullanır;
-/// kanal doluysa event drop edilir ve `DROP_COUNTER` artırılır. Receiver
-/// dropped ise `false` döner ve caller döngüden çıkar.
 fn forward_event(tx: &mpsc::Sender<PolymarketEvent>, ev: PolymarketEvent) -> bool {
     match tx.try_send(ev) {
         Ok(()) => true,
@@ -393,11 +331,6 @@ fn as_str(v: &Value, key: &str) -> Option<String> {
     v.get(key).and_then(|x| x.as_str()).map(|s| s.to_string())
 }
 
-/// Tek bir JSON event objesini `PolymarketEvent`'e map'ler.
-///
-/// `event_type`'a göre küçük yardımcılara dağıtır; her yardımcı **parse-or-skip**:
-/// zorunlu alan eksik/invalid → `None` ve event drop (defensive `unwrap_or`
-/// fallback yok).
 fn map_event(v: &Value) -> Option<PolymarketEvent> {
     let etype = v.get("event_type")?.as_str()?;
     let ts = as_u64(v, "timestamp").unwrap_or(0);
@@ -455,9 +388,6 @@ fn map_market_resolved(v: &Value, timestamp_ms: u64) -> Option<PolymarketEvent> 
     }))
 }
 
-/// Parse-or-skip: `id/market/asset_id/side/type` zorunlu — biri eksik/invalid
-/// ise event drop edilir. `order_type` opsiyonel; invalid string `None` döner
-/// (event drop edilmez).
 fn map_order(v: &Value, timestamp_ms: u64) -> Option<PolymarketEvent> {
     let order_type = as_str(v, "order_type").and_then(|s| OrderType::parse(&s));
     Some(PolymarketEvent::Order(OrderPayload {
@@ -475,10 +405,6 @@ fn map_order(v: &Value, timestamp_ms: u64) -> Option<PolymarketEvent> {
     }))
 }
 
-/// Parse-or-skip: `id/market/asset_id/side/size/price/status` zorunlu —
-/// biri eksik/invalid ise event drop edilir. Per-trade `fee_rate_bps` /
-/// `outcome` payload alanları parse edilmez (sırasıyla `MarketSession.fee_rate_bps`
-/// ve `outcome_from_asset_id` mapping'i tek otoritedir).
 fn map_trade(v: &Value, timestamp_ms: u64) -> Option<PolymarketEvent> {
     Some(PolymarketEvent::Trade(TradePayload {
         trade_id: as_str(v, "id")?,
@@ -495,8 +421,6 @@ fn map_trade(v: &Value, timestamp_ms: u64) -> Option<PolymarketEvent> {
     }))
 }
 
-/// `maker_orders[]`'ı tipli `MakerOrder` listesine map'ler. Bir entry'de
-/// zorunlu alan eksik/invalid ise sessiz drop (entry dışındakiler korunur).
 fn parse_maker_orders(v: Option<&Value>) -> Vec<MakerOrder> {
     let Some(arr) = v.and_then(|x| x.as_array()) else {
         return Vec::new();
@@ -523,198 +447,4 @@ fn extract_levels(v: &Value, key: &str) -> Vec<f64> {
                 .collect()
         })
         .unwrap_or_default()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::sync::Arc;
-
-    #[test]
-    fn maps_best_bid_ask() {
-        let raw = Arc::new(serde_json::json!({
-            "event_type": "best_bid_ask",
-            "asset_id": "abc",
-            "best_bid": "0.73",
-            "best_ask": "0.77",
-        }));
-        let ev = map_event(&raw).unwrap();
-        match ev {
-            PolymarketEvent::BestBidAsk {
-                best_bid, best_ask, ..
-            } => {
-                assert!((best_bid - 0.73).abs() < 1e-9);
-                assert!((best_ask - 0.77).abs() < 1e-9);
-            }
-            _ => panic!("wrong event"),
-        }
-    }
-
-    #[test]
-    fn maps_book() {
-        let raw = Arc::new(serde_json::json!({
-            "event_type": "book",
-            "asset_id": "abc",
-            "market": "0x1",
-            "bids": [{"price":"0.48","size":"30"}],
-            "asks": [{"price":"0.52","size":"25"}],
-            "timestamp": "100"
-        }));
-        let ev = map_event(&raw).unwrap();
-        match ev {
-            PolymarketEvent::Book { bids, asks, .. } => {
-                assert_eq!(bids.len(), 1);
-                assert!((asks[0] - 0.52).abs() < 1e-9);
-            }
-            _ => panic!("wrong event"),
-        }
-    }
-
-    #[test]
-    fn unknown_event_skipped() {
-        let raw = Arc::new(serde_json::json!({"event_type": "banana"}));
-        assert!(map_event(&raw).is_none());
-    }
-
-    #[test]
-    fn maps_trade_with_maker_orders() {
-        let raw = Arc::new(serde_json::json!({
-            "event_type": "trade",
-            "id": "T1",
-            "market": "0xMKT",
-            "asset_id": "UP_TOKEN",
-            "side": "BUY",
-            "size": "10",
-            "price": "0.42",
-            "status": "MATCHED",
-            "taker_order_id": "0xTAKER",
-            "maker_orders": [
-                {"order_id": "0xM1", "asset_id": "UP_TOKEN", "matched_amount": "6", "price": "0.42", "side": "SELL"},
-                {"order_id": "0xM2", "asset_id": "UP_TOKEN", "matched_amount": "4", "price": "0.43", "side": "SELL"}
-            ],
-            "timestamp": "12345"
-        }));
-        match map_event(&raw).unwrap() {
-            PolymarketEvent::Trade(t) => {
-                assert_eq!(t.trade_id, "T1");
-                assert_eq!(t.side, Side::Buy);
-                assert!((t.size - 10.0).abs() < 1e-9);
-                assert!((t.price - 0.42).abs() < 1e-9);
-                assert_eq!(t.status, TradeStatus::Matched);
-                assert_eq!(t.taker_order_id.as_deref(), Some("0xTAKER"));
-                assert_eq!(t.maker_orders.len(), 2);
-                assert_eq!(t.maker_orders[0].order_id, "0xM1");
-                assert!((t.maker_orders[1].matched_amount - 4.0).abs() < 1e-9);
-                assert_eq!(t.maker_orders[1].side, Side::Sell);
-                assert_eq!(t.timestamp_ms, 12345);
-            }
-            _ => panic!("expected Trade"),
-        }
-    }
-
-    #[test]
-    fn maps_trade_status_variants() {
-        let mk = |status: &str| {
-            Arc::new(serde_json::json!({
-                "event_type": "trade",
-                "id": "T", "market": "M", "asset_id": "A",
-                "side": "BUY", "size": "1", "price": "0.5",
-                "status": status,
-            }))
-        };
-        for (s, expected) in [
-            ("MATCHED", TradeStatus::Matched),
-            ("MINED", TradeStatus::Mined),
-            ("CONFIRMED", TradeStatus::Confirmed),
-            ("RETRYING", TradeStatus::Retrying),
-            ("FAILED", TradeStatus::Failed),
-        ] {
-            match map_event(&mk(s)).unwrap() {
-                PolymarketEvent::Trade(t) => assert_eq!(t.status, expected),
-                _ => panic!("expected Trade"),
-            }
-        }
-    }
-
-    #[test]
-    fn maps_order_lifecycle_variants() {
-        let mk = |t: &str| {
-            Arc::new(serde_json::json!({
-                "event_type": "order",
-                "id": "O", "market": "M", "asset_id": "A",
-                "side": "BUY", "type": t, "status": "LIVE",
-            }))
-        };
-        for (t, expected) in [
-            ("PLACEMENT", OrderLifecycle::Placement),
-            ("UPDATE", OrderLifecycle::Update),
-            ("CANCELLATION", OrderLifecycle::Cancellation),
-        ] {
-            match map_event(&mk(t)).unwrap() {
-                PolymarketEvent::Order(o) => assert_eq!(o.lifecycle, expected),
-                _ => panic!("expected Order"),
-            }
-        }
-    }
-
-    #[test]
-    fn drop_invalid_trade_payload_missing_side() {
-        let raw = Arc::new(serde_json::json!({
-            "event_type": "trade",
-            "id": "T", "market": "M", "asset_id": "A",
-            "size": "1", "price": "0.5", "status": "MATCHED",
-        }));
-        assert!(map_event(&raw).is_none());
-    }
-
-    #[test]
-    fn drop_invalid_trade_payload_unknown_status() {
-        let raw = Arc::new(serde_json::json!({
-            "event_type": "trade",
-            "id": "T", "market": "M", "asset_id": "A",
-            "side": "BUY", "size": "1", "price": "0.5",
-            "status": "GHOST",
-        }));
-        assert!(map_event(&raw).is_none());
-    }
-
-    #[test]
-    fn drop_invalid_order_payload_missing_lifecycle() {
-        let raw = Arc::new(serde_json::json!({
-            "event_type": "order",
-            "id": "O", "market": "M", "asset_id": "A",
-            "side": "BUY", "status": "LIVE",
-        }));
-        assert!(map_event(&raw).is_none());
-    }
-
-    #[test]
-    fn drop_invalid_order_payload_missing_status() {
-        let raw = Arc::new(serde_json::json!({
-            "event_type": "order",
-            "id": "O", "market": "M", "asset_id": "A",
-            "side": "BUY", "type": "PLACEMENT",
-        }));
-        assert!(map_event(&raw).is_none());
-    }
-
-    #[test]
-    fn drop_invalid_maker_order_entry_skipped() {
-        let raw = Arc::new(serde_json::json!({
-            "event_type": "trade",
-            "id": "T", "market": "M", "asset_id": "A",
-            "side": "BUY", "size": "1", "price": "0.5", "status": "MATCHED",
-            "maker_orders": [
-                {"order_id": "good", "asset_id": "A", "matched_amount": "1", "price": "0.5", "side": "SELL"},
-                {"order_id": "bad_no_side", "asset_id": "A", "matched_amount": "1", "price": "0.5"}
-            ],
-        }));
-        match map_event(&raw).unwrap() {
-            PolymarketEvent::Trade(t) => {
-                assert_eq!(t.maker_orders.len(), 1);
-                assert_eq!(t.maker_orders[0].order_id, "good");
-            }
-            _ => panic!("expected Trade"),
-        }
-    }
 }

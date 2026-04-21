@@ -25,7 +25,7 @@ import type { MarketTick, PnLSnapshot, SessionDetail } from "@/lib/types";
 export default function MarketDetailPage() {
   const { id, slug } = useParams<{ id: string; slug: string }>();
   const botId = Number(id);
-  const { bot } = useBot(Number.isFinite(botId) ? botId : null);
+  const { bot } = useBot(Number.isFinite(botId) ? botId : null, 5000);
 
   const [detail, setDetail] = useState<SessionDetail | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -45,7 +45,7 @@ export default function MarketDetailPage() {
           if (!cancelled) setLoaded(true);
         });
     reload();
-    const t = setInterval(reload, 5000);
+    const t = setInterval(reload, 10_000);
     return () => {
       cancelled = true;
       clearInterval(t);
@@ -66,13 +66,13 @@ export default function MarketDetailPage() {
   const ticks = useHistoryStream<MarketTick>({
     fetchInitial: fetchTicks,
     isLive,
-    pollMs: 1500,
+    pollMs: 3000,
     maxItems: 800,
   });
   const pnlHistory = useHistoryStream<PnLSnapshot>({
     fetchInitial: fetchPnl,
     isLive,
-    pollMs: 1500,
+    pollMs: 3000,
     maxItems: 500,
   });
 

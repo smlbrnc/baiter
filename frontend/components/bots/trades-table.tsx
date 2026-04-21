@@ -46,7 +46,7 @@ export function TradesTable({
   const trades = useHistoryStream<TradeRow>({
     fetchInitial: fetchTrades,
     isLive,
-    pollMs: 1500,
+    pollMs: 3000,
     maxItems: 500,
   });
 

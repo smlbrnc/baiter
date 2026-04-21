@@ -1,16 +1,8 @@
-//! Polymarket Gamma REST — market keşfi ve metadata.
-//!
-//! Yalnızca bu taban (`gamma-api.polymarket.com`) üzerinden slug,
-//! `clobTokenIds`, `startDate`/`endDate` çekilir (mimari §0).
-
 use reqwest::Client;
 use serde::Deserialize;
 
 use crate::error::AppError;
 
-/// Gamma market yanıt DTO'su — yalnızca bot tarafından okunan alanlar.
-/// Polymarket Gamma şemasında daha çok alan vardır; serde varsayılan olarak
-/// bilinmeyen alanları yutar (deserialize sapması olmaz).
 #[derive(Debug, Clone, Deserialize)]
 pub struct GammaMarket {
     #[serde(default)]
@@ -30,7 +22,6 @@ pub struct GammaMarket {
 }
 
 impl GammaMarket {
-    /// `clobTokenIds` JSON string'ini `(yes_id, no_id)` olarak parse eder.
     pub fn parse_token_ids(&self) -> Result<(String, String), AppError> {
         let raw = self
             .clob_token_ids
@@ -48,7 +39,6 @@ impl GammaMarket {
     }
 }
 
-/// Gamma REST istemcisi — paylaşımlı `reqwest::Client`.
 pub struct GammaClient {
     http: Client,
     base: String,
@@ -59,8 +49,6 @@ impl GammaClient {
         Self { http, base }
     }
 
-    /// Tam slug ile market detayı.
-    /// `GET /markets/slug/{slug}`.
     pub async fn get_market_by_slug(&self, slug: &str) -> Result<GammaMarket, AppError> {
         let url = format!("{}/markets/slug/{}", self.base, slug);
         let m: GammaMarket = self
@@ -73,5 +61,4 @@ impl GammaClient {
             .await?;
         Ok(m)
     }
-
 }
