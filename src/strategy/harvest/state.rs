@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use crate::strategy::metrics::StrategyMetrics;
 use crate::strategy::OpenOrder;
 use crate::time::MarketZone;
-use crate::types::Outcome;
+use crate::types::{Outcome, Side};
 
 /// OpenPair açılış emri — taker/neutral leg (doc §16).
 pub const OPEN_REASON_PREFIX: &str = "harvest_v2:open:";
@@ -157,10 +157,19 @@ impl<'a> HarvestContext<'a> {
         price >= self.min_price && price <= self.max_price
     }
 
-    pub(super) fn hedge_order(&self) -> Option<&OpenOrder> {
-        self.open_orders
-            .iter()
-            .find(|o| o.reason.starts_with(HEDGE_REASON_PREFIX))
+    /// Hedge tarafına ait kitapta açık BUY GTC. Hem `harvest_v2:hedge:*`
+    /// (re-price edilmiş hedge) hem `harvest_v2:open:*` (OpenPair'de hedge
+    /// leg taker fill alıp opener live kalan senaryoda) reason prefix'leri
+    /// kapsanır — bot 6 / `btc-updown-5m-1776776400` regresyonu: opener
+    /// kitapta dururken `replace_missing_hedge` ikinci hedge basıp aynı
+    /// fiyattan çift fill almıştı.
+    pub(super) fn hedge_order(&self, hedge_side: Outcome) -> Option<&OpenOrder> {
+        self.open_orders.iter().find(|o| {
+            o.outcome == hedge_side
+                && o.side == Side::Buy
+                && (o.reason.starts_with(HEDGE_REASON_PREFIX)
+                    || o.reason.starts_with(OPEN_REASON_PREFIX))
+        })
     }
 
     pub(super) fn has_open_avg(&self, side: Outcome) -> bool {

@@ -16,9 +16,10 @@ use super::state::{
 
 pub fn handle(filled_side: Outcome, ctx: &HarvestContext) -> (HarvestState, Decision) {
     let same = HarvestState::PositionOpen { filled_side };
+    let hedge_side = filled_side.opposite();
 
     // §10: hedge passive fill → pair tamamlandı.
-    if ctx.hedge_order().is_none() && ctx.shares(filled_side.opposite()) > 0.0 {
+    if ctx.hedge_order(hedge_side).is_none() && ctx.shares(hedge_side) > 0.0 {
         return (HarvestState::PairComplete, Decision::NoOp);
     }
 
@@ -31,7 +32,7 @@ pub fn handle(filled_side: Outcome, ctx: &HarvestContext) -> (HarvestState, Deci
     // §9: hedge yoksa (cancel race / API hata / manuel) → re-place.
     // Bot 2 / btc-updown-5m-1776766500 regresyonu: avg-down yığıldıkça
     // profit-lock kaçmasın diye missing hedge aynı tick'te yeniden konur.
-    if ctx.hedge_order().is_none() {
+    if ctx.hedge_order(hedge_side).is_none() {
         return replace_missing_hedge(filled_side, ctx);
     }
 
@@ -112,7 +113,7 @@ fn build_hedge(filled_side: Outcome, ctx: &HarvestContext) -> Option<PlannedOrde
 /// Doc §9 adım 2-4: beklenen hedge = `avg_threshold − avg_filled_side`; mevcut
 /// hedge bu fiyattan ≥ 1 tick sapmışsa cancel ID döndür.
 fn hedge_drift_cancel(filled_side: Outcome, ctx: &HarvestContext) -> Option<String> {
-    let hedge = ctx.hedge_order()?;
+    let hedge = ctx.hedge_order(filled_side.opposite())?;
     let avg_filled = ctx.avg_filled(filled_side);
     if avg_filled <= 0.0 {
         return None;

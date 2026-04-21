@@ -13,7 +13,7 @@ use crate::ipc;
 use crate::polymarket::order::{
     build_order, expiration_for, order_to_json, sign_order, BuildArgs,
 };
-use crate::polymarket::{polymarket_taker_fee, CancelResponse, ClobClient};
+use crate::polymarket::{CancelResponse, ClobClient};
 use crate::strategy::harvest::is_averaging_like;
 use crate::strategy::{Decision, OpenOrder, PlannedOrder};
 use crate::time::now_ms;
@@ -139,45 +139,37 @@ impl LiveExecutor {
                 resp.status, resp.error_msg
             )));
         }
-        // `status` enumu (Polymarket CLOB `POST /order` sözleşmesi):
-        //   "matched"   → karşı taraf at execution time'da var, fill REST
-        //                  yanıtında garantili → in-memory ingest tek kaynak
-        //                  (Bot 4 / btc-updown-5m-1776773400 spam fix).
+        // Polymarket CLOB `POST /order` `status` enumu:
+        //   "matched"   → karşı taraf REST anında bulundu, fill garanti.
+        //                  `open_orders`'a marker (`size_matched = size`)
+        //                  push edilir; `metrics.ingest_fill` çağrılmaz.
+        //                  Gerçek fill price `planned.price`'tan farklı
+        //                  olabilir (book best fiyatından dolar) → metrics
+        //                  ingest'i User WS `trade MATCHED` event'inin
+        //                  sorumluluğunda. WS event geldiğinde marker
+        //                  `record_fill_and_prune_if_full` ile düşürülür.
+        //                  Bot 6 / btc-updown-5m-1776776400 regresyonu:
+        //                  REST `planned.price` ingest VWAP'ı bozuyor ve
+        //                  hedge target'ını yanlış hesaplattırıyordu.
         //   "live"      → kitaba girdi, passive bekliyor → `open_orders` push.
         //   "delayed"   → CLOB asenkron eşleştirme kuyruğunda; sonuç User WS
-        //                  `trade MATCHED` ile gelir → `open_orders` push;
-        //                  WS event'inde idempotency kontrolü gerek değil.
+        //                  `trade MATCHED` ile gelir → `open_orders` push.
         //   "unmatched" → reject (success=false ile zaten yukarıda yakalandı).
         // Bkz. <https://docs.polymarket.com/developers/CLOB/orders/create-an-order>.
         let filled = resp.status.eq_ignore_ascii_case("matched");
-        if filled {
-            // Atomic in-memory update: REST yanıtı geldiği anda metrics
-            // güncellenir, opener cooldown'u tetiklenir, ID idempotency
-            // setine yazılır → sonradan gelen User WS `trade MATCHED` event'i
-            // aynı fill'i ikinci kez `ingest_fill` etmez.
-            let fee = polymarket_taker_fee(planned.price, planned.size, session.fee_rate_bps);
-            session.metrics.ingest_fill(
-                planned.outcome,
-                planned.side,
-                planned.price,
-                planned.size,
-                fee,
-            );
-            session.note_recent_fill(resp.order_id.clone());
-            if is_averaging_like(&planned.reason) {
-                session.last_averaging_ms = now_ms();
-            }
-        } else {
-            session.open_orders.push(OpenOrder {
-                id: resp.order_id.clone(),
-                outcome: planned.outcome,
-                side: planned.side,
-                price: planned.price,
-                size: planned.size,
-                reason: planned.reason.clone(),
-                placed_at_ms: now_ms(),
-                size_matched: 0.0,
-            });
+        let size_matched_now = if filled { planned.size } else { 0.0 };
+        session.open_orders.push(OpenOrder {
+            id: resp.order_id.clone(),
+            outcome: planned.outcome,
+            side: planned.side,
+            price: planned.price,
+            size: planned.size,
+            reason: planned.reason.clone(),
+            placed_at_ms: now_ms(),
+            size_matched: size_matched_now,
+        });
+        if filled && is_averaging_like(&planned.reason) {
+            session.last_averaging_ms = now_ms();
         }
         let executed = ExecutedOrder {
             order_id: resp.order_id.clone(),

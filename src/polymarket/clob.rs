@@ -189,14 +189,15 @@ impl ClobClient {
 ///
 /// `status` enum (string):
 /// - `"matched"` — karşı taraf REST anında bulundu, fill garanti.
-///   `LiveExecutor::place` lokal `metrics`'i atomic ingest eder ve
-///   `MarketSession::recently_filled_order_ids` setine ID'yi yazar;
-///   sonradan gelen User WS `trade MATCHED` event'i `extract_our_fills`
-///   içinde bu ID'yi tüketip atlar (çift sayım yok).
+///   `LiveExecutor::place` `open_orders`'a `size_matched = size` marker
+///   push eder; `metrics` değiştirilmez. Gerçek fill price `planned.price`'tan
+///   farklı olabilir (book best fiyatından dolar) → metrics ingest'i tek
+///   kaynak olarak User WS `trade MATCHED` event'inde yapılır; aynı
+///   event'te `record_fill_and_prune_if_full` marker'ı düşürür.
 /// - `"live"` — kitaba (orderbook) girdi, passive bekliyor →
-///   `LiveExecutor::place` `open_orders`'a push.
+///   `LiveExecutor::place` `open_orders`'a `size_matched = 0` push.
 /// - `"delayed"` — CLOB asenkron eşleştirme kuyruğunda; sonuç User WS
-///   `trade MATCHED` ile gelir → `open_orders`'a push.
+///   `trade MATCHED` ile gelir → `open_orders`'a `size_matched = 0` push.
 /// - `"unmatched"` — reject; `success=false` ile birlikte `error_msg`
 ///   doldurulur ve `LiveExecutor::place` `AppError::Clob` döndürür.
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -601,6 +601,104 @@ fn position_open_missing_hedge_replaces() {
 // değil) `position_open_hedge_drift_triggers_cancel` testi tarafından
 // invariant olarak doğrulanıyor.
 
+/// Bot 6 (`btc-updown-5m-1776776400`) regresyonu: OpenPair'de hedge leg
+/// taker olarak fill aldı, opener kitapta `harvest_v2:open:*` reason'la
+/// live kalıyor. `PositionOpen::handle` opener'ı hedge sayıp `hedge_order`
+/// üzerinden bulmalı; `replace_missing_hedge` tetiklenip ikinci, çift
+/// hedge basmamalı.
+///
+/// Eski davranış: `hedge_order()` sadece `HEDGE_REASON_PREFIX` arıyordu →
+/// opener'ı görmedi → aynı fiyattan ikinci hedge basıldı → her iki UP
+/// emir matched oldu → `imbalance = +10`, hedge'siz pozisyon.
+#[test]
+fn position_open_treats_open_leg_as_hedge() {
+    // OpenPair tick'inde DOWN @ 0.43 hedge taker fill aldı; UP @ 0.53 opener
+    // kitapta hâlâ `harvest_v2:open:up` reason'la duruyor.
+    let mut metrics = StrategyMetrics::default();
+    metrics.ingest_fill(Outcome::Down, Side::Buy, 0.43, 10.0, 0.0);
+    let opens = vec![mk_order(
+        "opener_up",
+        Outcome::Up,
+        "harvest_v2:open:up",
+        0.53,
+        10.0,
+        0,
+    )];
+    let mut ctx = default_ctx(&metrics, &opens);
+    ctx.now_ms = COOLDOWN + 1;
+
+    let (state, dec) = decide(
+        HarvestState::PositionOpen {
+            filled_side: Outcome::Down,
+        },
+        &ctx,
+    );
+    assert_eq!(
+        state,
+        HarvestState::PositionOpen {
+            filled_side: Outcome::Down,
+        },
+    );
+    // Hedge target = avg_threshold − avg_no = 0.98 − 0.43 = 0.55.
+    // Opener @ 0.53, drift = 0.02 > tick/2 → CancelAndPlace (eski opener
+    // cancel + yeni hedge place); ASLA `PlaceOrders([dup_hedge])`.
+    match dec {
+        Decision::CancelAndPlace { cancels, places } => {
+            assert_eq!(cancels, vec!["opener_up".to_string()]);
+            assert_eq!(places.len(), 1);
+            assert_eq!(places[0].outcome, Outcome::Up);
+            assert!(
+                (places[0].price - 0.55).abs() < 1e-9,
+                "hedge target = 0.98 − 0.43 = 0.55, got {}",
+                places[0].price
+            );
+        }
+        Decision::NoOp => panic!(
+            "opener'ı hedge gibi tanımalı ama drift varken NoOp döndürmemeli"
+        ),
+        Decision::PlaceOrders(_) => {
+            panic!("Bot 6 bug: opener live iken ikinci hedge basılmamalı")
+        }
+        other => panic!("expected CancelAndPlace, got {:?}", other),
+    }
+}
+
+/// Opener fiyatı zaten hedge target'ına eşitse hiç işlem yapma.
+/// Bot 6 senaryosunun "hedge price = target" varyantı: drift yok → NoOp.
+#[test]
+fn position_open_open_leg_at_target_is_noop() {
+    let mut metrics = StrategyMetrics::default();
+    metrics.ingest_fill(Outcome::Down, Side::Buy, 0.45, 10.0, 0.0);
+    let opens = vec![mk_order(
+        "opener_up",
+        Outcome::Up,
+        "harvest_v2:open:up",
+        0.53,
+        10.0,
+        0,
+    )];
+    let mut ctx = default_ctx(&metrics, &opens);
+    ctx.now_ms = COOLDOWN + 1;
+
+    let (state, dec) = decide(
+        HarvestState::PositionOpen {
+            filled_side: Outcome::Down,
+        },
+        &ctx,
+    );
+    assert_eq!(
+        state,
+        HarvestState::PositionOpen {
+            filled_side: Outcome::Down,
+        },
+    );
+    assert!(
+        matches!(dec, Decision::NoOp),
+        "opener @ 0.53 == target (0.98 − 0.45) → NoOp, got {:?}",
+        dec
+    );
+}
+
 /// Bot 4 (`btc-updown-5m-1776773400`) regresyonu: opener fill'leri de
 /// `last_averaging_ms` cooldown'unu tetiklemeli — session reset / Pending'e
 /// dönüş senaryolarında peş peşe opener spam'ini engellemek için.

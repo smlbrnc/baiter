@@ -319,47 +319,63 @@ async fn harvest_v2_pending_blocks_opener_when_signal_not_ready() {
     assert!(matches!(dec, Decision::PlaceOrders(_)));
 }
 
-/// Bot 4 (`btc-updown-5m-1776773400`) regresyonu — REST `status=matched`
-/// yanıtının lokal `metrics`'i tek noktadan ingest etmesi ve aynı fill için
-/// sonradan gelen WS `trade MATCHED` event'inin idempotency setinde ID'yi
-/// bulup atlaması. `LiveExecutor::place`'in yaptığı atomic adımları
-/// `MarketSession`'ın public helper'larıyla simüle eder; çift sayım olmaz.
+/// Bot 6 (`btc-updown-5m-1776776400`) regresyonu — REST `POST /order`
+/// `status=matched` artık `metrics`'i kendisi ingest ETMİYOR. Tek kaynak
+/// User WS `trade MATCHED` event'idir (gerçek fill price `planned.price`'tan
+/// farklı olabilir → eski kod planned ile ingest edip VWAP'ı bozuyordu).
+/// `LiveExecutor::place`'in yaptığı atomic adımlar:
+///   - `open_orders.push(size_matched = planned.size)` → marker;
+///   - `last_averaging_ms = now_ms()` (averaging-like reason'larda).
+/// WS event geldiğinde `extract_our_fills` → `metrics.ingest_fill` (gerçek
+/// price) + `record_fill_and_prune_if_full` marker'ı düşürür.
 #[tokio::test]
-async fn live_matched_response_single_source_of_truth_for_metrics() {
-    use baiter_pro::polymarket::polymarket_taker_fee;
+async fn live_matched_response_does_not_ingest_metrics_directly() {
+    use baiter_pro::strategy::OpenOrder;
     use baiter_pro::time::now_ms;
 
     let cfg = dryrun_cfg();
     let mut sess = session(&cfg);
     sess.fee_rate_bps = 30;
 
-    // 1) REST `POST /order` `status=matched` simülasyonu — `LiveExecutor::place`
-    //    tam olarak bunu yapar: ingest_fill → note_recent_fill → cooldown set.
+    // 1) REST `POST /order` `status=matched` simülasyonu (LiveExecutor::place
+    //    davranışı): marker push + cooldown. `metrics` değişmez.
     let order_id = "0xMATCHED_REST".to_string();
-    let price = 0.40;
-    let size = 10.0;
-    let fee = polymarket_taker_fee(price, size, sess.fee_rate_bps);
-    sess.metrics
-        .ingest_fill(Outcome::Up, Side::Buy, price, size, fee);
-    sess.note_recent_fill(order_id.clone());
-    sess.last_averaging_ms = now_ms();
-
-    let shares_after_rest = sess.metrics.shares_yes;
-    assert!((shares_after_rest - size).abs() < 1e-9);
-
-    // 2) Aynı fill için User WS `trade MATCHED` event'i geldi → idempotency
-    //    seti ID'yi tüketir, fill atlanır → metrics çift sayılmaz.
+    let planned_price = 0.43;
+    let planned_size = 10.0;
+    sess.open_orders.push(OpenOrder {
+        id: order_id.clone(),
+        outcome: Outcome::Down,
+        side: Side::Buy,
+        price: planned_price,
+        size: planned_size,
+        reason: "harvest_v2:hedge:down".into(),
+        placed_at_ms: now_ms(),
+        size_matched: planned_size,
+    });
+    let shares_after_rest = sess.metrics.shares_no;
     assert!(
-        sess.consume_recent_fill(&order_id),
-        "ID set'te bulunmalı (REST'te ingest edildi)"
+        (shares_after_rest - 0.0).abs() < 1e-9,
+        "REST matched metrics'i değiştirmemeli, got shares_no={shares_after_rest}"
     );
-    assert!(
-        !sess.consume_recent_fill(&order_id),
-        "ID tek tüketilir; ikinci consume false"
+    assert_eq!(sess.open_orders.len(), 1);
+
+    // 2) WS `trade MATCHED` gerçek fill price ile gelir (örn. 0.39, planned
+    //    0.43'ten daha iyi). Test pipeline simulation: doğrudan absorb +
+    //    record helpers (event.rs::on_trade ile aynı sıra).
+    let actual_price = 0.39;
+    baiter_pro::engine::absorb_trade_matched(
+        &mut sess,
+        Outcome::Down,
+        Side::Buy,
+        actual_price,
+        planned_size,
+        0.0,
     );
+    assert!((sess.metrics.shares_no - planned_size).abs() < 1e-9);
     assert!(
-        (sess.metrics.shares_yes - shares_after_rest).abs() < 1e-9,
-        "WS event metrics'i ikinci kez ingest etmemeli"
+        (sess.metrics.avg_no - actual_price).abs() < 1e-9,
+        "VWAP gerçek fill price'ı yansıtmalı (planned 0.43 değil), got {}",
+        sess.metrics.avg_no
     );
 }
 

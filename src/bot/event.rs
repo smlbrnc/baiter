@@ -155,9 +155,11 @@ fn after_book_update(sess: &mut MarketSession, pool: &SqlitePool, run_mode: RunM
 
 /// Bizim bir trade event içindeki tek fill'imiz.
 ///
-/// `order_id`: maker fill ise `OpenOrder.id` (`Some`), taker fill ise `None`.
-/// Bu ikili rol fee policy'sini (maker=0, taker=concave) ve open_orders
-/// prune kararını tetikler.
+/// `order_id`: bizim açık emrimize karşılık geliyorsa `Some(OpenOrder.id)`
+/// (maker fill → `maker_orders` entry; ya da REST `status=matched`
+/// sonrası kitapta marker olarak duran taker emrimize ait `taker_order_id`).
+/// `None` → bizim hiçbir açık emrimizle eşleşmeyen taker fill (örn. manuel
+/// satış event'i). `is_taker` fee politikasını seçer (maker=0%, taker=concave).
 #[derive(Debug, Clone)]
 struct OurFill {
     outcome: Outcome,
@@ -166,6 +168,7 @@ struct OurFill {
     price: f64,
     size: f64,
     order_id: Option<String>,
+    is_taker: bool,
 }
 
 fn on_trade(sess: &mut MarketSession, pool: &SqlitePool, ev: TradeMsg) {
@@ -282,7 +285,7 @@ fn record_fill_and_prune_if_full(
 /// Polymarket fee policy: maker=0, taker concave `size×(bps/10000)×p×(1−p)`.
 /// Doc: <https://docs.polymarket.com/trading/fees>
 fn compute_fee(f: &OurFill, fee_rate_bps: Option<f64>) -> f64 {
-    if f.order_id.is_some() {
+    if !f.is_taker {
         return 0.0;
     }
     let bps = fee_rate_bps.unwrap_or(0.0);
@@ -292,27 +295,28 @@ fn compute_fee(f: &OurFill, fee_rate_bps: Option<f64>) -> f64 {
 /// Trade event'inden bizim fill'lerimizi çıkar.
 ///
 /// User Channel garantisi: bu event'te biziz. İki olası rol:
-/// - **Maker**: `maker_orders[]`'ta `open_orders.id`'lerimizden eşleşen entry'ler
-///   (her biri kendi asset/side/price/matched_amount'ı taşır; NEG_RISK'te asset
-///   top-level'dan farklı outcome olabilir).
-/// - **Taker**: bizim id maker_orders'ta yok → top-level (asset_id, side, price,
-///   size) bizim view'ımız; bizim id ise `taker_order_id` field'ında olur.
+/// - **Maker**: `maker_orders[]`'ta `open_orders.id`'lerimizden eşleşen
+///   entry'ler (her biri kendi asset/side/price/matched_amount'ı taşır;
+///   NEG_RISK'te asset top-level'dan farklı outcome olabilir).
+/// - **Taker**: bizim id maker_orders'ta yok → top-level (asset_id, side,
+///   price, size) bizim view'ımız; bizim id ise `taker_order_id` field'ında
+///   olur. Live mod REST `POST /order` `status=matched` yanıtında
+///   `LiveExecutor::place` aynı id'yi `open_orders`'a marker olarak push
+///   eder → buradaki `our_ids` setinde bulunur ve `OurFill.order_id` set
+///   edilir; `record_fill_and_prune_if_full` marker'ı temizler.
 ///
-/// REST `POST /order` `status=matched` yanıtında `LiveExecutor::place` lokal
-/// `metrics`'i tek noktadan ingest edip ID'yi `recently_filled_order_ids`
-/// setine yazar. Aynı fill için sonradan gelen WS event'inde ID set'te
-/// bulunursa (REST + WS yarış penceresi açık) çift sayımı önlemek için fill
-/// atlanır ve set'ten çıkarılır.
+/// `metrics.ingest_fill` tek kaynak: bu fonksiyondan dönen fill'ler.
+/// REST yanıtı kendi başına metrics'i değiştirmez (gerçek fill price WS
+/// event'inde gelir; planned price'tan farklı olabilir — Bot 6 regresyonu).
 fn extract_our_fills(
-    sess: &mut MarketSession,
+    sess: &MarketSession,
     raw: &serde_json::Value,
     top_asset_id: &str,
     top_side: Option<&str>,
     top_price: f64,
     top_size: f64,
 ) -> Vec<OurFill> {
-    let our_ids: HashSet<String> =
-        sess.open_orders.iter().map(|o| o.id.clone()).collect();
+    let our_ids: HashSet<&str> = sess.open_orders.iter().map(|o| o.id.as_str()).collect();
 
     let maker: Vec<OurFill> = raw
         .get("maker_orders")
@@ -322,9 +326,6 @@ fn extract_our_fills(
                 .filter_map(|m| {
                     let id = m.get("order_id")?.as_str()?;
                     if !our_ids.contains(id) {
-                        return None;
-                    }
-                    if sess.consume_recent_fill(id) {
                         return None;
                     }
                     let asset = m.get("asset_id")?.as_str()?;
@@ -339,6 +340,7 @@ fn extract_our_fills(
                         price,
                         size: amount,
                         order_id: Some(id.to_string()),
+                        is_taker: false,
                     })
                 })
                 .collect()
@@ -348,25 +350,25 @@ fn extract_our_fills(
         return maker;
     }
 
-    if let Some(taker_id) = raw.get("taker_order_id").and_then(|v| v.as_str()) {
-        if sess.consume_recent_fill(taker_id) {
-            return Vec::new();
-        }
-    }
-
     let Some(outcome) = outcome_from_asset_id(sess, top_asset_id) else {
         return Vec::new();
     };
     let Some(side) = top_side.and_then(Side::parse) else {
         return Vec::new();
     };
+    let taker_order_id = raw
+        .get("taker_order_id")
+        .and_then(|v| v.as_str())
+        .filter(|id| our_ids.contains(*id))
+        .map(str::to_string);
     vec![OurFill {
         outcome,
         asset_id: top_asset_id.to_string(),
         side,
         price: top_price,
         size: top_size,
-        order_id: None,
+        order_id: taker_order_id,
+        is_taker: true,
     }]
 }
 
@@ -627,7 +629,7 @@ mod tests {
             ]
         });
 
-        let fills = extract_our_fills(&mut sess, &raw, "DOWN_TOKEN", Some("SELL"), 0.67, 97.0);
+        let fills = extract_our_fills(&sess, &raw, "DOWN_TOKEN", Some("SELL"), 0.67, 97.0);
         assert_eq!(fills.len(), 1);
         let f = &fills[0];
         assert_eq!(f.outcome, Outcome::Up);
@@ -636,13 +638,14 @@ mod tests {
         assert!((f.price - 0.33).abs() < 1e-9);
         assert!((f.size - 9.33).abs() < 1e-9);
         assert_eq!(f.order_id.as_deref(), Some("0xMINE"));
+        assert!(!f.is_taker, "maker rolü → fee=0");
     }
 
     /// Taker rolü: maker_orders'ta bizim id yok → top-level OurFill.
+    /// `taker_order_id` bizim açık emrimize ait değilse `order_id=None`.
     #[test]
     fn extract_our_fills_taker_returns_top_level_ourfill() {
-        let mut sess = make_session();
-        sess.open_orders.push(open("0xMINE"));
+        let sess = make_session();
 
         let raw = json!({
             "maker_orders": [
@@ -650,7 +653,7 @@ mod tests {
             ]
         });
 
-        let fills = extract_our_fills(&mut sess, &raw, "UP_TOKEN", Some("BUY"), 0.57, 9.0);
+        let fills = extract_our_fills(&sess, &raw, "UP_TOKEN", Some("BUY"), 0.57, 9.0);
         assert_eq!(fills.len(), 1);
         let f = &fills[0];
         assert_eq!(f.outcome, Outcome::Up);
@@ -659,14 +662,42 @@ mod tests {
         assert!((f.price - 0.57).abs() < 1e-9);
         assert!((f.size - 9.0).abs() < 1e-9);
         assert!(f.order_id.is_none());
+        assert!(f.is_taker);
+    }
+
+    /// REST `status=matched` sonrası `LiveExecutor::place` `open_orders`'a
+    /// marker ID'yi push eder; aynı id `taker_order_id` olarak WS event'inde
+    /// gelirse `OurFill.order_id` set edilir → `record_fill_and_prune_if_full`
+    /// marker'ı düşürür. Bot 6 regresyonu: taker fill prune edilemezse marker
+    /// sonsuza dek `open_orders`'ta sürünür.
+    #[test]
+    fn extract_our_fills_taker_marker_pruned_via_taker_order_id() {
+        let mut sess = make_session();
+        sess.open_orders.push({
+            let mut o = open("0xMARKER");
+            o.size_matched = o.size;
+            o
+        });
+
+        let raw = json!({
+            "taker_order_id": "0xMARKER",
+            "maker_orders": [
+                {"order_id": "0xSOMEONE", "matched_amount": "9", "price": "0.57", "asset_id": "UP_TOKEN", "side": "SELL"}
+            ]
+        });
+
+        let fills = extract_our_fills(&sess, &raw, "UP_TOKEN", Some("BUY"), 0.57, 9.0);
+        assert_eq!(fills.len(), 1);
+        assert_eq!(fills[0].order_id.as_deref(), Some("0xMARKER"));
+        assert!(fills[0].is_taker);
     }
 
     /// maker_orders yok ve top-level asset bilinmiyor → boş, panik atmamalı.
     #[test]
     fn extract_our_fills_unknown_asset_returns_empty() {
-        let mut sess = make_session();
+        let sess = make_session();
         let raw = json!({});
-        let fills = extract_our_fills(&mut sess, &raw, "UNKNOWN_ASSET", Some("BUY"), 0.5, 1.0);
+        let fills = extract_our_fills(&sess, &raw, "UNKNOWN_ASSET", Some("BUY"), 0.5, 1.0);
         assert!(fills.is_empty());
     }
 
@@ -688,7 +719,7 @@ mod tests {
             ]
         });
 
-        let fills = extract_our_fills(&mut sess, &raw, "UP_TOKEN", Some("SELL"), 0.6, 10.0);
+        let fills = extract_our_fills(&sess, &raw, "UP_TOKEN", Some("SELL"), 0.6, 10.0);
         assert_eq!(fills.len(), 2);
         assert!(fills.iter().any(|f| f.outcome == Outcome::Up));
         assert!(fills.iter().any(|f| f.outcome == Outcome::Down));
@@ -707,13 +738,14 @@ mod tests {
             ]
         });
 
-        let fills = extract_our_fills(&mut sess, &raw, "DOWN_TOKEN", Some("BUY"), 0.42, 50.50);
+        let fills = extract_our_fills(&sess, &raw, "DOWN_TOKEN", Some("BUY"), 0.42, 50.50);
         assert_eq!(fills.len(), 1);
         let f = &fills[0];
         assert_eq!(f.outcome, Outcome::Up);
         assert_eq!(f.asset_id, "UP_TOKEN");
         assert!((f.price - 0.58).abs() < 1e-9);
         assert!((f.size - 9.0).abs() < 1e-9);
+        assert!(!f.is_taker, "maker rolü → fee=0");
     }
 
     /// İki fill: size toplanır, price weighted average.
@@ -723,18 +755,20 @@ mod tests {
             OurFill {
                 outcome: Outcome::Up,
                 asset_id: "UP_TOKEN".into(),
-            side: Side::Buy,
-            price: 0.32,
-            size: 5.0,
-            order_id: Some("0xMINE".into()),
-        },
-        OurFill {
-            outcome: Outcome::Up,
-            asset_id: "UP_TOKEN".into(),
-            side: Side::Buy,
-            price: 0.34,
+                side: Side::Buy,
+                price: 0.32,
+                size: 5.0,
+                order_id: Some("0xMINE".into()),
+                is_taker: false,
+            },
+            OurFill {
+                outcome: Outcome::Up,
+                asset_id: "UP_TOKEN".into(),
+                side: Side::Buy,
+                price: 0.34,
                 size: 10.0,
                 order_id: Some("0xMINE".into()),
+                is_taker: false,
             },
         ];
         let (outcome, asset, side, price, size) = aggregate_for_persist(&fills);
@@ -756,6 +790,7 @@ mod tests {
             price: 0.92,
             size: 98.41,
             order_id: None,
+            is_taker: true,
         }];
         let (_o, _a, side, price, size) = aggregate_for_persist(&fills);
         assert_eq!(side.as_deref(), Some("SELL"));
@@ -763,7 +798,7 @@ mod tests {
         assert!((size - 98.41).abs() < 1e-9);
     }
 
-    /// Maker (order_id=Some) → fee=0 her zaman.
+    /// Maker (`is_taker=false`) → fee=0 her zaman.
     #[test]
     fn compute_fee_maker_returns_zero() {
         let f = OurFill {
@@ -773,6 +808,7 @@ mod tests {
             price: 0.50,
             size: 10.0,
             order_id: Some("0xMINE".into()),
+            is_taker: false,
         };
         assert_eq!(compute_fee(&f, Some(1000.0)), 0.0);
         assert_eq!(compute_fee(&f, Some(720.0)), 0.0);
@@ -789,6 +825,7 @@ mod tests {
             price: 0.52,
             size: 10.0,
             order_id: None,
+            is_taker: true,
         };
         let fee = compute_fee(&f, Some(1000.0));
         assert!((fee - 0.2496).abs() < 1e-9, "expected 0.2496, got {fee}");
@@ -804,6 +841,7 @@ mod tests {
             price: 0.50,
             size: 10.0,
             order_id: None,
+            is_taker: true,
         };
         let fee = compute_fee(&f, Some(1000.0));
         assert!((fee - 0.25).abs() < 1e-9);
@@ -819,8 +857,28 @@ mod tests {
             price: 0.52,
             size: 10.0,
             order_id: None,
+            is_taker: true,
         };
         assert_eq!(compute_fee(&f, None), 0.0);
+    }
+
+    /// REST `status=matched` sonrası `open_orders`'taki marker (kendi taker
+    /// emrimiz) WS event'inde `taker_order_id` ile eşleşse bile fee=0
+    /// olmamalı — marker `OurFill.order_id`'ı set ediyor ama bu emir
+    /// gerçekten taker olarak doldu, fee taker concave'i.
+    #[test]
+    fn compute_fee_taker_with_marker_id_still_charges_fee() {
+        let f = OurFill {
+            outcome: Outcome::Up,
+            asset_id: "UP_TOKEN".into(),
+            side: Side::Buy,
+            price: 0.52,
+            size: 10.0,
+            order_id: Some("0xMARKER".into()),
+            is_taker: true,
+        };
+        let fee = compute_fee(&f, Some(1000.0));
+        assert!((fee - 0.2496).abs() < 1e-9, "marker id fee'yi sıfırlamamalı");
     }
 
     /// Tek fill emrin tamamını doldurursa prune.
