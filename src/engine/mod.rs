@@ -130,6 +130,11 @@ impl MarketSession {
                     max_price: self.max_price,
                     cooldown_threshold: self.cooldown_threshold,
                     signal_ready,
+                    avg_min_score: cfg.strategy_params.avg_min_score_or_default(),
+                    max_position_usdc: cfg.strategy_params.max_position_usdc(),
+                    opposite_pyramid_enabled: cfg
+                        .strategy_params
+                        .opposite_pyramid_enabled_or_default(),
                 };
                 let (new_state, decision) =
                     <HarvestEngine as DecisionEngine>::decide(self.harvest_state, &ctx);

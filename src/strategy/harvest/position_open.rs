@@ -27,6 +27,11 @@ pub fn handle(filled_side: Outcome, ctx: &HarvestContext) -> (HarvestState, Deci
         return (same, Decision::CancelOrders(stale));
     }
 
+    let opposed = ctx.signal_opposed_avg_ids();
+    if !opposed.is_empty() {
+        return (same, Decision::CancelOrders(opposed));
+    }
+
     let hedge_side = majority
         .map(|m| m.opposite())
         .unwrap_or_else(|| filled_side.opposite());
@@ -250,12 +255,22 @@ fn try_avg_down(filled_side: Outcome, ctx: &HarvestContext) -> Option<PlannedOrd
     if ctx.has_open_avg(filled_side) {
         return None;
     }
+    if !ctx.signal_supports(filled_side) {
+        return None;
+    }
+    if ctx.position_cap_reached() {
+        return None;
+    }
     let ask = ctx.best_ask(filled_side);
     let avg = ctx.avg_filled(filled_side);
     if avg <= 0.0 || ask <= 0.0 || ask >= avg {
         return None;
     }
-    let price = ctx.snap_clamp(ctx.best_bid(filled_side));
+    let bid = ctx.best_bid(filled_side);
+    if !ctx.price_in_band(bid) {
+        return None;
+    }
+    let price = ctx.snap_clamp(bid);
     let size = crate::strategy::order_size(ctx.order_usdc, price, ctx.api_min_order_size);
     Some(planned_buy_gtc(
         filled_side,
@@ -275,8 +290,17 @@ fn try_pyramid(filled_side: Outcome, ctx: &HarvestContext) -> Option<PlannedOrde
     if ctx.has_open_pyramid(rising) {
         return None;
     }
+    if rising != filled_side && !ctx.opposite_pyramid_enabled {
+        return None;
+    }
+    if !ctx.signal_supports(rising) {
+        return None;
+    }
+    if ctx.position_cap_reached() {
+        return None;
+    }
     let ask = ctx.best_ask(rising);
-    if ask <= 0.0 {
+    if ask <= 0.0 || !ctx.price_in_band(ask) {
         return None;
     }
     if rising == filled_side {

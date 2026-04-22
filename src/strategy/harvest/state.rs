@@ -77,6 +77,9 @@ pub struct HarvestContext<'a> {
     pub max_price: f64,
     pub cooldown_threshold: u64,
     pub signal_ready: bool,
+    pub avg_min_score: f64,
+    pub max_position_usdc: Option<f64>,
+    pub opposite_pyramid_enabled: bool,
 }
 
 impl<'a> HarvestContext<'a> {
@@ -208,5 +211,47 @@ impl<'a> HarvestContext<'a> {
             })
             .map(|o| o.id.clone())
             .collect()
+    }
+
+    /// P0: `effective_score` `side` tarafını destekliyor mu?
+    /// UP için skor `avg_min_score` ≥ eşik, DOWN için `10 − avg_min_score` ≤ eşik.
+    /// `avg_min_score == 0.0` → guard kapalı, her zaman `true` döner.
+    pub(super) fn signal_supports(&self, side: Outcome) -> bool {
+        if self.avg_min_score == 0.0 {
+            return true;
+        }
+        match side {
+            Outcome::Up => self.effective_score >= self.avg_min_score,
+            Outcome::Down => self.effective_score <= 10.0 - self.avg_min_score,
+        }
+    }
+
+    /// P1: Signal'ın artık desteklemediği açık avg/pyramid emirlerinin ID listesi.
+    /// Bir sonraki tick'te cancel edilmek üzere `handle()` tarafından sorgulanır.
+    pub(super) fn signal_opposed_avg_ids(&self) -> Vec<String> {
+        if self.avg_min_score == 0.0 {
+            return vec![];
+        }
+        self.open_orders
+            .iter()
+            .filter(|o| {
+                (o.reason.starts_with(AVG_DOWN_REASON_PREFIX)
+                    || o.reason.starts_with(PYRAMID_REASON_PREFIX))
+                    && !self.signal_supports(o.outcome)
+            })
+            .map(|o| o.id.clone())
+            .collect()
+    }
+
+    /// P2: Toplam notional (cost_basis) pencere başına cap'i aştı mı?
+    pub(super) fn position_cap_reached(&self) -> bool {
+        match self.max_position_usdc {
+            Some(cap) => {
+                let total = self.metrics.avg_yes * self.metrics.shares_yes
+                    + self.metrics.avg_no * self.metrics.shares_no;
+                total >= cap
+            }
+            None => false,
+        }
     }
 }

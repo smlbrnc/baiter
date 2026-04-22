@@ -119,6 +119,19 @@ pub struct StrategyParams {
     /// `None` → default `3.0`. `0.0` → projeksiyon kapalı (eski davranış).
     #[serde(default)]
     pub signal_lookahead_secs: Option<f64>,
+    /// Avg-down ve pyramid emirleri için minimum composite skor eşiği
+    /// (UP tarafı için). DOWN tarafı için `10.0 − avg_min_score` kullanılır.
+    /// `None` → default `4.0`. `0.0` → guard kapalı (tüm sinyallerde avg izin verilir).
+    #[serde(default)]
+    pub avg_min_score: Option<f64>,
+    /// Pencere başına maksimum toplam notional (USDC). Bu eşiği aşınca
+    /// yeni avg-down / pyramid emri üretilmez. `None` → sınırsız (eski davranış).
+    #[serde(default)]
+    pub max_position_usdc: Option<f64>,
+    /// `rising_side != filled_side` durumunda karşı tarafa pyramiding.
+    /// `None` → default `false` (güvenli; S4 riskini önler).
+    #[serde(default)]
+    pub opposite_pyramid_enabled: Option<bool>,
 }
 
 impl StrategyParams {
@@ -142,6 +155,23 @@ impl StrategyParams {
     /// `[0, 30]` sn'ye clamp; default `3.0`. Üst sınır spike koruması.
     pub fn signal_lookahead_secs_or_default(&self) -> f64 {
         self.signal_lookahead_secs.unwrap_or(3.0).clamp(0.0, 30.0)
+    }
+
+    /// Avg-down/pyramid composite eşiği (UP tarafı); `[0, 5]` aralığına clamp.
+    /// Default `4.0` — skor 4.0 altında UP'a, 6.0 üstünde DOWN'a yeni avg yok.
+    /// `0.0` → guard devre dışı.
+    pub fn avg_min_score_or_default(&self) -> f64 {
+        self.avg_min_score.unwrap_or(4.0).clamp(0.0, 5.0)
+    }
+
+    /// Pencere başına maks notional (USDC); `None` → sınırsız.
+    pub fn max_position_usdc(&self) -> Option<f64> {
+        self.max_position_usdc.filter(|&v| v > 0.0)
+    }
+
+    /// Opposite-pyramid (rising != filled) varsayılan kapalı.
+    pub fn opposite_pyramid_enabled_or_default(&self) -> bool {
+        self.opposite_pyramid_enabled.unwrap_or(false)
     }
 }
 
