@@ -8,9 +8,11 @@
 //! 2. **NormalTrade (%10-50):** max 1 avg-down. Dominant tarafta bekleyen alis
 //!    GTC varsa iptal + AYNI size ile `best_bid_dom`'dan `alis:avgdown:dom`
 //!    olarak re-place. Bekleyen yoksa NoOp.
-//! 3. **AggTrade (%50-90):** max 1 pyramid (taker FAK) — pencere ortalama
-//!    skor + dominant `best_bid > 0.5` trend onayı.
-//! 4. **FakTrade (%90-97):** max 1 ek pyramid (taker FAK, daha agresif delta).
+//! 3. **AggTrade (%50-90):** max 1 pyramid (taker FAK) — anlık trend kazananına
+//!    yönlendir: `score_avg > 5 ∧ up_bid > 0.5` → UP, `score_avg < 5 ∧
+//!    down_bid > 0.5` → DOWN. Opener-dom ile bağlı değil; opener yanlış
+//!    yöne girdiyse pyramid gerçek trend tarafına eklenir.
+//! 4. **FakTrade (%90-97):** max 1 ek pyramid (aynı trend kuralı, daha agresif delta).
 //! 5. **StopTrade (%97+):** tüm açık emirleri iptal et, `Done`.
 //!
 //! ## Karar önceliği (her tick)
@@ -455,8 +457,13 @@ fn place_open_pair(ctx: &StrategyContext<'_>) -> (AlisState, Decision) {
         ctx.min_price,
         ctx.max_price,
     );
+    // Hedge'i planlanan limit (`intent_price`) değil beklenen fill (`intent_ask`)
+    // üzerinden hesapla: cross olan BUY emiri `best_ask`'ten dolar, dolayısıyla
+    // gerçek `avg_d == intent_ask`. Aksi halde requote_open_pair ilk tick'te
+    // hedge'i `safe = avg_threshold - intent_ask`'e taşımak için boşa cancel/place
+    // yapar.
     let pair_price = clamp_price(
-        ctx.avg_threshold - intent_price,
+        ctx.avg_threshold - intent_ask,
         ctx.min_price,
         ctx.max_price,
     );
@@ -622,15 +629,17 @@ fn try_pyramid(
     }
     let score_avg = score_sum / (score_samples as f64);
 
-    // Trend onayı: pencere ortalama skor + dominant best_bid > 0.5.
-    let trend_dir = match dominant_dir {
-        Outcome::Up if score_avg > 5.0 && ctx.up_best_bid > 0.5 => Some(Outcome::Up),
-        Outcome::Down if score_avg < 5.0 && ctx.down_best_bid > 0.5 => Some(Outcome::Down),
-        _ => None,
-    };
-    if trend_dir != Some(dominant_dir) {
+    // Pyramid yönü = anlık trend kazananı (opener'dan miras dom değil).
+    // UP trend: score_avg > 5 AND up_bid > 0.5 → pyramid UP
+    // DOWN trend: score_avg < 5 AND down_bid > 0.5 → pyramid DOWN
+    // Ne UP ne DOWN trend net değilse NoOp.
+    let trend_dir = if score_avg > 5.0 && ctx.up_best_bid > 0.5 {
+        Outcome::Up
+    } else if score_avg < 5.0 && ctx.down_best_bid > 0.5 {
+        Outcome::Down
+    } else {
         return (state, Decision::NoOp);
-    }
+    };
 
     if ctx
         .now_ms
@@ -640,7 +649,7 @@ fn try_pyramid(
         return (state, Decision::NoOp);
     }
 
-    let score_ok = match dominant_dir {
+    let score_ok = match trend_dir {
         Outcome::Up => ctx.effective_score > 5.0,
         Outcome::Down => ctx.effective_score < 5.0,
     };
@@ -648,12 +657,12 @@ fn try_pyramid(
         return (state, Decision::NoOp);
     }
 
-    let best_ask_dom = ctx.best_ask(dominant_dir);
-    let last_filled = match dominant_dir {
+    let best_ask_trend = ctx.best_ask(trend_dir);
+    let last_filled = match trend_dir {
         Outcome::Up => ctx.metrics.last_filled_up,
         Outcome::Down => ctx.metrics.last_filled_down,
     };
-    if best_ask_dom <= 0.0 || best_ask_dom <= last_filled {
+    if best_ask_trend <= 0.0 || best_ask_trend <= last_filled {
         return (state, Decision::NoOp);
     }
 
@@ -663,7 +672,7 @@ fn try_pyramid(
         _ => return (state, Decision::NoOp),
     };
     let pyramid_usdc = ctx.strategy_params.pyramid_usdc_or(ctx.order_usdc);
-    let price = clamp_price(best_ask_dom + delta, ctx.min_price, ctx.max_price);
+    let price = clamp_price(best_ask_trend + delta, ctx.min_price, ctx.max_price);
     if price <= 0.0 {
         return (state, Decision::NoOp);
     }
@@ -678,13 +687,13 @@ fn try_pyramid(
         _ => "n/a",
     };
     let order = PlannedOrder {
-        outcome: dominant_dir,
-        token_id: ctx.token_id(dominant_dir).to_string(),
+        outcome: trend_dir,
+        token_id: ctx.token_id(trend_dir).to_string(),
         side: Side::Buy,
         price,
         size,
         order_type: OrderType::Fak,
-        reason: format!("alis:pyramid:{}:{}", label, dominant_dir.as_lowercase()),
+        reason: format!("alis:pyramid:{}:{}", label, trend_dir.as_lowercase()),
     };
 
     let new_state = AlisState::PositionOpen {
