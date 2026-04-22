@@ -19,5 +19,5 @@ pub use fees::fee_for_role;
 pub use gamma::{GammaClient, GammaMarket};
 pub use ws::{
     run_market_ws, run_user_ws, MakerOrder, MarketResolvedPayload, OrderLifecycle, OrderPayload,
-    PolymarketEvent, PriceChangeLevel, TradePayload, TradeStatus,
+    PolymarketEvent, PriceChangeLevel, TradePayload, TradeStatus, WsChannels,
 };

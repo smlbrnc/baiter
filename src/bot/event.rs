@@ -29,8 +29,8 @@ pub fn handle_event(
         PolymarketEvent::BestBidAsk { asset_id, best_bid, best_ask } => {
             on_best_bid_ask(sess, pool, run_mode, &asset_id, best_bid, best_ask)
         }
-        PolymarketEvent::Book { asset_id, bids, asks } => {
-            on_book_snapshot(sess, pool, run_mode, &asset_id, &bids, &asks)
+        PolymarketEvent::Book { asset_id, best_bid, best_ask } => {
+            on_book_snapshot(sess, pool, run_mode, &asset_id, best_bid, best_ask)
         }
         PolymarketEvent::PriceChange { changes } => {
             on_price_change(sess, pool, run_mode, &changes)
@@ -58,15 +58,11 @@ fn on_book_snapshot(
     pool: &SqlitePool,
     run_mode: RunMode,
     asset_id: &str,
-    bids: &[f64],
-    asks: &[f64],
+    best_bid: f64,
+    best_ask: f64,
 ) {
-    let best_bid = bids.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    let best_ask = asks.iter().copied().fold(f64::INFINITY, f64::min);
-    if best_bid.is_finite() && best_ask.is_finite() {
-        update_best(sess, asset_id, best_bid, best_ask);
-        after_book_update(sess, pool, run_mode);
-    }
+    update_best(sess, asset_id, best_bid, best_ask);
+    after_book_update(sess, pool, run_mode);
 }
 
 fn on_price_change(

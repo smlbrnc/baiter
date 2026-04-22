@@ -82,7 +82,6 @@ pub struct MakerOrder {
     pub price: f64,
     pub side: Side,
     pub owner: Option<String>,
-    /// AsyncAPI: `maker_orders[].outcome` ("UP" / "DOWN").
     pub outcome: Option<String>,
 }
 
@@ -98,12 +97,9 @@ pub struct TradePayload {
     pub taker_order_id: Option<String>,
     pub trader_side: Option<String>,
     pub maker_orders: Vec<MakerOrder>,
-    /// Resmi AsyncAPI: "API key of the taker" (REQUIRED). Trade event'inde
-    /// top-level `owner` her zaman taker'ın UUID'sidir. Biz taker isek bizim
-    /// UUID; biz maker isek karşıdaki taker'ın UUID'si.
+    /// Top-level `owner`: taker'ın API key UUID'si (AsyncAPI REQUIRED).
     pub owner: Option<String>,
-    /// AsyncAPI: top-level `outcome` ("UP" / "DOWN") — taker tarafının
-    /// outcome'u. Maker fill'lerimiz için `maker_orders[].outcome` kullanılır.
+    /// Taker tarafının outcome'u; maker fill'leri için `maker_orders[].outcome`.
     pub outcome: Option<String>,
     pub timestamp_ms: u64,
 }
@@ -111,16 +107,10 @@ pub struct TradePayload {
 #[derive(Debug, Clone)]
 pub struct OrderPayload {
     pub order_id: String,
-    pub market: String,
-    pub asset_id: String,
-    pub side: Side,
-    pub original_size: Option<f64>,
     pub size_matched: Option<f64>,
-    pub price: Option<f64>,
     pub order_type: Option<OrderType>,
     pub status: String,
     pub lifecycle: OrderLifecycle,
-    pub timestamp_ms: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -135,8 +125,8 @@ pub struct MarketResolvedPayload {
 pub enum PolymarketEvent {
     Book {
         asset_id: String,
-        bids: Vec<f64>,
-        asks: Vec<f64>,
+        best_bid: f64,
+        best_ask: f64,
     },
     PriceChange {
         changes: Vec<PriceChangeLevel>,
@@ -158,10 +148,18 @@ pub struct PriceChangeLevel {
     pub best_ask: Option<f64>,
 }
 
+/// Book/PriceChange/BestBidAsk → `book_tx` (idempotent, silent drop on full).
+/// Trade/Order/MarketResolved → `event_tx` (stateful, warn on full).
+#[derive(Clone)]
+pub struct WsChannels {
+    pub book_tx: mpsc::Sender<PolymarketEvent>,
+    pub event_tx: mpsc::Sender<PolymarketEvent>,
+}
+
 pub async fn run_market_ws(
     base_ws: String,
     asset_ids: Vec<String>,
-    tx: mpsc::Sender<PolymarketEvent>,
+    chans: WsChannels,
 ) {
     let url = format!("{}/market", base_ws);
     let sub = serde_json::json!({
@@ -169,14 +167,14 @@ pub async fn run_market_ws(
         "type": "market",
         "custom_feature_enabled": true,
     });
-    run_ws_loop(&url, sub, tx).await;
+    run_ws_loop(&url, sub, chans).await;
 }
 
 pub async fn run_user_ws(
     base_ws: String,
     creds: Credentials,
     markets: Vec<String>,
-    tx: mpsc::Sender<PolymarketEvent>,
+    chans: WsChannels,
 ) {
     let url = format!("{}/user", base_ws);
     let sub = serde_json::json!({
@@ -188,13 +186,13 @@ pub async fn run_user_ws(
         "markets": markets,
         "type": "user",
     });
-    run_ws_loop(&url, sub, tx).await;
+    run_ws_loop(&url, sub, chans).await;
 }
 
-async fn run_ws_loop(url: &str, subscription: Value, tx: mpsc::Sender<PolymarketEvent>) {
+async fn run_ws_loop(url: &str, subscription: Value, chans: WsChannels) {
     let mut backoff_secs: u64 = 1;
     loop {
-        match connect_and_stream(url, &subscription, &tx).await {
+        match connect_and_stream(url, &subscription, &chans).await {
             Ok(()) => {
                 tracing::warn!(url, "ws closed cleanly, reconnect in {backoff_secs}s");
                 backoff_secs = 1;
@@ -211,7 +209,7 @@ async fn run_ws_loop(url: &str, subscription: Value, tx: mpsc::Sender<Polymarket
 async fn connect_and_stream(
     url: &str,
     subscription: &Value,
-    tx: &mpsc::Sender<PolymarketEvent>,
+    chans: &WsChannels,
 ) -> Result<(), AppError> {
     let (ws_stream, _resp) = tokio_tungstenite::connect_async(url)
         .await
@@ -241,11 +239,11 @@ async fn connect_and_stream(
                 };
                 match msg {
                     Message::Text(t) => {
-                        parse_and_dispatch(&t, tx);
+                        parse_and_dispatch(&t, chans);
                     }
                     Message::Binary(b) => {
                         if let Ok(s) = String::from_utf8(b.to_vec()) {
-                            parse_and_dispatch(&s, tx);
+                            parse_and_dispatch(&s, chans);
                         }
                     }
                     Message::Ping(p) => {
@@ -261,7 +259,7 @@ async fn connect_and_stream(
     }
 }
 
-fn parse_and_dispatch(text: &str, tx: &mpsc::Sender<PolymarketEvent>) {
+fn parse_and_dispatch(text: &str, chans: &WsChannels) {
     let trimmed = text.trim();
     if trimmed.is_empty()
         || trimmed == "{}"
@@ -283,25 +281,33 @@ fn parse_and_dispatch(text: &str, tx: &mpsc::Sender<PolymarketEvent>) {
     };
     for item in items {
         if let Some(ev) = map_event(&item) {
-            if !forward_event(tx, ev) {
+            if !forward_event(chans, ev) {
                 return;
             }
         }
     }
 }
 
-static DROP_COUNTER: AtomicU64 = AtomicU64::new(0);
+static EVENT_DROP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-fn forward_event(tx: &mpsc::Sender<PolymarketEvent>, ev: PolymarketEvent) -> bool {
+fn forward_event(chans: &WsChannels, ev: PolymarketEvent) -> bool {
+    let (tx, is_critical) = match &ev {
+        PolymarketEvent::Trade(_)
+        | PolymarketEvent::Order(_)
+        | PolymarketEvent::MarketResolved(_) => (&chans.event_tx, true),
+        PolymarketEvent::Book { .. }
+        | PolymarketEvent::PriceChange { .. }
+        | PolymarketEvent::BestBidAsk { .. } => (&chans.book_tx, false),
+    };
     match tx.try_send(ev) {
         Ok(()) => true,
         Err(TrySendError::Full(dropped)) => {
-            let total = DROP_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
-            if total.is_multiple_of(100) {
+            if is_critical {
+                let total = EVENT_DROP_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
                 tracing::warn!(
                     drop_total = total,
-                    last_kind = event_kind_label(&dropped),
-                    "ws event channel full — drop summary (every 100 drops)"
+                    kind = event_kind_label(&dropped),
+                    "CRITICAL event channel full — drop will skew state"
                 );
             }
             true
@@ -343,14 +349,14 @@ fn as_str(v: &Value, key: &str) -> Option<String> {
 
 fn map_event(v: &Value) -> Option<PolymarketEvent> {
     let etype = v.get("event_type")?.as_str()?;
-    let ts = as_u64(v, "timestamp").unwrap_or(0);
     match etype {
         "book" => map_book(v),
         "price_change" => map_price_change(v),
         "best_bid_ask" => map_best_bid_ask(v),
-        "market_resolved" => map_market_resolved(v, ts),
-        "order" => map_order(v, ts),
-        "trade" => map_trade(v, ts),
+        "market_resolved" => map_market_resolved(v),
+        "order" => map_order(v),
+        "trade" => map_trade(v, as_u64(v, "timestamp")?),
+        "last_trade_price" | "new_market" => None,
         other => {
             tracing::debug!(event_type = other, "unknown event_type, skipped");
             None
@@ -359,10 +365,13 @@ fn map_event(v: &Value) -> Option<PolymarketEvent> {
 }
 
 fn map_book(v: &Value) -> Option<PolymarketEvent> {
+    let asset_id = as_str(v, "asset_id")?;
+    let best_bid = level_extreme(v, "bids", true)?;
+    let best_ask = level_extreme(v, "asks", false)?;
     Some(PolymarketEvent::Book {
-        asset_id: as_str(v, "asset_id")?,
-        bids: extract_levels(v, "bids"),
-        asks: extract_levels(v, "asks"),
+        asset_id,
+        best_bid,
+        best_ask,
     })
 }
 
@@ -389,29 +398,22 @@ fn map_best_bid_ask(v: &Value) -> Option<PolymarketEvent> {
     })
 }
 
-fn map_market_resolved(v: &Value, timestamp_ms: u64) -> Option<PolymarketEvent> {
+fn map_market_resolved(v: &Value) -> Option<PolymarketEvent> {
     Some(PolymarketEvent::MarketResolved(MarketResolvedPayload {
         market: as_str(v, "market")?,
         winning_outcome: as_str(v, "winning_outcome")?,
         winning_asset_id: as_str(v, "winning_asset_id"),
-        timestamp_ms,
+        timestamp_ms: as_u64(v, "timestamp")?,
     }))
 }
 
-fn map_order(v: &Value, timestamp_ms: u64) -> Option<PolymarketEvent> {
-    let order_type = as_str(v, "order_type").and_then(|s| OrderType::parse(&s));
+fn map_order(v: &Value) -> Option<PolymarketEvent> {
     Some(PolymarketEvent::Order(OrderPayload {
         order_id: as_str(v, "id")?,
-        market: as_str(v, "market")?,
-        asset_id: as_str(v, "asset_id")?,
-        side: Side::parse(&as_str(v, "side")?)?,
-        original_size: as_f64(v, "original_size"),
         size_matched: as_f64(v, "size_matched"),
-        price: as_f64(v, "price"),
-        order_type,
+        order_type: as_str(v, "order_type").and_then(|s| OrderType::parse(&s)),
         status: as_str(v, "status")?,
         lifecycle: OrderLifecycle::parse(&as_str(v, "type")?)?,
-        timestamp_ms,
     }))
 }
 
@@ -452,13 +454,17 @@ fn parse_maker_orders(v: Option<&Value>) -> Vec<MakerOrder> {
         .collect()
 }
 
-fn extract_levels(v: &Value, key: &str) -> Vec<f64> {
-    v.get(key)
-        .and_then(|x| x.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|lvl| lvl.get("price")?.as_str()?.parse::<f64>().ok())
-                .collect()
-        })
-        .unwrap_or_default()
+fn level_extreme(v: &Value, key: &str, is_max: bool) -> Option<f64> {
+    let arr = v.get(key)?.as_array()?;
+    let mut best: Option<f64> = None;
+    for lvl in arr {
+        let Some(p) = lvl.get("price").and_then(|x| x.as_str()) else { continue };
+        let Ok(px) = p.parse::<f64>() else { continue };
+        best = Some(match best {
+            None => px,
+            Some(cur) if (is_max && px > cur) || (!is_max && px < cur) => px,
+            Some(cur) => cur,
+        });
+    }
+    best
 }

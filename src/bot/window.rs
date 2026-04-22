@@ -10,7 +10,7 @@ use crate::db;
 use crate::engine::{Executor, MarketSession};
 use crate::error::AppError;
 use crate::ipc::{self, FrontendEvent};
-use crate::polymarket::{run_market_ws, run_user_ws, PolymarketEvent};
+use crate::polymarket::{run_market_ws, run_user_ws, PolymarketEvent, WsChannels};
 use crate::rtds;
 use crate::slug::SlugInfo;
 use crate::time::{now_secs, t_minus_15};
@@ -44,7 +44,16 @@ pub async fn run_window(
     wait_for_t_zero(session.start_ts).await;
     log_loop_start(ctx, &label);
 
-    let result = run_trading_loop(ctx, slug, session, streams.ev_rx, sigterm, sigint).await;
+    let result = run_trading_loop(
+        ctx,
+        slug,
+        session,
+        streams.event_rx,
+        streams.book_rx,
+        sigterm,
+        sigint,
+    )
+    .await;
 
     cleanup_window(ctx, streams.market_ws, streams.user_ws, &label, result).await;
     Ok(result)
@@ -150,25 +159,23 @@ async fn prepare_window(
     })
 }
 
-/// Aktif WS bağlantıları + event channel.
 struct WindowStreams {
-    ev_rx: mpsc::Receiver<PolymarketEvent>,
+    event_rx: mpsc::Receiver<PolymarketEvent>,
+    book_rx: mpsc::Receiver<PolymarketEvent>,
     market_ws: tokio::task::JoinHandle<()>,
     user_ws: Option<tokio::task::JoinHandle<()>>,
 }
 
-/// Market WS + (varsa) User WS task'larını başlatır, mpsc channel kurar.
 fn connect_streams(ctx: &Ctx, session: &MarketSession, label: &str) -> WindowStreams {
     ipc::log_line(label, "🔌 Connecting to Market WebSocket...");
-    // Buffer 2048: burst'lerde drop'u düşürür (~400KB worst-case bellek).
-    let (ev_tx, ev_rx) = mpsc::channel::<PolymarketEvent>(2048);
-    // `clob_ws_base` field'ı tek noktada clone edilir; market_ws her zaman bir
-    // kopya alır, user_ws (varsa) binding'i move ile devralır.
+    let (event_tx, event_rx) = mpsc::channel::<PolymarketEvent>(1024);
+    let (book_tx, book_rx) = mpsc::channel::<PolymarketEvent>(256);
+    let chans = WsChannels { book_tx, event_tx };
     let ws_base = ctx.env_.clob_ws_base.clone();
     let market_ws = tokio::spawn(run_market_ws(
         ws_base.clone(),
         vec![session.up_token_id.clone(), session.down_token_id.clone()],
-        ev_tx.clone(),
+        chans.clone(),
     ));
     let user_ws = ctx.creds.as_ref().map(|c| {
         ipc::log_line(label, "🔌 Connecting to User WebSocket...");
@@ -176,11 +183,12 @@ fn connect_streams(ctx: &Ctx, session: &MarketSession, label: &str) -> WindowStr
             ws_base,
             c.clone(),
             vec![session.condition_id.clone()],
-            ev_tx,
+            chans,
         ))
     });
     WindowStreams {
-        ev_rx,
+        event_rx,
+        book_rx,
         market_ws,
         user_ws,
     }
@@ -209,22 +217,29 @@ async fn run_trading_loop(
     ctx: &Ctx,
     slug: SlugInfo,
     mut sess: MarketSession,
-    mut ev_rx: mpsc::Receiver<PolymarketEvent>,
+    mut event_rx: mpsc::Receiver<PolymarketEvent>,
+    mut book_rx: mpsc::Receiver<PolymarketEvent>,
     sigterm: &mut Signal,
     sigint: &mut Signal,
 ) -> Option<&'static str> {
-    // Critical Path Zero Block: WS event → handle_event → tick aynı select! arm'ında.
     let mut tick_timer = tokio_interval(Duration::from_secs(1));
     let mut frontend_timer = tokio_interval(Duration::from_secs(1));
     let mut rtds_open_persisted = false;
 
     loop {
         tokio::select! {
+            biased;
             _ = sigterm.recv() => return Some("sigterm"),
             _ = sigint.recv()  => return Some("sigint"),
-            Some(ev) = ev_rx.recv() => {
+            Some(ev) = event_rx.recv() => {
                 event::handle_event(&mut sess, &ctx.pool, ctx.cfg.run_mode, ev);
                 tick::tick(ctx, &mut sess).await;
+            }
+            Some(ev) = book_rx.recv() => {
+                event::handle_event(&mut sess, &ctx.pool, ctx.cfg.run_mode, ev);
+                while let Ok(more) = book_rx.try_recv() {
+                    event::handle_event(&mut sess, &ctx.pool, ctx.cfg.run_mode, more);
+                }
             }
             _ = tick_timer.tick() => tick::tick(ctx, &mut sess).await,
             _ = frontend_timer.tick() => {
