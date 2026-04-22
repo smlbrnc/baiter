@@ -129,6 +129,11 @@ async fn prepare_window(
         Executor::DryRun(_) => 0,
     };
 
+    // User channel `apiKey` ile filtreli; aynı UUID trade event'lerinde
+    // `owner` / `maker_orders[].owner` alanlarında geri gelir → bizim
+    // maker fill'lerini bu UUID ile ayırt ediyoruz.
+    let owner_uuid = ctx.creds.as_ref().map(|c| c.poly_api_key.clone());
+
     Ok(MarketSession {
         up_token_id: up_id,
         down_token_id: down_id,
@@ -140,6 +145,7 @@ async fn prepare_window(
         end_ts,
         market_session_id: session_id,
         fee_rate_bps,
+        owner_uuid,
         ..MarketSession::new(ctx.bot_id, slug.to_slug(), &ctx.cfg)
     })
 }

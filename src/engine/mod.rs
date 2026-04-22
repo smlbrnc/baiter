@@ -59,6 +59,11 @@ pub struct MarketSession {
     pub cooldown_threshold: u64,
     pub fee_rate_bps: u32,
     pub book_ready_logged: bool,
+    /// Polymarket API key UUID (`derive-api-key.apiKey`). User channel
+    /// `apiKey` ile filtrelenir → trade event `owner` ve `maker_orders[].owner`
+    /// alanları bu UUID ile karşılaştırılarak bizim fill'ler tespit edilir.
+    /// DryRun'da `None` (live executor yok).
+    pub owner_uuid: Option<String>,
 }
 
 impl MarketSession {
@@ -88,6 +93,7 @@ impl MarketSession {
             cooldown_threshold: cfg.cooldown_threshold,
             fee_rate_bps: 0,
             book_ready_logged: false,
+            owner_uuid: None,
         }
     }
 

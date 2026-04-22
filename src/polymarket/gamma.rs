@@ -13,6 +13,8 @@ pub struct GammaMarket {
     pub condition_id: Option<String>,
     #[serde(default, rename = "clobTokenIds")]
     pub clob_token_ids: Option<String>,
+    #[serde(default)]
+    pub outcomes: Option<String>,
     #[serde(default, rename = "orderPriceMinTickSize")]
     pub tick_size: Option<f64>,
     #[serde(default, rename = "orderMinSize")]
@@ -22,20 +24,47 @@ pub struct GammaMarket {
 }
 
 impl GammaMarket {
+    /// `outcomes[i] ↔ clobTokenIds[i]` pozisyonel pairing (Gamma şeması).
+    /// "Up"/"Yes" → up_token_id, "Down"/"No" → down_token_id.
     pub fn parse_token_ids(&self) -> Result<(String, String), AppError> {
-        let raw = self
+        let ids_raw = self
             .clob_token_ids
             .as_ref()
             .ok_or_else(|| AppError::Gamma("clobTokenIds eksik".to_string()))?;
-        let ids: Vec<String> = serde_json::from_str(raw)
+        let outcomes_raw = self
+            .outcomes
+            .as_ref()
+            .ok_or_else(|| AppError::Gamma("outcomes eksik".to_string()))?;
+        let ids: Vec<String> = serde_json::from_str(ids_raw)
             .map_err(|e| AppError::Gamma(format!("clobTokenIds parse: {e}")))?;
-        if ids.len() != 2 {
+        let outcomes: Vec<String> = serde_json::from_str(outcomes_raw)
+            .map_err(|e| AppError::Gamma(format!("outcomes parse: {e}")))?;
+        if ids.len() != 2 || outcomes.len() != 2 {
             return Err(AppError::Gamma(format!(
-                "clobTokenIds 2 öğe beklendi, {} geldi",
-                ids.len()
+                "clobTokenIds & outcomes 2 öğe beklendi (got {}/{})",
+                ids.len(),
+                outcomes.len()
             )));
         }
-        Ok((ids[0].clone(), ids[1].clone()))
+        let mut up = None;
+        let mut down = None;
+        for (idx, name) in outcomes.iter().enumerate() {
+            match name.trim().to_ascii_lowercase().as_str() {
+                "up" | "yes" => up = Some(ids[idx].clone()),
+                "down" | "no" => down = Some(ids[idx].clone()),
+                other => {
+                    return Err(AppError::Gamma(format!(
+                        "tanınmayan outcome '{other}' (Up/Down/Yes/No bekleniyor)"
+                    )));
+                }
+            }
+        }
+        match (up, down) {
+            (Some(u), Some(d)) => Ok((u, d)),
+            _ => Err(AppError::Gamma(format!(
+                "outcomes beklenen Up/Down çiftini içermiyor: {outcomes:?}"
+            ))),
+        }
     }
 }
 

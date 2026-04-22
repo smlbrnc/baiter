@@ -96,7 +96,6 @@ pub struct TradePayload {
     pub taker_order_id: Option<String>,
     pub trader_side: Option<String>,
     pub maker_orders: Vec<MakerOrder>,
-    pub owner: Option<String>,
     pub timestamp_ms: u64,
 }
 
@@ -419,7 +418,6 @@ fn map_trade(v: &Value, timestamp_ms: u64) -> Option<PolymarketEvent> {
         taker_order_id: as_str(v, "taker_order_id"),
         trader_side: as_str(v, "trader_side"),
         maker_orders: parse_maker_orders(v.get("maker_orders")),
-        owner: as_str(v, "owner"),
         timestamp_ms,
     }))
 }

@@ -220,19 +220,15 @@ fn on_trade(sess: &mut MarketSession, pool: &SqlitePool, ev: &TradePayload) {
 /// Trade event'inden bizim fill'lerimizi çıkar.
 ///
 /// Spec: <https://docs.polymarket.com/developers/CLOB/websocket/user-channel>.
-/// User channel API key ile filtrelenmiş geldiği için her trade event "bizim"
+/// User channel `apiKey` ile filtrelenmiş geldiği için her trade event "bizim"
 /// trade'imizdir. Rolümüz `trader_side` field'ından okunur:
 ///
-/// - **`TAKER`**: top-level alanlar (`asset_id`, `outcome`, `side`, `size`,
-///   `price`) bizim taker fill'imizi temsil eder; `taker_order_id` bizim
-///   emir id'mizdir.
-/// - **`MAKER`**: top-level alanlar **taker'ın** tarafıdır (NEG_RISK
-///   complement match'lerinde outcome bizim outcome'ın komplemanı olur).
-///   Bizim maker entry'lerimiz `maker_orders[]` içinde `owner == top-level
-///   owner` filtresi ile bulunur — her birinin kendi `asset_id`, `side`,
-///   `price`, `matched_amount`'ı bizim fill'i taşır.
+/// - **`TAKER`**: top-level alanlar (`asset_id`, `side`, `size`, `price`)
+///   bizim taker fill'imizi temsil eder; `taker_order_id` bizim emir id'mizdir.
+/// - **`MAKER`**: top-level alanlar **taker'ın** tarafıdır (complement match'te
+///   outcome bizim outcome'ın komplemanı olabilir). Bizim maker entry'lerimiz
+///   `maker_orders[]` içinde `owner == sess.owner_uuid` filtresi ile bulunur.
 ///
-/// Hiçbir `raw.get()` çağrısı yok — sadece tipli `TradePayload` alanları.
 fn extract_fills(sess: &MarketSession, ev: &TradePayload) -> Vec<Fill> {
     match ev.trader_side.as_deref() {
         Some("MAKER") => extract_maker_fills(sess, ev),
@@ -241,11 +237,17 @@ fn extract_fills(sess: &MarketSession, ev: &TradePayload) -> Vec<Fill> {
     }
 }
 
+/// Polymarket user channel `apiKey` ile filtrelenir → trade event'inde
+/// `maker_orders[].owner == sess.owner_uuid` olan entry'ler bizim maker
+/// fill'lerimizdir. `ev.owner` (top-level) güvenilmez (CONFIRMED durumunda
+/// boş gelebiliyor); kesin teşhis için bilinen API key UUID'si kullanılır.
 fn extract_maker_fills(sess: &MarketSession, ev: &TradePayload) -> Vec<Fill> {
-    let owner = ev.owner.as_deref();
+    let Some(owner) = sess.owner_uuid.as_deref() else {
+        return Vec::new();
+    };
     ev.maker_orders
         .iter()
-        .filter(|m| owner.is_some() && m.owner.as_deref() == owner)
+        .filter(|m| m.owner.as_deref() == Some(owner))
         .filter_map(|m| {
             let outcome = outcome_from_asset_id(sess, &m.asset_id)?;
             Some(Fill {
