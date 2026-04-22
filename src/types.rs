@@ -34,6 +34,16 @@ impl Outcome {
             Self::Down => "down",
         }
     }
+
+    /// Polymarket WS payload `outcome` alanından parse — case-insensitive.
+    /// Bot yalnız UP/DOWN ikili marketlerini destekler.
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_uppercase().as_str() {
+            "UP" => Some(Self::Up),
+            "DOWN" => Some(Self::Down),
+            _ => None,
+        }
+    }
 }
 
 /// CLOB emir yönü — REST `side` alanı.

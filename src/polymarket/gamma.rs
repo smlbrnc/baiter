@@ -25,7 +25,8 @@ pub struct GammaMarket {
 
 impl GammaMarket {
     /// `outcomes[i] ↔ clobTokenIds[i]` pozisyonel pairing (Gamma şeması).
-    /// "Up"/"Yes" → up_token_id, "Down"/"No" → down_token_id.
+    /// Bot yalnız UP/DOWN ikili marketleri destekler ("Up" → up_token_id,
+    /// "Down" → down_token_id, case-insensitive).
     pub fn parse_token_ids(&self) -> Result<(String, String), AppError> {
         let ids_raw = self
             .clob_token_ids
@@ -49,12 +50,12 @@ impl GammaMarket {
         let mut up = None;
         let mut down = None;
         for (idx, name) in outcomes.iter().enumerate() {
-            match name.trim().to_ascii_lowercase().as_str() {
-                "up" | "yes" => up = Some(ids[idx].clone()),
-                "down" | "no" => down = Some(ids[idx].clone()),
+            match name.trim().to_ascii_uppercase().as_str() {
+                "UP" => up = Some(ids[idx].clone()),
+                "DOWN" => down = Some(ids[idx].clone()),
                 other => {
                     return Err(AppError::Gamma(format!(
-                        "tanınmayan outcome '{other}' (Up/Down/Yes/No bekleniyor)"
+                        "tanınmayan outcome '{other}' (UP/DOWN bekleniyor)"
                     )));
                 }
             }
@@ -62,7 +63,7 @@ impl GammaMarket {
         match (up, down) {
             (Some(u), Some(d)) => Ok((u, d)),
             _ => Err(AppError::Gamma(format!(
-                "outcomes beklenen Up/Down çiftini içermiyor: {outcomes:?}"
+                "outcomes beklenen UP/DOWN çiftini içermiyor: {outcomes:?}"
             ))),
         }
     }

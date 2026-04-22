@@ -228,13 +228,3 @@ pub fn update_best(session: &mut MarketSession, asset_id: &str, best_bid: f64, b
         session.down_best_ask = best_ask;
     }
 }
-
-pub fn outcome_from_asset_id(session: &MarketSession, asset_id: &str) -> Option<Outcome> {
-    if asset_id == session.up_token_id {
-        Some(Outcome::Up)
-    } else if asset_id == session.down_token_id {
-        Some(Outcome::Down)
-    } else {
-        None
-    }
-}

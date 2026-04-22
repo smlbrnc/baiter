@@ -82,6 +82,8 @@ pub struct MakerOrder {
     pub price: f64,
     pub side: Side,
     pub owner: Option<String>,
+    /// AsyncAPI: `maker_orders[].outcome` ("UP" / "DOWN").
+    pub outcome: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -96,6 +98,13 @@ pub struct TradePayload {
     pub taker_order_id: Option<String>,
     pub trader_side: Option<String>,
     pub maker_orders: Vec<MakerOrder>,
+    /// Resmi AsyncAPI: "API key of the taker" (REQUIRED). Trade event'inde
+    /// top-level `owner` her zaman taker'ın UUID'sidir. Biz taker isek bizim
+    /// UUID; biz maker isek karşıdaki taker'ın UUID'si.
+    pub owner: Option<String>,
+    /// AsyncAPI: top-level `outcome` ("UP" / "DOWN") — taker tarafının
+    /// outcome'u. Maker fill'lerimiz için `maker_orders[].outcome` kullanılır.
+    pub outcome: Option<String>,
     pub timestamp_ms: u64,
 }
 
@@ -418,6 +427,8 @@ fn map_trade(v: &Value, timestamp_ms: u64) -> Option<PolymarketEvent> {
         taker_order_id: as_str(v, "taker_order_id"),
         trader_side: as_str(v, "trader_side"),
         maker_orders: parse_maker_orders(v.get("maker_orders")),
+        owner: as_str(v, "owner"),
+        outcome: as_str(v, "outcome"),
         timestamp_ms,
     }))
 }
@@ -435,6 +446,7 @@ fn parse_maker_orders(v: Option<&Value>) -> Vec<MakerOrder> {
                 price: as_f64(m, "price")?,
                 side: Side::parse(&as_str(m, "side")?)?,
                 owner: as_str(m, "owner"),
+                outcome: as_str(m, "outcome"),
             })
         })
         .collect()
