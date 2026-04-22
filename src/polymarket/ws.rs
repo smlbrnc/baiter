@@ -81,6 +81,7 @@ pub struct MakerOrder {
     pub matched_amount: f64,
     pub price: f64,
     pub side: Side,
+    pub owner: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -95,6 +96,7 @@ pub struct TradePayload {
     pub taker_order_id: Option<String>,
     pub trader_side: Option<String>,
     pub maker_orders: Vec<MakerOrder>,
+    pub owner: Option<String>,
     pub timestamp_ms: u64,
 }
 
@@ -417,6 +419,7 @@ fn map_trade(v: &Value, timestamp_ms: u64) -> Option<PolymarketEvent> {
         taker_order_id: as_str(v, "taker_order_id"),
         trader_side: as_str(v, "trader_side"),
         maker_orders: parse_maker_orders(v.get("maker_orders")),
+        owner: as_str(v, "owner"),
         timestamp_ms,
     }))
 }
@@ -433,6 +436,7 @@ fn parse_maker_orders(v: Option<&Value>) -> Vec<MakerOrder> {
                 matched_amount: as_f64(m, "matched_amount")?,
                 price: as_f64(m, "price")?,
                 side: Side::parse(&as_str(m, "side")?)?,
+                owner: as_str(m, "owner"),
             })
         })
         .collect()

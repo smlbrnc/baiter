@@ -5,8 +5,6 @@
 //!
 //! Spec referansı: <https://docs.polymarket.com/developers/CLOB/websocket/user-channel>.
 
-use std::collections::HashSet;
-
 use sqlx::SqlitePool;
 
 use crate::db;
@@ -222,22 +220,32 @@ fn on_trade(sess: &mut MarketSession, pool: &SqlitePool, ev: &TradePayload) {
 /// Trade event'inden bizim fill'lerimizi çıkar.
 ///
 /// Spec: <https://docs.polymarket.com/developers/CLOB/websocket/user-channel>.
-/// İki olası rol:
-/// - **Maker**: `maker_orders[]`'ta `open_orders.id`'lerimizden eşleşen
-///   entry'ler (her biri kendi asset/side/price/matched_amount'ı taşır;
-///   NEG_RISK'te asset top-level'dan farklı outcome olabilir).
-/// - **Taker**: bizim id `maker_orders`'ta yok → top-level (asset_id, side,
-///   price, size) bizim view'ımız; bizim id ise `taker_order_id` field'ında
-///   olur.
+/// User channel API key ile filtrelenmiş geldiği için her trade event "bizim"
+/// trade'imizdir. Rolümüz `trader_side` field'ından okunur:
+///
+/// - **`TAKER`**: top-level alanlar (`asset_id`, `outcome`, `side`, `size`,
+///   `price`) bizim taker fill'imizi temsil eder; `taker_order_id` bizim
+///   emir id'mizdir.
+/// - **`MAKER`**: top-level alanlar **taker'ın** tarafıdır (NEG_RISK
+///   complement match'lerinde outcome bizim outcome'ın komplemanı olur).
+///   Bizim maker entry'lerimiz `maker_orders[]` içinde `owner == top-level
+///   owner` filtresi ile bulunur — her birinin kendi `asset_id`, `side`,
+///   `price`, `matched_amount`'ı bizim fill'i taşır.
 ///
 /// Hiçbir `raw.get()` çağrısı yok — sadece tipli `TradePayload` alanları.
 fn extract_fills(sess: &MarketSession, ev: &TradePayload) -> Vec<Fill> {
-    let our_ids: HashSet<&str> = sess.open_orders.iter().map(|o| o.id.as_str()).collect();
+    match ev.trader_side.as_deref() {
+        Some("MAKER") => extract_maker_fills(sess, ev),
+        Some("TAKER") => extract_taker_fill(sess, ev).into_iter().collect(),
+        _ => Vec::new(),
+    }
+}
 
-    let maker: Vec<Fill> = ev
-        .maker_orders
+fn extract_maker_fills(sess: &MarketSession, ev: &TradePayload) -> Vec<Fill> {
+    let owner = ev.owner.as_deref();
+    ev.maker_orders
         .iter()
-        .filter(|m| our_ids.contains(m.order_id.as_str()))
+        .filter(|m| owner.is_some() && m.owner.as_deref() == owner)
         .filter_map(|m| {
             let outcome = outcome_from_asset_id(sess, &m.asset_id)?;
             Some(Fill {
@@ -249,35 +257,21 @@ fn extract_fills(sess: &MarketSession, ev: &TradePayload) -> Vec<Fill> {
                 size: m.matched_amount,
             })
         })
-        .collect();
-    if !maker.is_empty() {
-        return maker;
-    }
+        .collect()
+}
 
-    // MAKER event'i ama open_orders'ta eşleşen order bulunamadı (dust eşiğiyle
-    // prune edilmiş olabilir). Bu durumda taker fallback'e DÜŞMEMELİYİZ:
-    // ev.size taker'ın toplam işlem büyüklüğü olur, bot'a phantom fill yazar.
-    if ev.trader_side.as_deref() == Some("MAKER") {
-        return Vec::new();
-    }
-
-    let outcome = match outcome_from_asset_id(sess, &ev.asset_id) {
-        Some(o) => o,
-        None => return Vec::new(),
-    };
-    let marker_order_id = ev
-        .taker_order_id
-        .as_deref()
-        .filter(|id| our_ids.contains(id))
-        .map(str::to_string);
-    vec![Fill {
-        role: FillRole::Taker { marker_order_id },
+fn extract_taker_fill(sess: &MarketSession, ev: &TradePayload) -> Option<Fill> {
+    let outcome = outcome_from_asset_id(sess, &ev.asset_id)?;
+    Some(Fill {
+        role: FillRole::Taker {
+            marker_order_id: ev.taker_order_id.clone(),
+        },
         outcome,
         asset_id: ev.asset_id.clone(),
         side: ev.side,
         price: ev.price,
         size: ev.size,
-    }]
+    })
 }
 
 /// Tek fill'in tüm side-effect'leri tek noktada: metrics absorb + open_order
