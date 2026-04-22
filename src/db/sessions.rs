@@ -25,8 +25,8 @@ pub struct SessionListItem {
     pub end_ts: i64,
     pub state: String,
     pub cost_basis: f64,
-    pub shares_yes: f64,
-    pub shares_no: f64,
+    pub up_filled: f64,
+    pub down_filled: f64,
     pub realized_pnl: Option<f64>,
     pub pnl_if_up: Option<f64>,
     pub pnl_if_down: Option<f64>,
@@ -42,8 +42,8 @@ pub struct SessionDetail {
     pub state: String,
     pub cost_basis: f64,
     pub fee_total: f64,
-    pub shares_yes: f64,
-    pub shares_no: f64,
+    pub up_filled: f64,
+    pub down_filled: f64,
     pub realized_pnl: Option<f64>,
     pub session_id: i64,
 }
@@ -99,19 +99,19 @@ pub async fn update_market_session_meta(
     pool: &SqlitePool,
     session_id: i64,
     condition_id: &str,
-    asset_id_yes: &str,
-    asset_id_no: &str,
+    asset_id_up: &str,
+    asset_id_down: &str,
     tick_size: f64,
     min_order_size: f64,
 ) -> Result<(), AppError> {
     let now = now_ms() as i64;
     sqlx::query(
-        "UPDATE market_sessions SET condition_id = ?, asset_id_yes = ?, asset_id_no = ?, \
+        "UPDATE market_sessions SET condition_id = ?, asset_id_up = ?, asset_id_down = ?, \
          tick_size = ?, min_order_size = ?, state = 'ACTIVE', updated_at_ms = ? WHERE id = ?",
     )
     .bind(condition_id)
-    .bind(asset_id_yes)
-    .bind(asset_id_no)
+    .bind(asset_id_up)
+    .bind(asset_id_down)
     .bind(tick_size)
     .bind(min_order_size)
     .bind(now)
@@ -166,9 +166,9 @@ pub async fn list_sessions_for_bot(
              LIMIT ? OFFSET ? \
          ) \
          SELECT s.slug, s.start_ts, s.end_ts, s.state, s.realized_pnl, \
-                COALESCE(p.cost_basis, 0.0) AS cost_basis, \
-                COALESCE(p.shares_yes, 0.0) AS shares_yes, \
-                COALESCE(p.shares_no,  0.0) AS shares_no,  \
+                COALESCE(p.cost_basis,  0.0) AS cost_basis,  \
+                COALESCE(p.up_filled,   0.0) AS up_filled,   \
+                COALESCE(p.down_filled, 0.0) AS down_filled, \
                 p.pnl_if_up, p.pnl_if_down \
          FROM paged s \
          {LATEST_PNL_JOIN} \
@@ -188,8 +188,8 @@ pub async fn list_sessions_for_bot(
             end_ts: r.get("end_ts"),
             state: r.get("state"),
             cost_basis: r.get("cost_basis"),
-            shares_yes: r.get("shares_yes"),
-            shares_no: r.get("shares_no"),
+            up_filled: r.get("up_filled"),
+            down_filled: r.get("down_filled"),
             realized_pnl: r.get("realized_pnl"),
             pnl_if_up: r.get("pnl_if_up"),
             pnl_if_down: r.get("pnl_if_down"),
@@ -217,10 +217,10 @@ pub async fn session_by_bot_slug(
 ) -> Result<Option<SessionDetail>, AppError> {
     let sql = format!(
         "SELECT s.id, s.slug, s.start_ts, s.end_ts, s.state, s.realized_pnl, \
-                COALESCE(p.cost_basis, 0.0) AS cost_basis, \
-                COALESCE(p.fee_total,  0.0) AS fee_total,  \
-                COALESCE(p.shares_yes, 0.0) AS shares_yes, \
-                COALESCE(p.shares_no,  0.0) AS shares_no   \
+                COALESCE(p.cost_basis,  0.0) AS cost_basis,  \
+                COALESCE(p.fee_total,   0.0) AS fee_total,   \
+                COALESCE(p.up_filled,   0.0) AS up_filled,   \
+                COALESCE(p.down_filled, 0.0) AS down_filled  \
          FROM market_sessions s \
          {LATEST_PNL_JOIN} \
          WHERE s.bot_id = ? AND s.slug = ?"
@@ -238,8 +238,8 @@ pub async fn session_by_bot_slug(
         state: r.get("state"),
         cost_basis: r.get("cost_basis"),
         fee_total: r.get("fee_total"),
-        shares_yes: r.get("shares_yes"),
-        shares_no: r.get("shares_no"),
+        up_filled: r.get("up_filled"),
+        down_filled: r.get("down_filled"),
         realized_pnl: r.get("realized_pnl"),
         session_id: r.get("id"),
     }))

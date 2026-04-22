@@ -10,21 +10,19 @@ export const STRATEGY_OPTIONS: {
   disabled?: boolean;
 }[] = [
   {
-    id: "harvest",
-    label: "Harvest",
-    description: "Likidite ve fiyat farkından yararlanma odaklı.",
+    id: "alis",
+    label: "Alis",
+    description: "İskelet — strateji kuralları henüz tanımlanmadı.",
   },
   {
-    id: "dutch_book",
-    label: "Dutch book (TBD)",
-    description: "İki taraflı defter ve dengeleyici emir mantığı — yakında.",
-    disabled: true,
+    id: "elis",
+    label: "Elis",
+    description: "İskelet — strateji kuralları henüz tanımlanmadı.",
   },
   {
-    id: "prism",
-    label: "Prism (TBD)",
-    description: "Sinyal ve ağırlıklarla ince ayarlı model — yakında.",
-    disabled: true,
+    id: "aras",
+    label: "Aras",
+    description: "İskelet — strateji kuralları henüz tanımlanmadı.",
   },
 ];
 

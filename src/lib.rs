@@ -1,7 +1,8 @@
 //! baiter-pro — Polymarket trading bot platformu (kütüphane çatısı).
 //!
 //! Foundation: [`config`], [`db`], [`error`], [`ipc`], [`slug`], [`time`], [`types`].
-//! Domain: [`polymarket`], [`binance`], [`strategy`], [`engine`], [`bot`].
+//! Domain: [`polymarket`], [`binance`], [`strategy`] (Alis / Elis / Aras + metrics),
+//! [`engine`], [`bot`].
 //! HTTP & process: [`api`], [`supervisor`].
 
 pub mod api;

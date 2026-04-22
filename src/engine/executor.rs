@@ -12,7 +12,6 @@ use crate::polymarket::order::{
     build_order, expiration_for, order_to_json, sign_order, BuildArgs,
 };
 use crate::polymarket::{CancelResponse, ClobClient};
-use crate::strategy::harvest::is_averaging_like;
 use crate::strategy::{Decision, OpenOrder, PlannedOrder};
 use crate::time::now_ms;
 use crate::types::{Outcome, Side};
@@ -202,12 +201,12 @@ impl Simulator {
 pub(crate) fn counter_price_for(session: &MarketSession, outcome: Outcome, side: Side) -> f64 {
     match side {
         Side::Buy => match outcome {
-            Outcome::Up => session.yes_best_ask,
-            Outcome::Down => session.no_best_ask,
+            Outcome::Up => session.up_best_ask,
+            Outcome::Down => session.down_best_ask,
         },
         Side::Sell => match outcome {
-            Outcome::Up => session.yes_best_bid,
-            Outcome::Down => session.no_best_bid,
+            Outcome::Up => session.up_best_bid,
+            Outcome::Down => session.down_best_bid,
         },
     }
 }
@@ -241,14 +240,6 @@ pub(crate) fn apply_dryrun_fill(
     session
         .metrics
         .ingest_fill(outcome, Side::Buy, fill_price, fill_size, fee);
-}
-
-/// Averaging-like reason ise cooldown saatini ileri al. Tek tetik noktası
-/// `place_batch` (Live + DryRun) ve `simulate_passive_fills`.
-pub(crate) fn maybe_arm_averaging_cooldown(session: &mut MarketSession, reason: &str) {
-    if is_averaging_like(reason) {
-        session.last_averaging_ms = now_ms();
-    }
 }
 
 #[derive(Debug, Default)]
@@ -307,7 +298,6 @@ async fn place_batch<S: OrderSink + ?Sized>(
             continue;
         }
         let executed = exec.place(session, &o).await?;
-        maybe_arm_averaging_cooldown(session, &executed.planned.reason);
         out.placed.push(executed);
     }
     Ok(())

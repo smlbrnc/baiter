@@ -25,10 +25,10 @@ pub fn emit_frontend_snapshot(
 
     ipc::emit(&FrontendEvent::BestBidAsk {
         bot_id: ctx.bot_id,
-        yes_best_bid: sess.yes_best_bid,
-        yes_best_ask: sess.yes_best_ask,
-        no_best_bid: sess.no_best_bid,
-        no_best_ask: sess.no_best_ask,
+        up_best_bid: sess.up_best_bid,
+        up_best_ask: sess.up_best_ask,
+        down_best_bid: sess.down_best_bid,
+        down_best_ask: sess.down_best_ask,
         ts_ms,
     });
 
@@ -46,10 +46,10 @@ pub fn emit_frontend_snapshot(
     ipc::emit(&FrontendEvent::TickSnapshot {
         bot_id: ctx.bot_id,
         slug: sess.slug.clone(),
-        yes_best_bid: sess.yes_best_bid,
-        yes_best_ask: sess.yes_best_ask,
-        no_best_bid: sess.no_best_bid,
-        no_best_ask: sess.no_best_ask,
+        up_best_bid: sess.up_best_bid,
+        up_best_ask: sess.up_best_ask,
+        down_best_bid: sess.down_best_bid,
+        down_best_ask: sess.down_best_ask,
         signal_score: sig.composite,
         bsi: sig.bsi,
         ofi: sig.ofi,

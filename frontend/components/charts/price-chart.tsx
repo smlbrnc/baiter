@@ -68,19 +68,19 @@ interface Props {
 
 interface Row {
   t: number;
-  yesBid: number;
-  yesAsk: number;
-  noBid: number;
-  noAsk: number;
+  upBid: number;
+  upAsk: number;
+  downBid: number;
+  downAsk: number;
   upBotBid: number;
   downBotBid: number;
 }
 
 const chartConfig = {
-  yesBid:     { label: "YES bid",      color: "var(--chart-1)" },
-  yesAsk:     { label: "YES ask",      color: "var(--chart-2)" },
-  noBid:      { label: "NO bid",       color: "oklch(0.58 0.22 352)" },
-  noAsk:      { label: "NO ask",       color: "oklch(0.7 0.17 352)" },
+  upBid:      { label: "UP bid",       color: "var(--chart-1)" },
+  upAsk:      { label: "UP ask",       color: "var(--chart-2)" },
+  downBid:    { label: "DOWN bid",     color: "oklch(0.58 0.22 352)" },
+  downAsk:    { label: "DOWN ask",     color: "oklch(0.7 0.17 352)" },
   upBotBid:   { label: "UP bot bid",   color: "oklch(0.80 0.20 145)" },
   downBotBid: { label: "DOWN bot bid", color: "oklch(0.75 0.20 25)" },
 } satisfies ChartConfig;
@@ -98,10 +98,10 @@ function toRows(ticks: MarketTick[]): Row[] {
     const { upBotBid, downBotBid } = botBids(tk.signal_score);
     const row: Row = {
       t,
-      yesBid: tk.yes_best_bid,
-      yesAsk: tk.yes_best_ask,
-      noBid: tk.no_best_bid,
-      noAsk: tk.no_best_ask,
+      upBid: tk.up_best_bid,
+      upAsk: tk.up_best_ask,
+      downBid: tk.down_best_bid,
+      downAsk: tk.down_best_ask,
       upBotBid,
       downBotBid,
     };
@@ -145,10 +145,10 @@ export function PriceChart({ data, session }: Props) {
         <CardAction className="flex flex-wrap items-end justify-end gap-x-4 gap-y-2">
           {(
             [
-              { key: "yesBid",     label: "YES bid"      },
-              { key: "yesAsk",     label: "YES ask"      },
-              { key: "noBid",      label: "NO bid"       },
-              { key: "noAsk",      label: "NO ask"       },
+              { key: "upBid",      label: "UP bid"       },
+              { key: "upAsk",      label: "UP ask"       },
+              { key: "downBid",    label: "DOWN bid"     },
+              { key: "downAsk",    label: "DOWN ask"     },
               { key: "upBotBid",   label: "UP bot bid"   },
               { key: "downBotBid", label: "DOWN bot bid" },
             ] as const
@@ -220,32 +220,32 @@ export function PriceChart({ data, session }: Props) {
             />
             <Line
               type="monotone"
-              dataKey="yesBid"
-              stroke="var(--color-yesBid)"
+              dataKey="upBid"
+              stroke="var(--color-upBid)"
               strokeWidth={3}
               dot={false}
               isAnimationActive={false}
             />
             <Line
               type="monotone"
-              dataKey="yesAsk"
-              stroke="var(--color-yesAsk)"
+              dataKey="upAsk"
+              stroke="var(--color-upAsk)"
               strokeWidth={1}
               dot={false}
               isAnimationActive={false}
             />
             <Line
               type="monotone"
-              dataKey="noBid"
-              stroke="var(--color-noBid)"
+              dataKey="downBid"
+              stroke="var(--color-downBid)"
               strokeWidth={3}
               dot={false}
               isAnimationActive={false}
             />
             <Line
               type="monotone"
-              dataKey="noAsk"
-              stroke="var(--color-noAsk)"
+              dataKey="downAsk"
+              stroke="var(--color-downAsk)"
               strokeWidth={1}
               dot={false}
               isAnimationActive={false}

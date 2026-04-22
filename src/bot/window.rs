@@ -59,7 +59,7 @@ async fn prepare_window(
 ) -> Result<MarketSession, AppError> {
     ipc::log_line(label, format!("📡 Fetching market: {slug_str}"));
     let market = ctx.gamma.get_market_by_slug(slug_str).await?;
-    let (yes_id, no_id) = market.parse_token_ids()?;
+    let (up_id, down_id) = market.parse_token_ids()?;
     let condition_id = market
         .condition_id
         .clone()
@@ -80,8 +80,8 @@ async fn prepare_window(
         label,
         format!("Window: {} UTC - {} UTC", fmt_utc(start_ts), fmt_utc(end_ts)),
     );
-    ipc::log_line(label, format!("    UP:   {yes_id}"));
-    ipc::log_line(label, format!("    DOWN: {no_id}"));
+    ipc::log_line(label, format!("    UP:   {up_id}"));
+    ipc::log_line(label, format!("    DOWN: {down_id}"));
 
     let session_id = db::sessions::upsert_market_session(
         &ctx.pool,
@@ -98,8 +98,8 @@ async fn prepare_window(
         &ctx.pool,
         session_id,
         &condition_id,
-        &yes_id,
-        &no_id,
+        &up_id,
+        &down_id,
         tick_size,
         api_min_order_size,
     )
@@ -110,8 +110,8 @@ async fn prepare_window(
         slug: slug_str.to_string(),
         start_ts,
         end_ts,
-        yes_token_id: yes_id.clone(),
-        no_token_id: no_id.clone(),
+        up_token_id: up_id.clone(),
+        down_token_id: down_id.clone(),
     });
 
     // Live modda CLOB'dan maker fee rate'i çek. Marketten markete değişir
@@ -119,7 +119,7 @@ async fn prepare_window(
     // DryRun'da gereksiz network turu — atlıyoruz, simülatör fee'siz.
     let fee_rate_bps = match &ctx.executor {
         Executor::Live(live) => {
-            let bps = live.client.fetch_fee_rate_bps(&yes_id).await?;
+            let bps = live.client.fetch_fee_rate_bps(&up_id).await?;
             ipc::log_line(
                 label,
                 format!("💸 Maker fee rate: {bps} bps ({:.2}%)", bps as f64 / 100.0),
@@ -130,8 +130,8 @@ async fn prepare_window(
     };
 
     Ok(MarketSession {
-        yes_token_id: yes_id,
-        no_token_id: no_id,
+        up_token_id: up_id,
+        down_token_id: down_id,
         condition_id,
         tick_size,
         api_min_order_size,
@@ -161,7 +161,7 @@ fn connect_streams(ctx: &Ctx, session: &MarketSession, label: &str) -> WindowStr
     let ws_base = ctx.env_.clob_ws_base.clone();
     let market_ws = tokio::spawn(run_market_ws(
         ws_base.clone(),
-        vec![session.yes_token_id.clone(), session.no_token_id.clone()],
+        vec![session.up_token_id.clone(), session.down_token_id.clone()],
         ev_tx.clone(),
     ));
     let user_ws = ctx.creds.as_ref().map(|c| {

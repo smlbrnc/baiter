@@ -10,7 +10,7 @@
 --   * `bots.signal_weight` artık composite skorunu gate'lemiyor → yok.
 --   * `bots.min_price/max_price/cooldown_threshold/start_offset` direkt şemada.
 --   * `market_sessions.rtds_window_open_price/ts_ms` direkt şemada.
---   * `pnl_snapshots.pair_count/avg_yes/avg_no` direkt şemada.
+--   * `pnl_snapshots.pair_count/avg_up/avg_down` direkt şemada.
 --   * `global_credentials` tabloları `NOT NULL` constraintler ile yaratılır.
 
 -- Bot tanımı (kullanıcı tarafından oluşturulur).
@@ -18,7 +18,7 @@ CREATE TABLE bots (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     name                TEXT NOT NULL,
     slug_pattern        TEXT NOT NULL,                  -- 'btc-updown-5m-*' veya tam slug
-    strategy            TEXT NOT NULL,                  -- 'harvest' | 'dutch_book' | 'prism' (yalnız harvest aktif)
+    strategy            TEXT NOT NULL,                  -- 'alis' | 'elis' | 'aras'
     run_mode            TEXT NOT NULL,                  -- 'live' | 'dryrun'
     order_usdc          REAL NOT NULL,
     min_price           REAL NOT NULL DEFAULT 0.05,     -- engine reject + strateji clamp lower bound
@@ -72,8 +72,8 @@ CREATE TABLE market_sessions (
     bot_id                  INTEGER NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
     slug                    TEXT NOT NULL,
     condition_id            TEXT,                       -- market (condition) kimliği
-    asset_id_yes            TEXT,                       -- clobTokenIds[0]
-    asset_id_no             TEXT,                       -- clobTokenIds[1]
+    asset_id_up             TEXT,                       -- clobTokenIds[0] (UP outcome)
+    asset_id_down           TEXT,                       -- clobTokenIds[1] (DOWN outcome)
     tick_size               REAL,
     min_order_size          REAL,
     start_ts                INTEGER NOT NULL,           -- unix sn, slug'dan
@@ -81,8 +81,8 @@ CREATE TABLE market_sessions (
     state                   TEXT NOT NULL DEFAULT 'PLANNED', -- PLANNED|ACTIVE|RESOLVED|CLOSED
     cost_basis              REAL NOT NULL DEFAULT 0.0,
     fee_total               REAL NOT NULL DEFAULT 0.0,
-    shares_yes              REAL NOT NULL DEFAULT 0.0,
-    shares_no               REAL NOT NULL DEFAULT 0.0,
+    up_filled               REAL NOT NULL DEFAULT 0.0,
+    down_filled             REAL NOT NULL DEFAULT 0.0,
     realized_pnl            REAL,                       -- market_resolved sonrası
     rtds_window_open_price  REAL,                       -- RTDS Chainlink ilk tick referans fiyatı
     rtds_window_open_ts_ms  INTEGER,                    -- yakalanma zamanı (ms)
@@ -126,8 +126,8 @@ CREATE INDEX idx_trades_bot ON trades(bot_id);
 CREATE INDEX idx_trades_session ON trades(market_session_id);
 CREATE INDEX idx_trades_status ON trades(status);
 
--- PnL snapshot (§17). 1 sn cadence; cost_basis + shares + (avg_yes, avg_no) +
--- pair_count = min(shares_yes, shares_no) dahil delta-neutral doğrulama
+-- PnL snapshot (§17). 1 sn cadence; cost_basis + filled + (avg_up, avg_down) +
+-- pair_count = min(up_filled, down_filled) dahil delta-neutral doğrulama
 -- alanları DB-side.
 CREATE TABLE pnl_snapshots (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -135,14 +135,14 @@ CREATE TABLE pnl_snapshots (
     market_session_id   INTEGER NOT NULL REFERENCES market_sessions(id) ON DELETE CASCADE,
     cost_basis          REAL NOT NULL,
     fee_total           REAL NOT NULL,
-    shares_yes          REAL NOT NULL,
-    shares_no           REAL NOT NULL,
+    up_filled           REAL NOT NULL,
+    down_filled         REAL NOT NULL,
     pnl_if_up           REAL NOT NULL,
     pnl_if_down         REAL NOT NULL,
     mtm_pnl             REAL NOT NULL,
     pair_count          REAL NOT NULL DEFAULT 0.0,
-    avg_yes             REAL NOT NULL DEFAULT 0.0,
-    avg_no              REAL NOT NULL DEFAULT 0.0,
+    avg_up              REAL NOT NULL DEFAULT 0.0,
+    avg_down            REAL NOT NULL DEFAULT 0.0,
     ts_ms               INTEGER NOT NULL
 );
 
@@ -160,10 +160,10 @@ CREATE TABLE market_ticks (
     id                  INTEGER PRIMARY KEY AUTOINCREMENT,
     bot_id              INTEGER NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
     market_session_id   INTEGER NOT NULL REFERENCES market_sessions(id) ON DELETE CASCADE,
-    yes_best_bid        REAL NOT NULL,
-    yes_best_ask        REAL NOT NULL,
-    no_best_bid         REAL NOT NULL,
-    no_best_ask         REAL NOT NULL,
+    up_best_bid         REAL NOT NULL,
+    up_best_ask         REAL NOT NULL,
+    down_best_bid       REAL NOT NULL,
+    down_best_ask       REAL NOT NULL,
     signal_score        REAL NOT NULL,                  -- composite ∈ [0, 10]
     bsi                 REAL NOT NULL,
     ofi                 REAL NOT NULL,

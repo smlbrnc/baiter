@@ -353,7 +353,7 @@ const FILL_DUST_THRESHOLD: f64 = 0.01;
 
 /// Maker fill'i `OpenOrder.size_matched`'e ekle; kalan miktar
 /// `FILL_DUST_THRESHOLD`'un altına düşerse emri `open_orders`'tan düşür →
-/// harvest FSM `PairComplete` doğru tetiklenir.
+/// strateji FSM (Alis/Elis/Aras) `PairComplete` benzeri kapanışları doğru tetikler.
 fn record_fill_and_prune_if_full(
     sess: &mut MarketSession,
     order_id: Option<&str>,
@@ -400,12 +400,14 @@ fn log_fill_and_position(label: &str, sess: &MarketSession, outcome: Outcome, si
         label,
         format!("fill_summary outcome={} size={size} price={price}", outcome.as_str()),
     );
-    let imb = sess.metrics.imbalance;
+    let imb = sess.metrics.imbalance();
     ipc::log_line(
         label,
         format!(
-            "[{:?}] Position: UP={}, DOWN={} (imbalance: {imb:+})",
-            sess.strategy, sess.metrics.shares_yes, sess.metrics.shares_no
+            "[{}] Position: UP={}, DOWN={} (imbalance: {imb:+})",
+            sess.state.label(),
+            sess.metrics.up_filled,
+            sess.metrics.down_filled
         ),
     );
 }
@@ -494,12 +496,12 @@ fn maybe_log_book_ready(sess: &mut MarketSession) {
     if sess.book_ready_logged {
         return;
     }
-    if sess.yes_best_bid > 0.0 && sess.no_best_bid > 0.0 {
+    if sess.up_best_bid > 0.0 && sess.down_best_bid > 0.0 {
         ipc::log_line(
             &sess.bot_id.to_string(),
             format!(
-                "Market book ready: yes_bid={:.4} yes_ask={:.4} no_bid={:.4} no_ask={:.4}",
-                sess.yes_best_bid, sess.yes_best_ask, sess.no_best_bid, sess.no_best_ask
+                "Market book ready: up_bid={:.4} up_ask={:.4} down_bid={:.4} down_ask={:.4}",
+                sess.up_best_bid, sess.up_best_ask, sess.down_best_bid, sess.down_best_ask
             ),
         );
         sess.book_ready_logged = true;

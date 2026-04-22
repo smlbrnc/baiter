@@ -11,14 +11,14 @@ use crate::time::now_ms;
 pub struct PnlSnapshot {
     pub cost_basis: f64,
     pub fee_total: f64,
-    pub shares_yes: f64,
-    pub shares_no: f64,
+    pub up_filled: f64,
+    pub down_filled: f64,
     pub pnl_if_up: f64,
     pub pnl_if_down: f64,
     pub mtm_pnl: f64,
     pub pair_count: f64,
-    pub avg_yes: f64,
-    pub avg_no: f64,
+    pub avg_up: f64,
+    pub avg_down: f64,
     pub ts_ms: i64,
 }
 
@@ -30,21 +30,21 @@ pub async fn insert_pnl_snapshot(
 ) -> Result<(), AppError> {
     sqlx::query(
         "INSERT INTO pnl_snapshots (bot_id, market_session_id, cost_basis, fee_total, \
-         shares_yes, shares_no, pnl_if_up, pnl_if_down, mtm_pnl, pair_count, avg_yes, avg_no, ts_ms) \
+         up_filled, down_filled, pnl_if_up, pnl_if_down, mtm_pnl, pair_count, avg_up, avg_down, ts_ms) \
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(bot_id)
     .bind(market_session_id)
     .bind(snap.cost_basis)
     .bind(snap.fee_total)
-    .bind(snap.shares_yes)
-    .bind(snap.shares_no)
+    .bind(snap.up_filled)
+    .bind(snap.down_filled)
     .bind(snap.pnl_if_up)
     .bind(snap.pnl_if_down)
     .bind(snap.mtm_pnl)
     .bind(snap.pair_count)
-    .bind(snap.avg_yes)
-    .bind(snap.avg_no)
+    .bind(snap.avg_up)
+    .bind(snap.avg_down)
     .bind(now_ms() as i64)
     .execute(pool)
     .await?;
@@ -61,8 +61,8 @@ pub async fn pnl_history_for_session(
 ) -> Result<Vec<PnlSnapshot>, AppError> {
     let after = after_ts_ms.unwrap_or(0);
     let rows = sqlx::query(
-        "SELECT cost_basis, fee_total, shares_yes, shares_no, pnl_if_up, pnl_if_down, \
-         mtm_pnl, pair_count, avg_yes, avg_no, ts_ms \
+        "SELECT cost_basis, fee_total, up_filled, down_filled, pnl_if_up, pnl_if_down, \
+         mtm_pnl, pair_count, avg_up, avg_down, ts_ms \
          FROM pnl_snapshots \
          WHERE market_session_id = ? AND ts_ms > ? \
          ORDER BY ts_ms ASC LIMIT ?",
@@ -77,14 +77,14 @@ pub async fn pnl_history_for_session(
         .map(|r| PnlSnapshot {
             cost_basis: r.get("cost_basis"),
             fee_total: r.get("fee_total"),
-            shares_yes: r.get("shares_yes"),
-            shares_no: r.get("shares_no"),
+            up_filled: r.get("up_filled"),
+            down_filled: r.get("down_filled"),
             pnl_if_up: r.get("pnl_if_up"),
             pnl_if_down: r.get("pnl_if_down"),
             mtm_pnl: r.get("mtm_pnl"),
             pair_count: r.get("pair_count"),
-            avg_yes: r.get("avg_yes"),
-            avg_no: r.get("avg_no"),
+            avg_up: r.get("avg_up"),
+            avg_down: r.get("avg_down"),
             ts_ms: r.get("ts_ms"),
         })
         .collect())
@@ -96,8 +96,8 @@ pub async fn latest_pnl_for_bot(
     bot_id: i64,
 ) -> Result<Option<PnlSnapshot>, AppError> {
     let row = sqlx::query(
-        "SELECT cost_basis, fee_total, shares_yes, shares_no, pnl_if_up, pnl_if_down, \
-         mtm_pnl, pair_count, avg_yes, avg_no, ts_ms \
+        "SELECT cost_basis, fee_total, up_filled, down_filled, pnl_if_up, pnl_if_down, \
+         mtm_pnl, pair_count, avg_up, avg_down, ts_ms \
          FROM pnl_snapshots WHERE bot_id = ? ORDER BY ts_ms DESC LIMIT 1",
     )
     .bind(bot_id)
@@ -106,14 +106,14 @@ pub async fn latest_pnl_for_bot(
     Ok(row.map(|r| PnlSnapshot {
         cost_basis: r.get::<f64, _>("cost_basis"),
         fee_total: r.get::<f64, _>("fee_total"),
-        shares_yes: r.get::<f64, _>("shares_yes"),
-        shares_no: r.get::<f64, _>("shares_no"),
+        up_filled: r.get::<f64, _>("up_filled"),
+        down_filled: r.get::<f64, _>("down_filled"),
         pnl_if_up: r.get::<f64, _>("pnl_if_up"),
         pnl_if_down: r.get::<f64, _>("pnl_if_down"),
         mtm_pnl: r.get::<f64, _>("mtm_pnl"),
         pair_count: r.get::<f64, _>("pair_count"),
-        avg_yes: r.get::<f64, _>("avg_yes"),
-        avg_no: r.get::<f64, _>("avg_no"),
+        avg_up: r.get::<f64, _>("avg_up"),
+        avg_down: r.get::<f64, _>("avg_down"),
         ts_ms: r.get::<i64, _>("ts_ms"),
     }))
 }

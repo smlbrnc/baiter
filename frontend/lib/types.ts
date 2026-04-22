@@ -5,7 +5,7 @@ export type Outcome = "UP" | "DOWN";
 export type Side = "BUY" | "SELL";
 
 export type RunMode = "live" | "dryrun";
-export type Strategy = "dutch_book" | "harvest" | "prism";
+export type Strategy = "alis" | "elis" | "aras";
 
 /**
  * `bots.strategy_params` JSON sütunu — backend `config::StrategyParams`.
@@ -13,10 +13,10 @@ export type Strategy = "dutch_book" | "harvest" | "prism";
  */
 export interface StrategyParams {
   /**
-   * Harvest hedge avg_threshold türetmek için kullanılan profit-lock oranı
+   * Profit-lock canonical eşiği için kullanılan oran
    * (örn. 0.02 → avg_threshold 0.98). Default 0.02.
    */
-  harvest_profit_lock_pct?: number | null;
+  profit_lock_pct?: number | null;
   /** RTDS Chainlink window-delta sinyali aktif mi. Default true. */
   rtds_enabled?: boolean | null;
   /**
@@ -74,8 +74,8 @@ export interface SessionListItem {
   end_ts: number;
   state: string;
   cost_basis: number;
-  shares_yes: number;
-  shares_no: number;
+  up_filled: number;
+  down_filled: number;
   realized_pnl: number | null;
   pnl_if_up: number | null;
   pnl_if_down: number | null;
@@ -99,8 +99,8 @@ export interface SessionDetail {
   state: string;
   cost_basis: number;
   fee_total: number;
-  shares_yes: number;
-  shares_no: number;
+  up_filled: number;
+  down_filled: number;
   realized_pnl: number | null;
   is_live: boolean;
   title: string | null;
@@ -109,10 +109,10 @@ export interface SessionDetail {
 
 /** `/api/bots/:id/sessions/:slug/ticks` — 1 sn cadence BBA + Binance signal. */
 export interface MarketTick {
-  yes_best_bid: number;
-  yes_best_ask: number;
-  no_best_bid: number;
-  no_best_ask: number;
+  up_best_bid: number;
+  up_best_ask: number;
+  down_best_bid: number;
+  down_best_ask: number;
   signal_score: number;
   bsi: number;
   ofi: number;
@@ -143,17 +143,17 @@ export interface TradeRow {
 export interface PnLSnapshot {
   cost_basis: number;
   fee_total: number;
-  shares_yes: number;
-  shares_no: number;
+  up_filled: number;
+  down_filled: number;
   pnl_if_up: number;
   pnl_if_down: number;
   mtm_pnl: number;
-  /** Eşleşen YES/NO çift sayısı = min(shares_yes, shares_no). Doc §11. */
+  /** Eşleşen UP/DOWN çift sayısı = min(up_filled, down_filled). Doc §11. */
   pair_count: number;
-  /** YES tarafı VWAP (`avg_up`); eski snapshot yoksa 0. */
-  avg_yes?: number | null;
-  /** NO tarafı VWAP (`avg_down`). */
-  avg_no?: number | null;
+  /** UP tarafı VWAP. */
+  avg_up?: number | null;
+  /** DOWN tarafı VWAP. */
+  avg_down?: number | null;
   ts_ms: number;
 }
 
@@ -177,8 +177,8 @@ export type FrontendEvent =
       slug: string;
       start_ts: number;
       end_ts: number;
-      yes_token_id: string;
-      no_token_id: string;
+      up_token_id: string;
+      down_token_id: string;
     }
   | {
       kind: "SessionResolved";
@@ -217,10 +217,10 @@ export type FrontendEvent =
   | {
       kind: "BestBidAsk";
       bot_id: number;
-      yes_best_bid: number;
-      yes_best_ask: number;
-      no_best_bid: number;
-      no_best_ask: number;
+      up_best_bid: number;
+      up_best_ask: number;
+      down_best_bid: number;
+      down_best_ask: number;
       ts_ms: number;
     }
   | {
@@ -244,10 +244,10 @@ export type FrontendEvent =
       kind: "TickSnapshot";
       bot_id: number;
       slug: string;
-      yes_best_bid: number;
-      yes_best_ask: number;
-      no_best_bid: number;
-      no_best_ask: number;
+      up_best_bid: number;
+      up_best_ask: number;
+      down_best_bid: number;
+      down_best_ask: number;
       signal_score: number;
       bsi: number;
       ofi: number;
@@ -261,14 +261,14 @@ export type FrontendEvent =
       slug: string;
       cost_basis: number;
       fee_total: number;
-      shares_yes: number;
-      shares_no: number;
+      up_filled: number;
+      down_filled: number;
       pnl_if_up: number;
       pnl_if_down: number;
       mtm_pnl: number;
       pair_count: number;
-      avg_yes?: number | null;
-      avg_no?: number | null;
+      avg_up?: number | null;
+      avg_down?: number | null;
       ts_ms: number;
     }
   | {
@@ -343,7 +343,7 @@ export interface GlobalCredentials {
 
 /** `StrategyParams` default'ları (`config::StrategyParams::*_or_default`). */
 export const STRATEGY_PARAMS_DEFAULTS = {
-  harvest_profit_lock_pct: 0.02,
+  profit_lock_pct: 0.02,
   rtds_enabled: true,
   window_delta_weight: 0.7,
   signal_lookahead_secs: 3.0,

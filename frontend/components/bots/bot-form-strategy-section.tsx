@@ -28,8 +28,8 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const windowWeight =
     params.window_delta_weight ?? STRATEGY_PARAMS_DEFAULTS.window_delta_weight;
   const profitLockPct =
-    params.harvest_profit_lock_pct ??
-    STRATEGY_PARAMS_DEFAULTS.harvest_profit_lock_pct;
+    params.profit_lock_pct ??
+    STRATEGY_PARAMS_DEFAULTS.profit_lock_pct;
   const lookaheadSecs =
     params.signal_lookahead_secs ??
     STRATEGY_PARAMS_DEFAULTS.signal_lookahead_secs;
@@ -39,7 +39,7 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
       <div>
         <SectionLabel icon={Sliders} title="Strateji parametreleri" />
         <p className="text-muted-foreground mt-1 text-sm">
-          RTDS Chainlink sinyali ve Harvest FSM ince ayarları.
+          RTDS Chainlink sinyali ve strateji ince ayarları.
         </p>
       </div>
 
@@ -91,7 +91,7 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
 
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field
-            label="Harvest profit-lock oranı"
+            label="Profit-lock oranı"
             tooltip="Hedge hedef fiyatı için kullanılan eşik. avg_threshold = 1 − pct (örn. 0.02 → 0.98); hedge emir fiyatı = avg_threshold − avg_filled_side olarak türetilir. Düşük tutmak hedge'i avg'ye yakın, yüksek tutmak ise daha karlı (ama daha az dolgun) konuma yerleştirir. Default: 0.02."
             hint="0.00 – 0.50 (default 0.02 → avg_threshold 0.98)."
           >
@@ -102,7 +102,7 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
               max="0.5"
               value={profitLockPct}
               onChange={(e) =>
-                patch({ harvest_profit_lock_pct: Number(e.target.value) })
+                patch({ profit_lock_pct: Number(e.target.value) })
               }
             />
           </Field>

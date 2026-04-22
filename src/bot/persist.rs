@@ -24,14 +24,14 @@ pub fn snapshot_pnl(pool: &SqlitePool, sess: &MarketSession) {
     let snap = db::pnl::PnlSnapshot {
         cost_basis: pnl.cost_basis,
         fee_total: pnl.fee_total,
-        shares_yes: pnl.shares_yes,
-        shares_no: pnl.shares_no,
+        up_filled: pnl.up_filled,
+        down_filled: pnl.down_filled,
         pnl_if_up: pnl.pnl_if_up,
         pnl_if_down: pnl.pnl_if_down,
         mtm_pnl: pnl.mtm_pnl,
         pair_count: sess.metrics.pair_count(),
-        avg_yes: sess.metrics.avg_yes,
-        avg_no: sess.metrics.avg_no,
+        avg_up: sess.metrics.avg_up,
+        avg_down: sess.metrics.avg_down,
         ts_ms: 0, // DB tarafı now_ms() kullanır.
     };
     let ts_ms = now_ms();
@@ -40,14 +40,14 @@ pub fn snapshot_pnl(pool: &SqlitePool, sess: &MarketSession) {
         slug: sess.slug.clone(),
         cost_basis: pnl.cost_basis,
         fee_total: pnl.fee_total,
-        shares_yes: pnl.shares_yes,
-        shares_no: pnl.shares_no,
+        up_filled: pnl.up_filled,
+        down_filled: pnl.down_filled,
         pnl_if_up: pnl.pnl_if_up,
         pnl_if_down: pnl.pnl_if_down,
         mtm_pnl: pnl.mtm_pnl,
         pair_count: sess.metrics.pair_count(),
-        avg_yes: Some(sess.metrics.avg_yes),
-        avg_no: Some(sess.metrics.avg_no),
+        avg_up: Some(sess.metrics.avg_up),
+        avg_down: Some(sess.metrics.avg_down),
         ts_ms,
     });
     let bot_id = sess.bot_id;
@@ -65,10 +65,10 @@ pub fn snapshot_tick(ctx: &Ctx, sess: &MarketSession, sig: &SignalSnapshot) {
         return;
     }
     let tick = db::MarketTick {
-        yes_best_bid: sess.yes_best_bid,
-        yes_best_ask: sess.yes_best_ask,
-        no_best_bid: sess.no_best_bid,
-        no_best_ask: sess.no_best_ask,
+        up_best_bid: sess.up_best_bid,
+        up_best_ask: sess.up_best_ask,
+        down_best_bid: sess.down_best_bid,
+        down_best_ask: sess.down_best_ask,
         signal_score: sig.composite,
         bsi: sig.bsi,
         ofi: sig.ofi,

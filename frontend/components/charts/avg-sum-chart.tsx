@@ -57,8 +57,8 @@ function toRows(snaps: PnLSnapshot[]): Row[] {
     const t = Math.floor(p.ts_ms / 1000);
     const row: Row = {
       t,
-      avg_up: p.avg_yes ?? 0,
-      avg_down: p.avg_no ?? 0,
+      avg_up: p.avg_up ?? 0,
+      avg_down: p.avg_down ?? 0,
     };
     if (out.length && out[out.length - 1].t === t) {
       out[out.length - 1] = row;

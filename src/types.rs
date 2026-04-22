@@ -26,8 +26,8 @@ impl Outcome {
         }
     }
 
-    /// Lowercase form ("up" / "down") — Harvest reason etiketleri için
-    /// (`harvest_v2:open:up` vb.).
+    /// Lowercase form ("up" / "down") — strateji reason etiketleri için
+    /// (örn. `alis:open:up`).
     pub fn as_lowercase(self) -> &'static str {
         match self {
             Self::Up => "up",
@@ -75,6 +75,14 @@ pub enum OrderType {
     Fak,
 }
 
+/// Bir emrin Polymarket likidite rolü — fee hesabı + strateji intent'i için.
+/// Maker fill'leri Polymarket'te 0 fee; taker'lar concave fee öder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OrderRole {
+    Taker,
+    Maker,
+}
+
 impl OrderType {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -96,6 +104,30 @@ impl OrderType {
             _ => None,
         }
     }
+
+    /// FAK + FOK her zaman taker (immediate cross veya cancel).
+    /// Resmi: <https://docs.polymarket.com/developers/CLOB/orders/order-types>.
+    pub fn is_always_taker(self) -> bool {
+        matches!(self, Self::Fak | Self::Fok)
+    }
+
+    /// Emrin gerçekleşeceği rolü ver. `opposing_best`: BUY için karşı best_ask,
+    /// SELL için karşı best_bid. GTC/GTD marketable fiyatta taker, aksi halde
+    /// maker olarak kitaba girer; book boşsa (`opposing_best == 0`) maker.
+    pub fn role(self, side: Side, price: f64, opposing_best: f64) -> OrderRole {
+        if self.is_always_taker() {
+            return OrderRole::Taker;
+        }
+        let crosses = match side {
+            Side::Buy => opposing_best > 0.0 && price >= opposing_best,
+            Side::Sell => opposing_best > 0.0 && price <= opposing_best,
+        };
+        if crosses {
+            OrderRole::Taker
+        } else {
+            OrderRole::Maker
+        }
+    }
 }
 
 /// `BotConfig.run_mode` — Live (CLOB REST) veya DryRun (Simulator).
@@ -106,13 +138,15 @@ pub enum RunMode {
     Dryrun,
 }
 
-/// `BotConfig.strategy` — aktif olan: `Harvest`. Diğerleri DB sözleşmesi için durur.
+/// `BotConfig.strategy` — kullanıcı tarafından seçilen aktif strateji.
+/// Her varyantın FSM'i `src/strategy/<name>.rs` altında; engine dispatch
+/// `engine::MarketSession::tick` ve `strategy::StrategyState` üzerinden gider.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Strategy {
-    DutchBook,
-    Harvest,
-    Prism,
+    Alis,
+    Elis,
+    Aras,
 }
 
 #[cfg(test)]

@@ -161,8 +161,8 @@ export function BinanceSignalPanel({ data, strategyParams }: Props) {
       upBid,
       downBid,
       delta,
-      yesAsk: last.yes_best_ask,
-      noAsk:  last.no_best_ask,
+      upAsk: last.up_best_ask,
+      downAsk: last.down_best_ask,
     };
   }, [data]);
 
@@ -260,8 +260,8 @@ export function BinanceSignalPanel({ data, strategyParams }: Props) {
 
             {/* Price rows */}
             <div className="grid grid-cols-2 gap-2">
-              <PriceRow outcome="UP" marketAsk={d.yesAsk} botBid={d.upBid} />
-              <PriceRow outcome="DOWN" marketAsk={d.noAsk} botBid={d.downBid} />
+              <PriceRow outcome="UP" marketAsk={d.upAsk} botBid={d.upBid} />
+              <PriceRow outcome="DOWN" marketAsk={d.downAsk} botBid={d.downBid} />
             </div>
           </div>
         )}

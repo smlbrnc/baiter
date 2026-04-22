@@ -41,12 +41,12 @@ export function PnLWidget({ pnl }: Props) {
           <UsdVal v={pnl.cost_basis} />
         </PnlCard>
 
-        {/* Shares — YES + NO tek kartta */}
-        <PnlCard label="Shares" hint="yes · no">
+        {/* Shares — UP + DOWN tek kartta */}
+        <PnlCard label="Shares" hint="up · down">
           <span className="font-mono text-sm font-semibold tabular-nums">
-            <span className="text-emerald-500">Y{pnl.shares_yes.toFixed(0)}</span>
+            <span className="text-emerald-500">U{pnl.up_filled.toFixed(0)}</span>
             <span className="text-border px-0.5">·</span>
-            <span className="text-rose-500">N{pnl.shares_no.toFixed(0)}</span>
+            <span className="text-rose-500">D{pnl.down_filled.toFixed(0)}</span>
           </span>
         </PnlCard>
 

@@ -42,15 +42,15 @@ interface Props {
 
 interface Row {
   t: number;
-  yesSpread: number;
-  noSpread: number;
+  upSpread: number;
+  downSpread: number;
   score: number;
 }
 
 /** Tema chart-* hepsi yeşil aile; burada seri başına ayırt edici renkler. */
 const chartConfig = {
-  yesSpread: { label: "YES spread", color: "oklch(0.58 0.16 245)" },
-  noSpread: { label: "NO spread", color: "oklch(0.58 0.22 310)" },
+  upSpread: { label: "UP spread", color: "oklch(0.58 0.16 245)" },
+  downSpread: { label: "DOWN spread", color: "oklch(0.58 0.22 310)" },
   score: { label: "signal_score", color: "oklch(0.78 0.16 75)" },
 } satisfies ChartConfig;
 
@@ -60,8 +60,8 @@ function toRows(ticks: MarketTick[]): Row[] {
     const t = Math.floor(tk.ts_ms / 1000);
     const row: Row = {
       t,
-      yesSpread: Math.max(0, tk.yes_best_ask - tk.yes_best_bid),
-      noSpread: Math.max(0, tk.no_best_ask - tk.no_best_bid),
+      upSpread: Math.max(0, tk.up_best_ask - tk.up_best_bid),
+      downSpread: Math.max(0, tk.down_best_ask - tk.down_best_bid),
       score: tk.signal_score,
     };
     if (out.length && out[out.length - 1].t === t) {
@@ -144,16 +144,16 @@ export function SpreadSignalChart({ data, session }: Props) {
             />
             <Bar
               yAxisId="spread"
-              dataKey="yesSpread"
-              fill="var(--color-yesSpread)"
+              dataKey="upSpread"
+              fill="var(--color-upSpread)"
               fillOpacity={0.72}
               radius={[2, 2, 0, 0]}
               isAnimationActive={false}
             />
             <Bar
               yAxisId="spread"
-              dataKey="noSpread"
-              fill="var(--color-noSpread)"
+              dataKey="downSpread"
+              fill="var(--color-downSpread)"
               fillOpacity={0.72}
               radius={[2, 2, 0, 0]}
               isAnimationActive={false}

@@ -68,10 +68,10 @@ export default function MarketDetailPage() {
       if (ev.kind !== "TickSnapshot") return null;
       if (ev.bot_id !== botId || ev.slug !== slug) return null;
       return {
-        yes_best_bid: ev.yes_best_bid,
-        yes_best_ask: ev.yes_best_ask,
-        no_best_bid: ev.no_best_bid,
-        no_best_ask: ev.no_best_ask,
+        up_best_bid: ev.up_best_bid,
+        up_best_ask: ev.up_best_ask,
+        down_best_bid: ev.down_best_bid,
+        down_best_ask: ev.down_best_ask,
         signal_score: ev.signal_score,
         bsi: ev.bsi,
         ofi: ev.ofi,
@@ -89,14 +89,14 @@ export default function MarketDetailPage() {
       return {
         cost_basis: ev.cost_basis,
         fee_total: ev.fee_total,
-        shares_yes: ev.shares_yes,
-        shares_no: ev.shares_no,
+        up_filled: ev.up_filled,
+        down_filled: ev.down_filled,
         pnl_if_up: ev.pnl_if_up,
         pnl_if_down: ev.pnl_if_down,
         mtm_pnl: ev.mtm_pnl,
         pair_count: ev.pair_count,
-        avg_yes: ev.avg_yes,
-        avg_no: ev.avg_no,
+        avg_up: ev.avg_up,
+        avg_down: ev.avg_down,
         ts_ms: ev.ts_ms,
       };
     },

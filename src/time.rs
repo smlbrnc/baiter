@@ -31,7 +31,15 @@ pub fn zone_pct(start_ts: u64, end_ts: u64, now: u64) -> f64 {
     (now - start_ts) as f64 / (end_ts - start_ts) as f64
 }
 
-/// Bölge eşikleri (§15): DeepTrade < 10 %, NormalTrade < 50 %, AggTrade < 90 %,
+/// Market penceresi % bazlı bölge eşikleri (interval-agnostic).
+///
+/// Aynı eşikler tüm interval'lerde geçerli; süre olarak farklı görünür:
+/// - 5m  (300s):  Deep <30s,  Normal <150s, Agg <270s, Fak <291s, Stop ≥291s
+/// - 15m (900s):  Deep <90s,  Normal <450s, Agg <810s, Fak <873s, Stop ≥873s
+/// - 1h  (3600s): Deep <6m,   Normal <30m,  Agg <54m,  Fak <58m,  Stop ≥58m
+/// - 4h  (14400s):Deep <24m,  Normal <2h,   Agg <3h36m,Fak <3h53m,Stop ≥3h53m
+///
+/// Bantlar (§15): DeepTrade < 10 %, NormalTrade < 50 %, AggTrade < 90 %,
 /// FakTrade < 97 %, StopTrade ≥ 97 %.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "PascalCase")]
@@ -57,6 +65,13 @@ impl MarketZone {
             Self::StopTrade
         }
     }
+}
+
+/// Pencere bitişine kalan süre (saniye). `now_ms` milisaniye, `end_ts`
+/// saniye cinsinden. Pencere kapandıktan sonra `0`. Strateji time-window
+/// kararlarında (örn. "son N sn'de FAK'a geç") kullanılır.
+pub fn zone_remaining_secs(end_ts: i64, now_ms: i64) -> i64 {
+    (end_ts - now_ms / 1000).max(0)
 }
 
 #[cfg(test)]

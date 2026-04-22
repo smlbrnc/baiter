@@ -19,7 +19,7 @@ export function BotFormNameField({ form, setForm }: FieldProps) {
       <Input
         value={form.name}
         onChange={(e) => setForm({ ...form, name: e.target.value })}
-        placeholder="İsteğe bağlı — örn. BTC 5m Prism"
+        placeholder="İsteğe bağlı — örn. BTC 5m Alis"
       />
     </Field>
   );

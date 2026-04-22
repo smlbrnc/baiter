@@ -12,10 +12,10 @@ use super::spawn_db;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MarketTick {
-    pub yes_best_bid: f64,
-    pub yes_best_ask: f64,
-    pub no_best_bid: f64,
-    pub no_best_ask: f64,
+    pub up_best_bid: f64,
+    pub up_best_ask: f64,
+    pub down_best_bid: f64,
+    pub down_best_ask: f64,
     pub signal_score: f64,
     pub bsi: f64,
     pub ofi: f64,
@@ -31,16 +31,16 @@ pub async fn insert_market_tick(
     tick: &MarketTick,
 ) -> Result<(), AppError> {
     sqlx::query(
-        "INSERT INTO market_ticks (bot_id, market_session_id, yes_best_bid, yes_best_ask, \
-         no_best_bid, no_best_ask, signal_score, bsi, ofi, cvd, ts_ms) \
+        "INSERT INTO market_ticks (bot_id, market_session_id, up_best_bid, up_best_ask, \
+         down_best_bid, down_best_ask, signal_score, bsi, ofi, cvd, ts_ms) \
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(bot_id)
     .bind(market_session_id)
-    .bind(tick.yes_best_bid)
-    .bind(tick.yes_best_ask)
-    .bind(tick.no_best_bid)
-    .bind(tick.no_best_ask)
+    .bind(tick.up_best_bid)
+    .bind(tick.up_best_ask)
+    .bind(tick.down_best_bid)
+    .bind(tick.down_best_ask)
     .bind(tick.signal_score)
     .bind(tick.bsi)
     .bind(tick.ofi)
@@ -75,7 +75,7 @@ pub async fn ticks_for_session(
 ) -> Result<Vec<MarketTick>, AppError> {
     let after = after_ts_ms.unwrap_or(0);
     let rows = sqlx::query(
-        "SELECT yes_best_bid, yes_best_ask, no_best_bid, no_best_ask, \
+        "SELECT up_best_bid, up_best_ask, down_best_bid, down_best_ask, \
          signal_score, bsi, ofi, cvd, ts_ms \
          FROM market_ticks \
          WHERE market_session_id = ? AND ts_ms > ? \
@@ -89,10 +89,10 @@ pub async fn ticks_for_session(
     Ok(rows
         .into_iter()
         .map(|r| MarketTick {
-            yes_best_bid: r.get("yes_best_bid"),
-            yes_best_ask: r.get("yes_best_ask"),
-            no_best_bid: r.get("no_best_bid"),
-            no_best_ask: r.get("no_best_ask"),
+            up_best_bid: r.get("up_best_bid"),
+            up_best_ask: r.get("up_best_ask"),
+            down_best_bid: r.get("down_best_bid"),
+            down_best_ask: r.get("down_best_ask"),
             signal_score: r.get("signal_score"),
             bsi: r.get("bsi"),
             ofi: r.get("ofi"),

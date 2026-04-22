@@ -102,12 +102,14 @@ pub struct BotConfig {
 }
 
 /// Strateji-spesifik parametreler — `bots.strategy_params` JSON sütunundan parse edilir.
+/// Tüm stratejiler (Alis/Elis/Aras) bu paylaşımlı set üzerinden okur; strateji-özgü
+/// alanlar gerektikçe burada `Option<T>` ile eklenir.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StrategyParams {
-    /// Harvest v2 ProfitLock eşiği oranı (örn. `0.02` → `avg_threshold = 0.98`).
-    /// OpenPair hedge fiyatı ve avg-down referansı (doc §2).
+    /// ProfitLock eşiği oranı (örn. `0.02` → `avg_threshold = 0.98`).
+    /// `metrics.profit_locked()` ve `hedge_price()` bu eşik üzerinden çalışır.
     #[serde(default)]
-    pub harvest_profit_lock_pct: Option<f64>,
+    pub profit_lock_pct: Option<f64>,
     /// RTDS Chainlink sinyali aktif mi. `None` → default `true`.
     #[serde(default)]
     pub rtds_enabled: Option<bool>,
@@ -119,33 +121,13 @@ pub struct StrategyParams {
     /// `None` → default `3.0`. `0.0` → projeksiyon kapalı (eski davranış).
     #[serde(default)]
     pub signal_lookahead_secs: Option<f64>,
-    /// Avg-down ve pyramid emirleri için minimum composite skor eşiği
-    /// (UP tarafı için). DOWN tarafı için `10.0 − avg_min_score` kullanılır.
-    /// `None` → default `4.0`. `0.0` → guard kapalı (tüm sinyallerde avg izin verilir).
-    #[serde(default)]
-    pub avg_min_score: Option<f64>,
-    /// Pencere başına maksimum toplam notional (USDC). Bu eşiği aşınca
-    /// yeni avg-down / pyramid emri üretilmez. `None` → sınırsız (eski davranış).
-    #[serde(default)]
-    pub max_position_usdc: Option<f64>,
-    /// `rising_side != filled_side` durumunda karşı tarafa pyramiding.
-    /// `None` → default `false` (güvenli; S4 riskini önler).
-    #[serde(default)]
-    pub opposite_pyramid_enabled: Option<bool>,
-    /// "Opportunistic profit-lock taker hedge" minimum kâr marjı (pair başına,
-    /// 0–1 normalize). Bot majority pozisyon taşırken karşı taraf best_ask'i
-    /// `1.0 − avg_majority − lock_min_profit_pct`'ten düşükse FAK BUY ile
-    /// parity'e getirip garanti lock yapar. `None` → 0.0 (her pozitif lock'a
-    /// gir; fee marjı için ≥ taker_fee_rate önerilir).
-    #[serde(default)]
-    pub lock_min_profit_pct: Option<f64>,
 }
 
 impl StrategyParams {
-    /// Harvest v2 `avg_threshold` (doc §2). `harvest_profit_lock_pct` varsayılanı
-    /// `0.02` → `avg_threshold = 0.98`.
-    pub fn harvest_avg_threshold(&self) -> f64 {
-        self.harvest_profit_lock_pct
+    /// Profit-lock canonical eşiği. `profit_lock_pct` varsayılanı `0.02` →
+    /// `avg_threshold = 0.98`. `StrategyContext.avg_threshold` bunu okur.
+    pub fn avg_threshold(&self) -> f64 {
+        self.profit_lock_pct
             .map(|p| 1.0 - p.abs())
             .unwrap_or(0.98)
     }
@@ -163,29 +145,6 @@ impl StrategyParams {
     pub fn signal_lookahead_secs_or_default(&self) -> f64 {
         self.signal_lookahead_secs.unwrap_or(3.0).clamp(0.0, 30.0)
     }
-
-    /// Avg-down/pyramid composite eşiği (UP tarafı); `[0, 5]` aralığına clamp.
-    /// Default `4.0` — skor 4.0 altında UP'a, 6.0 üstünde DOWN'a yeni avg yok.
-    /// `0.0` → guard devre dışı.
-    pub fn avg_min_score_or_default(&self) -> f64 {
-        self.avg_min_score.unwrap_or(4.0).clamp(0.0, 5.0)
-    }
-
-    /// Pencere başına maks notional (USDC); `None` → sınırsız.
-    pub fn max_position_usdc(&self) -> Option<f64> {
-        self.max_position_usdc.filter(|&v| v > 0.0)
-    }
-
-    /// Opposite-pyramid (rising != filled) varsayılan kapalı.
-    pub fn opposite_pyramid_enabled_or_default(&self) -> bool {
-        self.opposite_pyramid_enabled.unwrap_or(false)
-    }
-
-    /// Opportunistic taker hedge minimum kâr marjı; `[0, 0.5]`'e clamp,
-    /// default `0.0` (her pozitif lock).
-    pub fn lock_min_profit_pct_or_default(&self) -> f64 {
-        self.lock_min_profit_pct.unwrap_or(0.0).clamp(0.0, 0.5)
-    }
 }
 
 #[cfg(test)]
@@ -202,17 +161,17 @@ mod tests {
     }
 
     #[test]
-    fn harvest_avg_threshold_default_is_098() {
+    fn avg_threshold_default_is_098() {
         let p = StrategyParams::default();
-        assert!((p.harvest_avg_threshold() - 0.98).abs() < 1e-9);
+        assert!((p.avg_threshold() - 0.98).abs() < 1e-9);
     }
 
     #[test]
-    fn harvest_avg_threshold_uses_profit_lock_pct() {
+    fn avg_threshold_uses_profit_lock_pct() {
         let p = StrategyParams {
-            harvest_profit_lock_pct: Some(0.05),
+            profit_lock_pct: Some(0.05),
             ..Default::default()
         };
-        assert!((p.harvest_avg_threshold() - 0.95).abs() < 1e-9);
+        assert!((p.avg_threshold() - 0.95).abs() < 1e-9);
     }
 }

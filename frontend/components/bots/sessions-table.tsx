@@ -115,11 +115,11 @@ export function SessionsTable({ botId }: { botId: number }) {
                 <Stat label="Shares" width="w-28">
                   <span className="font-mono text-xs tabular-nums">
                     <span className="text-emerald-500">
-                      Y{s.shares_yes.toFixed(0)}
+                      U{s.up_filled.toFixed(0)}
                     </span>
                     <span className="text-muted-foreground"> · </span>
                     <span className="text-destructive">
-                      N{s.shares_no.toFixed(0)}
+                      D{s.down_filled.toFixed(0)}
                     </span>
                   </span>
                 </Stat>

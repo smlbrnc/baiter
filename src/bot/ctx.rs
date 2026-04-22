@@ -14,7 +14,7 @@ use crate::error::AppError;
 use crate::polymarket::{shared_http_client, ClobClient, GammaClient};
 use crate::rtds::{self, SharedRtdsState};
 use crate::slug::{parse_slug_or_prefix, SlugInfo};
-use crate::types::{RunMode, Strategy};
+use crate::types::RunMode;
 
 use super::tasks;
 
@@ -60,7 +60,8 @@ pub fn parse_bot_id() -> Result<i64, AppError> {
         .map_err(|_| AppError::Config("BAITER_BOT_ID must be integer".into()))
 }
 
-/// `Ctx` + ilk slug + signal handler'ları kur. Doc §11: yalnız Harvest aktif.
+/// `Ctx` + ilk slug + signal handler'ları kur. `Strategy::{Alis|Elis|Aras}`
+/// — üçü de aktif; dispatch `engine::MarketSession::tick` içinde.
 pub async fn load(bot_id: i64) -> Result<(Ctx, SlugInfo, Signal, Signal), AppError> {
     let env_ = RuntimeEnv::from_env()?;
     let pool = db::open(&env_.db_path).await?;
@@ -108,19 +109,13 @@ pub async fn load(bot_id: i64) -> Result<(Ctx, SlugInfo, Signal, Signal), AppErr
     ))
 }
 
-/// DB'den bot config'i okur ve aktif strateji kontrolünü uygular.
+/// DB'den bot config'i okur. `Strategy::{Alis|Elis|Aras}` — üçü de aktif;
+/// `engine::MarketSession::tick` dispatch eder.
 async fn load_and_validate_cfg(pool: &SqlitePool, bot_id: i64) -> Result<BotConfig, AppError> {
-    let cfg = db::get_bot(pool, bot_id)
+    db::get_bot(pool, bot_id)
         .await?
         .ok_or_else(|| AppError::Config(format!("bot id {bot_id} bulunamadı")))?
-        .to_config()?;
-    if cfg.strategy != Strategy::Harvest {
-        return Err(AppError::Config(format!(
-            "strategy {:?} aktif değil; doc §11 yalnız 'harvest' destekler",
-            cfg.strategy
-        )));
-    }
-    Ok(cfg)
+        .to_config()
 }
 
 /// Live modda credentials zorunludur ve `signature_type`/`funder` doğrulanır.
