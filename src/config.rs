@@ -86,17 +86,13 @@ pub struct Credentials {
 pub struct BotConfig {
     pub id: i64,
     pub name: String,
-    /// Polymarket slug öneki veya tam slug.
     pub slug_pattern: String,
     pub strategy: Strategy,
     pub run_mode: RunMode,
     pub order_usdc: f64,
     pub min_price: f64,
     pub max_price: f64,
-    /// Averaging cooldown (ms): iki averaging emri arası min süre + açık
-    /// averaging GTC max yaş.
     pub cooldown_threshold: u64,
-    /// Pencere ofseti: 0 = aktif, 1 = sonraki.
     pub start_offset: u32,
     pub strategy_params: StrategyParams,
 }
@@ -107,7 +103,7 @@ pub struct BotConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StrategyParams {
     /// ProfitLock eşiği oranı (örn. `0.02` → `avg_threshold = 0.98`).
-    /// `metrics.profit_locked()` ve `hedge_price()` bu eşik üzerinden çalışır.
+    /// `metrics.profit_locked()` bu eşik üzerinden çalışır.
     #[serde(default)]
     pub profit_lock_pct: Option<f64>,
     /// RTDS Chainlink sinyali aktif mi. `None` → default `true`.

@@ -2,7 +2,7 @@
 //!
 //! Adlandırma sözleşmesi: tüm pozisyon/VWAP alanları `_up`/`_down` (Polymarket
 //! "Yes/No" wire dilinden bağımsız strateji dili). `last_filled_*` her MATCHED
-//! fill'de güncellenir (BUY/SELL fark etmez) ve `rising_side` referansı.
+//! fill'de güncellenir (BUY/SELL fark etmez).
 
 use serde::{Deserialize, Serialize};
 
@@ -17,8 +17,7 @@ pub struct StrategyMetrics {
     pub avg_up: f64,
     /// DOWN tarafı VWAP.
     pub avg_down: f64,
-    /// Son UP MATCHED fill price'ı (BUY/SELL fark etmez); `rising_side`
-    /// referansı + UI display. Henüz fill yoksa `0.0`.
+    /// Son UP MATCHED fill price'ı (BUY/SELL fark etmez). Henüz fill yoksa `0.0`.
     pub last_filled_up: f64,
     /// Son DOWN MATCHED fill price'ı.
     pub last_filled_down: f64,
@@ -76,7 +75,6 @@ impl StrategyMetrics {
     }
 
     /// `up_filled − down_filled`. Pozitif → UP dominant, negatif → DOWN dominant.
-    /// Mutlak değeri `hedge_size` (eksik tarafa basılacak share sayısı).
     pub fn imbalance(&self) -> f64 {
         self.up_filled - self.down_filled
     }
@@ -85,17 +83,6 @@ impl StrategyMetrics {
     /// (gereksiz invariant); her okumada toplam.
     pub fn avg_sum(&self) -> f64 {
         self.avg_up + self.avg_down
-    }
-
-    /// Dominant tarafın VWAP'ı: `up_filled >= down_filled` ise `avg_up`,
-    /// aksi halde `avg_down`. Hedge fiyatı hesabı (`hedge_price`) için
-    /// referans noktası.
-    pub fn avg_dominant(&self) -> f64 {
-        if self.up_filled >= self.down_filled {
-            self.avg_up
-        } else {
-            self.avg_down
-        }
     }
 
     /// Pozisyonun cost basis'i (notional, fee hariç).

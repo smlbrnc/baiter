@@ -1,9 +1,7 @@
 //! Polymarket WS event handler dispatch.
 //!
-//! Sync (Rule 1). DB I/O `db::*::persist_*` → `spawn_db` ile fire-and-forget;
-//! strateji-kritik in-memory state her zaman önce, audit persist sonra.
-//!
-//! Spec referansı: <https://docs.polymarket.com/developers/CLOB/websocket/user-channel>.
+//! Sync; DB I/O `spawn_db` ile fire-and-forget. Strateji-kritik in-memory
+//! state her zaman önce, audit persist sonra.
 
 use sqlx::SqlitePool;
 
@@ -26,11 +24,10 @@ pub fn handle_event(
     ev: PolymarketEvent,
 ) {
     match ev {
-        PolymarketEvent::BestBidAsk { asset_id, best_bid, best_ask } => {
-            on_best_bid_ask(sess, pool, run_mode, &asset_id, best_bid, best_ask)
-        }
-        PolymarketEvent::Book { asset_id, best_bid, best_ask } => {
-            on_book_snapshot(sess, pool, run_mode, &asset_id, best_bid, best_ask)
+        PolymarketEvent::BestBidAsk { asset_id, best_bid, best_ask }
+        | PolymarketEvent::Book { asset_id, best_bid, best_ask } => {
+            update_best(sess, &asset_id, best_bid, best_ask);
+            after_book_update(sess, pool, run_mode);
         }
         PolymarketEvent::PriceChange { changes } => {
             on_price_change(sess, pool, run_mode, &changes)
@@ -39,30 +36,6 @@ pub fn handle_event(
         PolymarketEvent::Order(o) => on_order(sess, &o),
         PolymarketEvent::MarketResolved(r) => on_market_resolved(sess, pool, &r),
     }
-}
-
-fn on_best_bid_ask(
-    sess: &mut MarketSession,
-    pool: &SqlitePool,
-    run_mode: RunMode,
-    asset_id: &str,
-    best_bid: f64,
-    best_ask: f64,
-) {
-    update_best(sess, asset_id, best_bid, best_ask);
-    after_book_update(sess, pool, run_mode);
-}
-
-fn on_book_snapshot(
-    sess: &mut MarketSession,
-    pool: &SqlitePool,
-    run_mode: RunMode,
-    asset_id: &str,
-    best_bid: f64,
-    best_ask: f64,
-) {
-    update_best(sess, asset_id, best_bid, best_ask);
-    after_book_update(sess, pool, run_mode);
 }
 
 fn on_price_change(
@@ -90,14 +63,6 @@ fn after_book_update(sess: &mut MarketSession, pool: &SqlitePool, run_mode: RunM
     }
 }
 
-/// Bizim bir trade event içindeki tek fill'imizin rolü.
-///
-/// - `Maker { open_order_id }`: `maker_orders[]` entry'mizin `order_id`'si
-///   bizim `open_orders`'ımızda → fill `open_order_id`'a attribute edilir.
-/// - `Taker { marker_order_id }`: top-level event bizim tarafımızdan tetiklendi.
-///   Live mod REST `POST /order` `status=matched` yanıtında `LiveExecutor::place`
-///   aynı id'yi `open_orders`'a marker olarak push eder; o id `taker_order_id`
-///   alanında geri gelirse `marker_order_id` set edilir ve marker prune'lanır.
 #[derive(Debug, Clone)]
 enum FillRole {
     Maker { open_order_id: String },
@@ -109,7 +74,6 @@ impl FillRole {
         matches!(self, Self::Taker { .. })
     }
 
-    /// `record_fill_and_prune_if_full` için open_order id'si.
     fn open_order_id(&self) -> Option<&str> {
         match self {
             Self::Maker { open_order_id } => Some(open_order_id.as_str()),
@@ -129,17 +93,13 @@ struct Fill {
 }
 
 impl Fill {
-    /// Maker = 0, Taker = concave Polymarket fee. `bps` `MarketSession.fee_rate_bps`
-    /// (CLOB `GET /fee-rate`) tek otoritedir.
     fn fee(&self, bps: u32) -> f64 {
         fee_for_role(self.price, self.size, bps, self.role.is_taker())
     }
 }
 
-/// DB persist için tek-satır view; per-fill aggregation veya top-level fallback.
-///
-/// `asset_id` ve `side` daima set (`TradePayload.side: Side` zorunlu).
-/// `outcome` doğrudan WS payload'undan okunur — payload'da yoksa `None`.
+/// DB persist için tek-satır view: bizim fill'imiz varsa per-fill aggregate,
+/// yoksa top-level (foreign trade audit). `outcome` doğrudan WS payload'undan.
 struct PersistedTrade {
     outcome: Option<String>,
     asset_id: String,
@@ -159,9 +119,6 @@ impl PersistedTrade {
         }
     }
 
-    /// `fills.len() >= 1` garanti — caller sadece non-empty list'le çağırır.
-    /// Polymarket bir trade event'i tek `asset_id` etrafında oluşur; aggregate
-    /// her zaman tek-outcome'dur.
     fn from_fills(fills: &[Fill]) -> Self {
         let first = &fills[0];
         let sum_size: f64 = fills.iter().map(|f| f.size).sum();
@@ -177,11 +134,8 @@ impl PersistedTrade {
     }
 }
 
-/// User Channel `trade` event handler.
-///
-/// Spec: <https://docs.polymarket.com/developers/CLOB/websocket/user-channel>.
-/// Fill attribution **sadece** ilk `MATCHED`'de; sonraki `MINED/CONFIRMED` aynı
-/// `trade_id`'yi upsert edip status/ts/raw günceller — outcome/price/size FREEZE.
+/// Fill attribution **sadece** `MATCHED`'te; sonraki `MINED/CONFIRMED` aynı
+/// `trade_id`'yi upsert eder, outcome/price/size FREEZE.
 fn on_trade(sess: &mut MarketSession, pool: &SqlitePool, ev: &TradePayload) {
     let bot_id = sess.bot_id;
     let label = bot_id.to_string();
@@ -210,18 +164,8 @@ fn on_trade(sess: &mut MarketSession, pool: &SqlitePool, ev: &TradePayload) {
     persist_trade(pool, sess, ev, &view, total_fee);
 }
 
-/// Trade event'inden bizim fill'lerimizi çıkar.
-///
-/// AsyncAPI spec: <https://docs.polymarket.com/api-reference/wss/user>.
-/// Top-level `owner` REQUIRED alanı = "API key of the taker". Rolümüz bu
-/// alanın bizim API key UUID'mize eşit olup olmamasıyla belirlenir:
-///
-/// - `ev.owner == sess.owner_uuid` → biz **TAKER**; top-level alanlar bizim
-///   fill'imizi taşır; `taker_order_id` bizim emir id'mizdir.
-/// - aksi → biz **MAKER**; `maker_orders[]` içinde
-///   `owner == sess.owner_uuid` olan entry'ler bizim fill'lerimizdir.
-///
-/// `trader_side` alanı spec'te OPTIONAL → dispatch için kullanılmaz.
+/// `ev.owner == sess.owner_uuid` → TAKER (top-level fill).
+/// Aksi → MAKER (`maker_orders[]` içinde owner eşleşen entry'ler).
 fn extract_fills(sess: &MarketSession, ev: &TradePayload) -> Vec<Fill> {
     let Some(owner) = sess.owner_uuid.as_deref() else {
         return Vec::new();
@@ -265,8 +209,6 @@ fn extract_taker_fill(ev: &TradePayload) -> Option<Fill> {
     })
 }
 
-/// Tek fill'in tüm side-effect'leri tek noktada: metrics absorb + open_order
-/// prune + console log + frontend event emit.
 fn apply_fill(
     sess: &mut MarketSession,
     label: &str,
@@ -301,7 +243,6 @@ fn persist_trade(
     let maker_orders_json = if ev.maker_orders.is_empty() {
         None
     } else {
-        // `Vec<MakerOrder>` serializasyonu deterministik ve infallible.
         Some(
             serde_json::to_string(&ev.maker_orders)
                 .expect("Vec<MakerOrder> serialization is infallible"),
@@ -327,18 +268,10 @@ fn persist_trade(
     db::trades::persist_trade(pool, record, "user_ws upsert_trade");
 }
 
-/// Tam-fill veya gerçek dust olduğunda prune edilecek tolerans (share).
-///
-/// Polymarket `min_order_size` (≈5.0) **yeni emir POST için** geçerli;
-/// book'taki kısmi emir herhangi bir küçük boyutta dolmaya devam eder.
-/// Eşiği çok yüksek tutmak, remaining < threshold sınırını aşan kısmi
-/// fill'lerin erken prune'a yol açar ve sonraki fill'lerin yanlış TAKER
-/// fallback'e düşmesine neden olur (bkz. ab551d33 phantom fill bug).
+/// Erken prune kısmi fill'lerin yanlış attribute olmasına yol açar — bu yüzden
+/// eşiği `min_order_size` değil, gerçek dust seviyesinde (0.01) tutuyoruz.
 const FILL_DUST_THRESHOLD: f64 = 0.01;
 
-/// Maker fill'i `OpenOrder.size_matched`'e ekle; kalan miktar
-/// `FILL_DUST_THRESHOLD`'un altına düşerse emri `open_orders`'tan düşür →
-/// strateji FSM (Alis/Elis/Aras) `PairComplete` benzeri kapanışları doğru tetikler.
 fn record_fill_and_prune_if_full(
     sess: &mut MarketSession,
     order_id: Option<&str>,
@@ -397,11 +330,8 @@ fn log_fill_and_position(label: &str, sess: &MarketSession, outcome: Outcome, si
     );
 }
 
-/// User Channel `order` event handler — in-memory state günceller.
-///
-/// `UPDATE` lifecycle'da full-fill prune `on_trade`'de yapılır: WS UPDATE
-/// ilgili trade `MATCHED`'ten önce gelirse `extract_fills` order_id'i
-/// bulamaz ve maker fill yanlış attribute olur.
+/// `UPDATE`'te prune yapma — `on_trade` `MATCHED`'te yapar; aksi halde maker
+/// fill attribution `open_orders` boş bulup yanlış TAKER'a düşer.
 fn on_order(sess: &mut MarketSession, ev: &OrderPayload) {
     let label = sess.bot_id.to_string();
     match ev.lifecycle {

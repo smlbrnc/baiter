@@ -83,7 +83,7 @@ pub struct StrategyContext<'a> {
     /// Averaging cooldown (ms) + GTC max age. `BotConfig.cooldown_threshold`.
     pub cooldown_threshold: u64,
     /// Profit-lock eşiği — `StrategyParams::avg_threshold()` (default 0.98).
-    /// `metrics.profit_locked()` ve `hedge_price()` bu değerle çalışır.
+    /// `metrics.profit_locked()` bu değerle çalışır.
     pub avg_threshold: f64,
     pub signal_ready: bool,
     /// Strateji-spesifik ayarlar (Alis: `open_delta`, `pyramid_*` vb.). Tüm
@@ -112,39 +112,4 @@ impl StrategyContext<'_> {
             Outcome::Down => self.down_best_ask,
         }
     }
-
-    /// Anlık fiyat bandı tabanlı yön (kullanıcı tanımı, doc canonical):
-    /// son UP MATCHED price `[0.55, max_price]` aralığındaysa **UP yükselişte**;
-    /// `[min_price, 0.45]` aralığındaysa **DOWN yükselişte**; aksi halde
-    /// nötr bant (`None`). `last_filled_up == 0.0` → henüz fill yok → `None`.
-    pub fn rising_side(&self) -> Option<Outcome> {
-        let p = self.metrics.last_filled_up;
-        if p <= 0.0 {
-            return None;
-        }
-        if p >= 0.55 && p <= self.max_price {
-            Some(Outcome::Up)
-        } else if p >= self.min_price && p <= 0.45 {
-            Some(Outcome::Down)
-        } else {
-            None
-        }
-    }
-}
-
-/// Profit-lock için karşı tarafa basılacak hedge fiyatı:
-/// `avg_threshold − metrics.avg_dominant()`'i `[min_price, max_price]` aralığına clamp'ler.
-pub fn hedge_price(
-    metrics: &StrategyMetrics,
-    avg_threshold: f64,
-    min_price: f64,
-    max_price: f64,
-) -> f64 {
-    (avg_threshold - metrics.avg_dominant()).clamp(min_price, max_price)
-}
-
-/// Pair tamamlamak için hedge size: `|imbalance|` (= eksik tarafa basılacak share).
-/// İki taraf eşit ise 0.
-pub fn hedge_size(metrics: &StrategyMetrics) -> f64 {
-    metrics.imbalance().abs()
 }

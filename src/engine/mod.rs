@@ -153,40 +153,28 @@ impl MarketSession {
             }
         };
         self.state = next_state;
-        if let Some(method) = detect_alis_lock_transition(&prev_state, &next_state, &decision) {
+        if let Some(method) = detect_alis_lock_transition(&prev_state, &next_state) {
             emit_profit_locked(self, method, now_ms_v);
         }
         decision
     }
 }
 
-/// Alis için `… → Locked` geçişini tespit eder + lock yöntemini etiketler.
-/// Returns `None` eğer geçiş Alis lock değilse.
+/// Alis lock pasiftir; method etiketi `prev`'e göre türetilir.
+/// `OpenPlaced → Locked` = simetrik fill, `PositionOpen → Locked` = hedge fill.
 fn detect_alis_lock_transition(
     prev: &StrategyState,
     next: &StrategyState,
-    decision: &Decision,
 ) -> Option<&'static str> {
-    let prev_alis = match prev {
-        StrategyState::Alis(s) => *s,
-        _ => return None,
-    };
-    let next_alis = match next {
-        StrategyState::Alis(s) => *s,
-        _ => return None,
-    };
-    if next_alis != AlisState::Locked || prev_alis == AlisState::Locked {
+    let StrategyState::Alis(prev_alis) = prev else { return None };
+    let StrategyState::Alis(next_alis) = next else { return None };
+    if *next_alis != AlisState::Locked || *prev_alis == AlisState::Locked {
         return None;
     }
-    // Lock yöntemini Decision'dan çıkar.
-    let method = match decision {
-        Decision::PlaceOrders(_) | Decision::CancelAndPlace { .. } => "taker_fak",
-        Decision::NoOp | Decision::CancelOrders(_) => match prev_alis {
-            AlisState::OpenPlaced { .. } => "symmetric_fill",
-            _ => "passive_hedge_fill",
-        },
-    };
-    Some(method)
+    Some(match prev_alis {
+        AlisState::OpenPlaced { .. } => "symmetric_fill",
+        _ => "passive_hedge_fill",
+    })
 }
 
 fn emit_profit_locked(session: &MarketSession, method: &str, ts_ms: u64) {
