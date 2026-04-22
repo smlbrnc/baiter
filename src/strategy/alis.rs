@@ -5,9 +5,9 @@
 //! 1. **DeepTrade (%0-10):** `place_open_pair` — skor `>= 5` ise UP intent,
 //!    aksi halde DOWN intent. Asıl emir `BUY {intent} @ best_ask + open_delta`
 //!    GTC, eş emir `BUY {opp} @ avg_threshold − asıl_price` GTC (parity size).
-//! 2. **NormalTrade (%10-50):** max 1 avg-down. Dominant tarafta bekleyen GTC
-//!    (kalan opener/hedge/avgdown) varsa iptal + AYNI size ile `best_bid_dom`
-//!    fiyatından `alis:avgdown:dom` olarak re-place. Bekleyen yoksa NoOp.
+//! 2. **NormalTrade (%10-50):** max 1 avg-down. Dominant tarafta bekleyen alis
+//!    GTC varsa iptal + AYNI size ile `best_bid_dom`'dan `alis:avgdown:dom`
+//!    olarak re-place. Bekleyen yoksa NoOp.
 //! 3. **AggTrade (%50-90):** max 1 pyramid (taker FAK) — pencere ortalama
 //!    skor + dominant `best_bid > 0.5` trend onayı.
 //! 4. **FakTrade (%90-97):** max 1 ek pyramid (taker FAK, daha agresif delta).
@@ -545,7 +545,6 @@ fn try_avg_down(state: AlisState, ctx: &StrategyContext<'_>) -> (AlisState, Deci
         .filter(|o| {
             o.outcome == dom
                 && o.reason.starts_with("alis:")
-                && !o.reason.starts_with("alis:lock:")
                 && (o.size - o.size_matched) > 0.0
         })
         .collect();
