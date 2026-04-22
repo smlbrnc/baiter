@@ -49,12 +49,6 @@ export interface StrategyParams {
    * Alis: pyramid emir başına USDC. `null` → opener `order_usdc` ile aynı.
    */
   pyramid_usdc?: number | null;
-  /**
-   * Alis: avg-down `x` size'ı en fazla `dominant_shares × max_mult` olur.
-   * `target − best_bid_dom` daraldığında formül `x` patlayabiliyor; bu cap
-   * o patlamayı engeller. Default 5.0. `<= 0` → cap kapalı (önerilmez).
-   */
-  avg_down_max_mult?: number | null;
 }
 
 export interface BotRow {
@@ -390,5 +384,4 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   open_delta: 0.01,
   pyramid_agg_delta: 0.015,
   pyramid_fak_delta: 0.025,
-  avg_down_max_mult: 5.0,
 } as const;

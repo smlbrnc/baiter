@@ -134,14 +134,6 @@ pub struct StrategyParams {
     /// Alis: pyramid emir başına USDC. `None` → opener `order_usdc` ile aynı.
     #[serde(default)]
     pub pyramid_usdc: Option<f64>,
-    /// Alis: avg-down `x` size'ının dominant tarafın mevcut shares'ine göre
-    /// üst sınırı (multiplier). Plan formülü `x = (avg_d − target) × shares /
-    /// (target − best_bid_dom)` denominator daraldığında patlar; bu cap o
-    /// patlamayı engeller. `None` → default `5.0` (avg-down en fazla 5×
-    /// mevcut pozisyonu büyütür). `0.0` veya negatif → cap kapalı (eski
-    /// davranış, önerilmez).
-    #[serde(default)]
-    pub avg_down_max_mult: Option<f64>,
 }
 
 impl StrategyParams {
@@ -185,12 +177,6 @@ impl StrategyParams {
     /// Alis pyramid USDC; verilmemişse caller'ın opener `order_usdc`'sine düşer.
     pub fn pyramid_usdc_or(&self, fallback: f64) -> f64 {
         self.pyramid_usdc.unwrap_or(fallback).max(0.0)
-    }
-
-    /// Alis avg-down x size cap multiplier; default `5.0`. `<= 0.0` → cap
-    /// devre dışı (önerilmez). Aralık `[0.0, 50.0]` (üst sınır spike koruması).
-    pub fn avg_down_max_mult_or_default(&self) -> f64 {
-        self.avg_down_max_mult.unwrap_or(5.0).clamp(0.0, 50.0)
     }
 }
 

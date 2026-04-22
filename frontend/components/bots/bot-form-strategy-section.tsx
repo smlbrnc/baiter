@@ -41,8 +41,6 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const pyramidFakDelta =
     params.pyramid_fak_delta ?? STRATEGY_PARAMS_DEFAULTS.pyramid_fak_delta;
   const pyramidUsdc = params.pyramid_usdc ?? null;
-  const avgDownMaxMult =
-    params.avg_down_max_mult ?? STRATEGY_PARAMS_DEFAULTS.avg_down_max_mult;
 
   return (
     <div className="space-y-3">
@@ -197,25 +195,6 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                   value={pyramidFakDelta}
                   onChange={(e) =>
                     patch({ pyramid_fak_delta: Number(e.target.value) })
-                  }
-                />
-              </Field>
-            </div>
-
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field
-                label="Avg-down max çarpan"
-                tooltip="Avg-down x size'ı en fazla `dominant_shares × max_mult` kadar olur. target − best_bid_dom daraldığında formül x'i patlatır (1 tick gap = 17× shares); bu cap o patlamayı engeller. Default 5.0 → avg-down en fazla mevcut pozisyonu 5 katına çıkarır. 0 = cap kapalı (önerilmez)."
-                hint="0.0 – 50.0 (default 5.0)."
-              >
-                <Input
-                  type="number"
-                  step="0.5"
-                  min="0"
-                  max="50"
-                  value={avgDownMaxMult}
-                  onChange={(e) =>
-                    patch({ avg_down_max_mult: Number(e.target.value) })
                   }
                 />
               </Field>
