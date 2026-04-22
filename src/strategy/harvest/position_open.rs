@@ -6,17 +6,35 @@
 
 use crate::strategy::{planned_buy_gtc, Decision, PlannedOrder, MIN_NOTIONAL_USD};
 use crate::time::MarketZone;
-use crate::types::Outcome;
+use crate::types::{OrderType, Outcome, Side};
 
 use super::state::{
     avg_down_reason, hedge_reason, pyramid_reason, HarvestContext, HarvestState,
 };
+
+/// Opportunistic taker hedge reason prefix — pasif `hedge:*` GTC'lerden ayrı
+/// tutulur (FAK olduğu için kitapta kalmaz, fakat log/audit için ayrı namespace).
+pub const TAKER_HEDGE_REASON_PREFIX: &str = "harvest_v2:taker_hedge:";
+
+fn taker_hedge_reason(side: Outcome) -> String {
+    format!("{TAKER_HEDGE_REASON_PREFIX}{}", side.as_lowercase())
+}
 
 pub fn handle(filled_side: Outcome, ctx: &HarvestContext) -> (HarvestState, Decision) {
     let same = HarvestState::PositionOpen { filled_side };
 
     if ctx.profit_locked() {
         return (HarvestState::ProfitLocked { filled_side }, Decision::NoOp);
+    }
+
+    // P5 (yeni): Opportunistic profit-lock taker hedge.
+    // Pasif GTC hedge (`build_hedge`) `avg_threshold − avg_majority` fiyatına
+    // çakılı; market geçici olarak `avg_majority + best_ask(hedge) < 1.0` lock
+    // fırsatı sunduğunda bu fırsat kaçırılıyordu (bkz. btc-updown-5m-1776845700).
+    // FAK BUY ile parity'e getirip garanti pozitif lock'u anında yakala.
+    // FAK olduğu için kitapta kalmaz → balance lock / spam riski yok.
+    if let Some(taker_hedge) = try_opportunistic_taker_hedge(ctx) {
+        return (same, Decision::PlaceOrders(vec![taker_hedge]));
     }
 
     let majority = ctx.majority_side();
@@ -245,6 +263,50 @@ fn hedge_needs_replace(hedge_side: Outcome, ctx: &HarvestContext) -> Option<Stri
         return None;
     }
     Some(hedge.id.clone())
+}
+
+/// P5: Garantili profit-lock fırsatı varsa parity'e getirecek FAK BUY hedge planla.
+///
+/// Tetikleyici: majority pozisyon var, `avg_majority + best_ask(hedge_side) <
+/// 1.0 − lock_min_profit_pct`. Pair maliyeti $1'in altına düşüyorsa fark net
+/// kâr olur (Polymarket'te her UP+DOWN çift $1 öder).
+///
+/// Size: `shares(majority) − shares(hedge_side)` (parity hedefi).
+/// Order: `FAK BUY @ snap(best_ask)` — best_ask seviyesindeki tüm liquidity'i
+/// alır, fazlası iptal olur. Kitapta kalmaz → balance lock yok, repeat-safe.
+fn try_opportunistic_taker_hedge(ctx: &HarvestContext) -> Option<PlannedOrder> {
+    let majority = ctx.majority_side()?;
+    let hedge_side = majority.opposite();
+    let avg_majority = ctx.avg_filled(majority);
+    if avg_majority <= 0.0 {
+        return None;
+    }
+    let ask = ctx.best_ask(hedge_side);
+    if ask <= 0.0 || !ctx.price_in_band(ask) {
+        return None;
+    }
+    let pair_cost = avg_majority + ask;
+    let max_pair_cost = 1.0 - ctx.lock_min_profit_pct;
+    if pair_cost >= max_pair_cost {
+        return None;
+    }
+    let target_size = ctx.shares(majority) - ctx.shares(hedge_side);
+    if target_size < ctx.api_min_order_size {
+        return None;
+    }
+    let price = ctx.snap_clamp(ask);
+    let size = target_size
+        .max(MIN_NOTIONAL_USD / price)
+        .max(ctx.api_min_order_size);
+    Some(PlannedOrder {
+        outcome: hedge_side,
+        token_id: ctx.token_id(hedge_side).to_string(),
+        side: Side::Buy,
+        price,
+        size,
+        order_type: OrderType::Fak,
+        reason: taker_hedge_reason(hedge_side),
+    })
 }
 
 /// Doc §7: `best_ask(filled) < avg_filled_side` + cooldown + açık avg yok.

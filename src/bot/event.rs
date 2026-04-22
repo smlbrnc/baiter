@@ -254,6 +254,13 @@ fn extract_fills(sess: &MarketSession, ev: &TradePayload) -> Vec<Fill> {
         return maker;
     }
 
+    // MAKER event'i ama open_orders'ta eşleşen order bulunamadı (dust eşiğiyle
+    // prune edilmiş olabilir). Bu durumda taker fallback'e DÜŞMEMELİYİZ:
+    // ev.size taker'ın toplam işlem büyüklüğü olur, bot'a phantom fill yazar.
+    if ev.trader_side.as_deref() == Some("MAKER") {
+        return Vec::new();
+    }
+
     let outcome = match outcome_from_asset_id(sess, &ev.asset_id) {
         Some(o) => o,
         None => return Vec::new(),
@@ -338,10 +345,11 @@ fn persist_trade(
 /// Tam-fill veya gerçek dust olduğunda prune edilecek tolerans (share).
 ///
 /// Polymarket `min_order_size` (≈5.0) **yeni emir POST için** geçerli;
-/// book'taki kısmi emir herhangi bir küçük boyutta dolmaya devam eder. Bu
-/// yüzden dust eşiği POST minimum'undan **çok daha küçük** olmalı: kalan
-/// miktar 0.5 share'in altındaysa pratikte counterparty bulamaz.
-const FILL_DUST_THRESHOLD: f64 = 0.5;
+/// book'taki kısmi emir herhangi bir küçük boyutta dolmaya devam eder.
+/// Eşiği çok yüksek tutmak, remaining < threshold sınırını aşan kısmi
+/// fill'lerin erken prune'a yol açar ve sonraki fill'lerin yanlış TAKER
+/// fallback'e düşmesine neden olur (bkz. ab551d33 phantom fill bug).
+const FILL_DUST_THRESHOLD: f64 = 0.01;
 
 /// Maker fill'i `OpenOrder.size_matched`'e ekle; kalan miktar
 /// `FILL_DUST_THRESHOLD`'un altına düşerse emri `open_orders`'tan düşür →

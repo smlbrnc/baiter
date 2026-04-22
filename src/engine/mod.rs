@@ -135,6 +135,9 @@ impl MarketSession {
                     opposite_pyramid_enabled: cfg
                         .strategy_params
                         .opposite_pyramid_enabled_or_default(),
+                    lock_min_profit_pct: cfg
+                        .strategy_params
+                        .lock_min_profit_pct_or_default(),
                 };
                 let (new_state, decision) =
                     <HarvestEngine as DecisionEngine>::decide(self.harvest_state, &ctx);

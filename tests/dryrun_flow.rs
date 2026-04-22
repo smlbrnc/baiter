@@ -165,6 +165,10 @@ async fn harvest_v2_normal_trade_avg_down_places_bid_when_ask_below_avg() {
     });
     sess.yes_best_bid = 0.46;
     sess.yes_best_ask = 0.47;
+    // Opportunistic taker hedge'in burada tetiklenmemesi için DOWN ask'ı
+    // pair_cost ≥ 1.0 olacak şekilde ayarla (0.50 + 0.55 = 1.05).
+    sess.no_best_bid = 0.53;
+    sess.no_best_ask = 0.55;
     sess.last_averaging_ms = 0;
 
     let t = now_ms() + COOLDOWN + 1_000;
@@ -254,6 +258,10 @@ async fn harvest_v2_avg_down_match_triggers_hedge_reprice() {
         size_matched: 0.0,
         placed_at_ms: 0,
     });
+    // Opportunistic taker hedge'in burada tetiklenmemesi için DOWN ask'ı
+    // pair_cost ≥ 1.0 yap (0.475 + 0.55 = 1.025).
+    sess.no_best_bid = 0.53;
+    sess.no_best_ask = 0.55;
 
     let dec = sess.tick(&cfg, now_ms(), 5.0, true);
     // Atomic re-price: state PositionOpen'da kalır (HedgeUpdating ara state'i
@@ -435,4 +443,87 @@ async fn harvest_v2_composite_low_signal_opens_down_taker() {
         .unwrap();
     assert_eq!(open.outcome, Outcome::Down);
     assert_eq!(hedge.outcome, Outcome::Up);
+}
+
+/// P5: pair_cost = avg_majority + best_ask(hedge) < 1.0 → FAK BUY hedge_side.
+/// Senaryo: shares_yes=10 @ 0.55 (avg=0.55), no_best_ask=0.43 → pair=0.98 lock.
+#[tokio::test]
+async fn harvest_v2_opportunistic_taker_hedge_fires_on_lock_window() {
+    use baiter_pro::types::OrderType;
+
+    let cfg = dryrun_cfg();
+    let mut sess = session(&cfg);
+    sess.metrics
+        .ingest_fill(Outcome::Up, Side::Buy, 0.55, 10.0, 0.0);
+    sess.harvest_state = HarvestState::PositionOpen {
+        filled_side: Outcome::Up,
+    };
+    sess.no_best_ask = 0.43;
+    sess.no_best_bid = 0.41;
+
+    let dec = sess.tick(&cfg, now_ms(), 5.0, true);
+    let places = match dec {
+        Decision::PlaceOrders(o) => o,
+        other => panic!("expected PlaceOrders (taker hedge), got {:?}", other),
+    };
+    assert_eq!(places.len(), 1);
+    let taker = &places[0];
+    assert_eq!(taker.outcome, Outcome::Down);
+    assert!(taker.reason.starts_with("harvest_v2:taker_hedge:"));
+    assert_eq!(taker.order_type, OrderType::Fak);
+    assert!((taker.price - 0.43).abs() < 1e-9);
+    assert!((taker.size - 10.0).abs() < 1e-9);
+}
+
+/// P5: pair_cost ≥ 1.0 → trigger ETMEZ; pasif hedge yoksa GTC place edilir.
+#[tokio::test]
+async fn harvest_v2_opportunistic_taker_hedge_skipped_when_no_lock() {
+    let cfg = dryrun_cfg();
+    let mut sess = session(&cfg);
+    sess.metrics
+        .ingest_fill(Outcome::Up, Side::Buy, 0.55, 10.0, 0.0);
+    sess.harvest_state = HarvestState::PositionOpen {
+        filled_side: Outcome::Up,
+    };
+    // pair_cost = 0.55 + 0.46 = 1.01 → lock yok.
+    sess.no_best_ask = 0.46;
+    sess.no_best_bid = 0.44;
+
+    let dec = sess.tick(&cfg, now_ms(), 5.0, true);
+    if let Decision::PlaceOrders(orders) | Decision::CancelAndPlace { places: orders, .. } = &dec {
+        assert!(
+            orders
+                .iter()
+                .all(|o| !o.reason.starts_with("harvest_v2:taker_hedge:")),
+            "taker_hedge fire ETMEMELİ; got: {:?}",
+            orders
+        );
+    }
+}
+
+/// P5: lock_min_profit_pct margin'i tetiklemeyi bloke eder.
+#[tokio::test]
+async fn harvest_v2_opportunistic_taker_hedge_respects_min_profit_margin() {
+    let mut cfg = dryrun_cfg();
+    cfg.strategy_params.lock_min_profit_pct = Some(0.05);
+    let mut sess = session(&cfg);
+    sess.metrics
+        .ingest_fill(Outcome::Up, Side::Buy, 0.55, 10.0, 0.0);
+    sess.harvest_state = HarvestState::PositionOpen {
+        filled_side: Outcome::Up,
+    };
+    // pair_cost = 0.98 ama margin 0.05 → max_pair_cost = 0.95 → tetiklenmez.
+    sess.no_best_ask = 0.43;
+    sess.no_best_bid = 0.41;
+
+    let dec = sess.tick(&cfg, now_ms(), 5.0, true);
+    if let Decision::PlaceOrders(orders) | Decision::CancelAndPlace { places: orders, .. } = &dec {
+        assert!(
+            orders
+                .iter()
+                .all(|o| !o.reason.starts_with("harvest_v2:taker_hedge:")),
+            "margin altında taker_hedge fire ETMEMELİ; got: {:?}",
+            orders
+        );
+    }
 }

@@ -80,6 +80,8 @@ pub struct HarvestContext<'a> {
     pub avg_min_score: f64,
     pub max_position_usdc: Option<f64>,
     pub opposite_pyramid_enabled: bool,
+    /// Opportunistic taker hedge minimum kâr marjı (0–1); 0 = her pozitif lock.
+    pub lock_min_profit_pct: f64,
 }
 
 impl<'a> HarvestContext<'a> {

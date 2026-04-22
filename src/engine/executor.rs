@@ -313,6 +313,25 @@ async fn place_batch<S: OrderSink + ?Sized>(
     Ok(())
 }
 
+/// Polymarket `not_canceled` reason'larında order'ın artık book'ta olmadığını
+/// kesinleştiren terminal substring'ler. Bu reason'lar geldiğinde lokal
+/// `open_orders` state'inden de **mutlaka** prune edilmeli; aksi halde hedge
+/// drift gibi sürekli re-trigger olan replace mantığı sonsuz cancel-spam +
+/// balance-lock loop'una düşer (bkz. btc-updown-5m-1776845700, 5dk = 8944
+/// cancel reject + 1254 balance error).
+const TERMINAL_NOT_CANCELED_REASONS: &[&str] = &[
+    "order can't be found",        // already canceled or matched
+    "matched orders can't",        // fully matched after we read the book
+    "order not found",             // alternate phrasing
+    "order is already canceled",   // explicit cancel race
+];
+
+fn is_terminal_not_canceled(reason: &str) -> bool {
+    TERMINAL_NOT_CANCELED_REASONS
+        .iter()
+        .any(|s| reason.contains(s))
+}
+
 async fn cancel_batch<S: OrderSink + ?Sized>(
     session: &mut MarketSession,
     exec: &S,
@@ -320,9 +339,12 @@ async fn cancel_batch<S: OrderSink + ?Sized>(
     out: &mut ExecuteOutput,
 ) -> Result<(), AppError> {
     let label = session.bot_id.to_string();
-    // Yalnız Polymarket'in gerçekten iptal ettiği id'leri lokal state'ten sil;
-    // `not_canceled` emir hâlâ canlı/matched, MATCHED event'inde maker fill için lazım.
+    // Yalnız Polymarket'in gerçekten iptal ettiği id'leri **veya** terminal
+    // bir reason ile reddettiği id'leri lokal state'ten sil. "Order is being
+    // matched" gibi geçici (non-terminal) red'leri olduğu gibi bırak — order
+    // hâlâ canlı/matched ve sonraki fill event için referans olarak gerek.
     let mut truly_canceled: HashSet<String> = HashSet::new();
+    let mut terminal_reject: HashSet<String> = HashSet::new();
     for id in ids {
         let resp = exec.cancel(session, id).await?;
         for c in &resp.canceled {
@@ -334,14 +356,23 @@ async fn cancel_batch<S: OrderSink + ?Sized>(
                     .as_str()
                     .map(str::to_string)
                     .unwrap_or_else(|| reason.to_string());
+                let terminal = is_terminal_not_canceled(&reason_s);
                 ipc::log_line(
                     &label,
-                    format!("⚠️ cancel rejected id={nc_id} reason={reason_s}"),
+                    format!(
+                        "⚠️ cancel rejected id={nc_id} reason={reason_s}{}",
+                        if terminal { " [terminal → pruning]" } else { "" }
+                    ),
                 );
+                if terminal {
+                    terminal_reject.insert(nc_id.clone());
+                }
             }
         }
         out.canceled.push(resp);
     }
-    session.open_orders.retain(|o| !truly_canceled.contains(&o.id));
+    session
+        .open_orders
+        .retain(|o| !truly_canceled.contains(&o.id) && !terminal_reject.contains(&o.id));
     Ok(())
 }

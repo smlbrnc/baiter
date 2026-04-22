@@ -132,6 +132,13 @@ pub struct StrategyParams {
     /// `None` → default `false` (güvenli; S4 riskini önler).
     #[serde(default)]
     pub opposite_pyramid_enabled: Option<bool>,
+    /// "Opportunistic profit-lock taker hedge" minimum kâr marjı (pair başına,
+    /// 0–1 normalize). Bot majority pozisyon taşırken karşı taraf best_ask'i
+    /// `1.0 − avg_majority − lock_min_profit_pct`'ten düşükse FAK BUY ile
+    /// parity'e getirip garanti lock yapar. `None` → 0.0 (her pozitif lock'a
+    /// gir; fee marjı için ≥ taker_fee_rate önerilir).
+    #[serde(default)]
+    pub lock_min_profit_pct: Option<f64>,
 }
 
 impl StrategyParams {
@@ -172,6 +179,12 @@ impl StrategyParams {
     /// Opposite-pyramid (rising != filled) varsayılan kapalı.
     pub fn opposite_pyramid_enabled_or_default(&self) -> bool {
         self.opposite_pyramid_enabled.unwrap_or(false)
+    }
+
+    /// Opportunistic taker hedge minimum kâr marjı; `[0, 0.5]`'e clamp,
+    /// default `0.0` (her pozitif lock).
+    pub fn lock_min_profit_pct_or_default(&self) -> f64 {
+        self.lock_min_profit_pct.unwrap_or(0.0).clamp(0.0, 0.5)
     }
 }
 
