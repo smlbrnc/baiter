@@ -17,6 +17,7 @@ use crate::time::now_ms;
 
 /// Bot binary entry point — `cargo run --bin bot -- --bot-id N`.
 pub async fn run() -> Result<(), AppError> {
+    ipc::init_async_writer();
     let bot_id = ctx::parse_bot_id()?;
     std::env::set_var("BAITER_BOT_ID", bot_id.to_string());
 

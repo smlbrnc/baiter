@@ -3,26 +3,80 @@
 //! Bot süreçleri stdout'a iki tür satır yazar:
 //! 1. `[HH:MM:SS.mmm] [bot_label] mesaj` — sade log; supervisor `info`/`warn`/`error`
 //!    seviyesine göre `logs` tablosuna yazar.
-//! 2. `[[EVENT]] {json}` — `FrontendEvent` payload'ı; supervisor parse eder ve SSE'ye yayar.
+//! 2. `[[EVENT]] {json}` — `FrontendEvent` payload'ı; supervisor parse eder ve SSE'ya yayar.
+//!
+//! Her iki çağrı `init_async_writer()` sonrası non-blocking: hot path satırı
+//! ön-formatlar, bounded mpsc'ye `try_send`'ler ve döner. Dedicated drain task
+//! batch'leyip stdout'a tek `write_all + flush` ile basar; ordering korunur.
+//! Init yoksa veya kanal doluysa sync fallback (eski davranış).
 
 use std::io::{self, Write};
+use std::sync::OnceLock;
 
 use chrono::Utc;
 use chrono_tz::America::New_York;
 use serde::{Deserialize, Serialize};
+use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc;
+use tokio::sync::mpsc::error::TrySendError;
 
 use crate::types::{Outcome, Side};
 
 /// `[[EVENT]] ` prefix'i — supervisor bunu görünce satırı event parser'a yönlendirir.
 pub const EVENT_PREFIX: &str = "[[EVENT]] ";
 
+static LOG_TX: OnceLock<mpsc::Sender<Vec<u8>>> = OnceLock::new();
+
+/// Async stdout writer'ı kurar. `bot::run()` başında bir kere çağrılır.
+/// Tekrar çağrılırsa no-op (`OnceLock::set` Err). Drain task ömür boyu çalışır;
+/// supervisor pipe kapanırsa task tokio runtime ile birlikte sonlanır.
+pub fn init_async_writer() {
+    let (tx, mut rx) = mpsc::channel::<Vec<u8>>(4096);
+    if LOG_TX.set(tx).is_err() {
+        return;
+    }
+    tokio::spawn(async move {
+        let mut stdout = tokio::io::stdout();
+        let mut batch: Vec<u8> = Vec::with_capacity(16 * 1024);
+        while let Some(first) = rx.recv().await {
+            batch.clear();
+            batch.extend_from_slice(&first);
+            while let Ok(more) = rx.try_recv() {
+                batch.extend_from_slice(&more);
+                if batch.len() >= 64 * 1024 {
+                    break;
+                }
+            }
+            let _ = stdout.write_all(&batch).await;
+            let _ = stdout.flush().await;
+        }
+    });
+}
+
+fn write_line(buf: Vec<u8>) {
+    if let Some(tx) = LOG_TX.get() {
+        match tx.try_send(buf) {
+            Ok(()) => return,
+            Err(TrySendError::Full(b)) | Err(TrySendError::Closed(b)) => {
+                let stdout = io::stdout();
+                let mut h = stdout.lock();
+                let _ = h.write_all(&b);
+                let _ = h.flush();
+                return;
+            }
+        }
+    }
+    let stdout = io::stdout();
+    let mut h = stdout.lock();
+    let _ = h.write_all(&buf);
+    let _ = h.flush();
+}
+
 /// `[HH:MM:SS.mmm] [bot_label] mesaj` formatlı tek satır metin log (ET zaman dilimi).
 pub fn log_line(bot_label: &str, msg: impl AsRef<str>) {
     let ts = Utc::now().with_timezone(&New_York).format("%H:%M:%S%.3f");
-    let stdout = io::stdout();
-    let mut h = stdout.lock();
-    let _ = writeln!(h, "[{ts}] [{bot_label}] {}", msg.as_ref());
-    let _ = h.flush();
+    let line = format!("[{ts}] [{bot_label}] {}\n", msg.as_ref());
+    write_line(line.into_bytes());
 }
 
 /// Supervisor → frontend SSE ile taşınan event tipleri.
@@ -167,10 +221,8 @@ pub fn emit(ev: &FrontendEvent) {
             return;
         }
     };
-    let stdout = io::stdout();
-    let mut handle = stdout.lock();
-    let _ = writeln!(handle, "{EVENT_PREFIX}{json}");
-    let _ = handle.flush();
+    let line = format!("{EVENT_PREFIX}{json}\n");
+    write_line(line.into_bytes());
 }
 
 /// Tek satırı `FrontendEvent`'e parse eder; prefix yoksa veya JSON bozuksa `None`.

@@ -23,7 +23,7 @@ path = "src/lib.rs"
 
 [dependencies]
 # Async + HTTP
-tokio = { version = "1.52.1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "process", "signal", "io-util", "fs"] }
+tokio = { version = "1.52.1", features = ["rt-multi-thread", "macros", "net", "time", "sync", "process", "signal", "io-util", "io-std", "fs"] }
 reqwest = { version = "0.13.2", default-features = false, features = ["json", "rustls", "http2"] }
 axum = { version = "0.8.9", default-features = false, features = ["http1", "json", "tokio", "macros", "query"] }
 tower = "0.5.3"
