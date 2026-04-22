@@ -5,6 +5,7 @@
 //! tick başına okuduğu paylaşımlı snapshot — yeni strateji eklerken context'e
 //! sadece o stratejinin ihtiyacı olan alan eklenir, mevcutlar bozulmaz.
 
+use crate::config::StrategyParams;
 use crate::strategy::metrics::StrategyMetrics;
 use crate::time::MarketZone;
 use crate::types::{Outcome, OrderType, Side};
@@ -85,6 +86,9 @@ pub struct StrategyContext<'a> {
     /// `metrics.profit_locked()` ve `hedge_price()` bu değerle çalışır.
     pub avg_threshold: f64,
     pub signal_ready: bool,
+    /// Strateji-spesifik ayarlar (Alis: `open_delta`, `pyramid_*` vb.). Tüm
+    /// stratejiler ihtiyaçları olan alanları buradan okur.
+    pub strategy_params: &'a StrategyParams,
 }
 
 impl StrategyContext<'_> {

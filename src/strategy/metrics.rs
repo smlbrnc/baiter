@@ -104,10 +104,12 @@ impl StrategyMetrics {
     }
 
     /// Profit-lock garantisi: her iki tarafta da fill olmalı (pair > 0)
-    /// **ve** `avg_up + avg_down < avg_threshold`. `avg_threshold` config'den
-    /// (`StrategyParams::avg_threshold()`, default 0.98) gelir.
+    /// **ve** `avg_up + avg_down ≤ avg_threshold`. `avg_threshold` config'den
+    /// (`StrategyParams::avg_threshold()`, default 0.98) gelir. Sınır durumda
+    /// (eşit) lock geçerli sayılır — Alis hedge formülü hedef avg = threshold −
+    /// best_ask_opp olduğundan tam eşit denk gelebiliyor.
     pub fn profit_locked(&self, avg_threshold: f64) -> bool {
-        self.pair_count() > 0.0 && self.avg_sum() < avg_threshold
+        self.pair_count() > 0.0 && self.avg_sum() <= avg_threshold
     }
 }
 

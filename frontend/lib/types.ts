@@ -30,6 +30,25 @@ export interface StrategyParams {
    * Default 3.0. 0 → projeksiyon kapalı (eski davranış).
    */
   signal_lookahead_secs?: number | null;
+  /**
+   * Alis: opener GTC fiyat delta'sı (`best_ask + delta`). Skordan bağımsız,
+   * sabit; skor sadece yön belirler. Default 0.01.
+   */
+  open_delta?: number | null;
+  /**
+   * Alis: AggTrade pyramid taker FAK delta'sı (`best_ask + delta`).
+   * Default 0.015.
+   */
+  pyramid_agg_delta?: number | null;
+  /**
+   * Alis: FakTrade pyramid taker FAK delta'sı (daha agresif).
+   * Default 0.025.
+   */
+  pyramid_fak_delta?: number | null;
+  /**
+   * Alis: pyramid emir başına USDC. `null` → opener `order_usdc` ile aynı.
+   */
+  pyramid_usdc?: number | null;
 }
 
 export interface BotRow {
@@ -209,6 +228,7 @@ export type FrontendEvent =
       bot_id: number;
       trade_id: string;
       outcome: Outcome;
+      side: Side;
       price: number;
       size: number;
       status: string;
@@ -269,6 +289,20 @@ export type FrontendEvent =
       pair_count: number;
       avg_up?: number | null;
       avg_down?: number | null;
+      ts_ms: number;
+    }
+  | {
+      /**
+       * Alis profit-lock tetiklendi (`PositionOpen → Locked`).
+       * `lock_method`: `"taker_fak"` | `"passive_hedge_fill"` | `"symmetric_fill"`.
+       */
+      kind: "ProfitLocked";
+      bot_id: number;
+      slug: string;
+      avg_up: number;
+      avg_down: number;
+      expected_profit: number;
+      lock_method: string;
       ts_ms: number;
     }
   | {
@@ -347,4 +381,7 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   rtds_enabled: true,
   window_delta_weight: 0.7,
   signal_lookahead_secs: 3.0,
+  open_delta: 0.01,
+  pyramid_agg_delta: 0.015,
+  pyramid_fak_delta: 0.025,
 } as const;

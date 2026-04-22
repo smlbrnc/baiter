@@ -16,6 +16,7 @@ type Props = {
  */
 export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const params: StrategyParams = form.strategy_params ?? {};
+  const isAlis = form.strategy === "alis";
 
   const patch = (next: Partial<StrategyParams>) => {
     setForm({
@@ -33,6 +34,13 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const lookaheadSecs =
     params.signal_lookahead_secs ??
     STRATEGY_PARAMS_DEFAULTS.signal_lookahead_secs;
+  const openDelta =
+    params.open_delta ?? STRATEGY_PARAMS_DEFAULTS.open_delta;
+  const pyramidAggDelta =
+    params.pyramid_agg_delta ?? STRATEGY_PARAMS_DEFAULTS.pyramid_agg_delta;
+  const pyramidFakDelta =
+    params.pyramid_fak_delta ?? STRATEGY_PARAMS_DEFAULTS.pyramid_fak_delta;
+  const pyramidUsdc = params.pyramid_usdc ?? null;
 
   return (
     <div className="space-y-3">
@@ -108,6 +116,92 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
           </Field>
         </div>
       </div>
+
+      {isAlis && (
+        <div className="space-y-3">
+          <div>
+            <SectionLabel icon={Sliders} title="Alis parametreleri" />
+            <p className="text-muted-foreground mt-1 text-sm">
+              Opener ve pyramid emir delta&apos;ları; pyramid bütçesi.
+            </p>
+          </div>
+
+          <div className="bg-muted/25 space-y-4 rounded-md border border-border/40 p-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Field
+                label="Opener delta"
+                tooltip="DeepTrade fazında kurulan açılış GTC emirlerinin fiyat ofseti. Dominant tarafın emri best_ask + open_delta'da, hedge tarafı ise (1 − profit_lock_pct) − opener_price'da kurulur. Skor sadece yön belirler, delta sabittir."
+                hint="0.00 – 0.10 (default 0.01)."
+              >
+                <Input
+                  type="number"
+                  step="0.005"
+                  min="0"
+                  max="0.10"
+                  value={openDelta}
+                  onChange={(e) =>
+                    patch({ open_delta: Number(e.target.value) })
+                  }
+                />
+              </Field>
+              <Field
+                label="Pyramid USDC (boş = order_usdc)"
+                tooltip="AggTrade/FakTrade fazlarında atılan pyramid (taker FAK) emir başına düşen notional. Boş bırakılırsa botun ana order_usdc değeri kullanılır."
+                hint="Opsiyonel; min 1 USDC."
+              >
+                <Input
+                  type="number"
+                  step="1"
+                  min="0"
+                  placeholder="order_usdc"
+                  value={pyramidUsdc ?? ""}
+                  onChange={(e) => {
+                    const raw = e.target.value.trim();
+                    patch({
+                      pyramid_usdc: raw === "" ? null : Number(raw),
+                    });
+                  }}
+                />
+              </Field>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Field
+                label="AggTrade pyramid delta"
+                tooltip="AggTrade fazında (150–270 sn) trend yönünde atılan taker FAK emirlerinin fiyat ofseti: best_ask + delta. Trend filtresi: composite skor ortalaması > 5 ve dominant tarafın best_bid > 0.5."
+                hint="0.00 – 0.10 (default 0.015)."
+              >
+                <Input
+                  type="number"
+                  step="0.005"
+                  min="0"
+                  max="0.10"
+                  value={pyramidAggDelta}
+                  onChange={(e) =>
+                    patch({ pyramid_agg_delta: Number(e.target.value) })
+                  }
+                />
+              </Field>
+              <Field
+                label="FakTrade pyramid delta"
+                tooltip="FakTrade fazında (270–290 sn) atılan taker FAK delta'sı; AggTrade'e göre daha agresif (fill önceliği için)."
+                hint="0.00 – 0.20 (default 0.025)."
+              >
+                <Input
+                  type="number"
+                  step="0.005"
+                  min="0"
+                  max="0.20"
+                  value={pyramidFakDelta}
+                  onChange={(e) =>
+                    patch({ pyramid_fak_delta: Number(e.target.value) })
+                  }
+                />
+              </Field>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

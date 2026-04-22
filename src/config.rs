@@ -121,6 +121,19 @@ pub struct StrategyParams {
     /// `None` → default `3.0`. `0.0` → projeksiyon kapalı (eski davranış).
     #[serde(default)]
     pub signal_lookahead_secs: Option<f64>,
+    /// Alis: opener emir fiyat delta'sı (`best_ask + delta`). Sabit, skordan
+    /// bağımsız (skor sadece yönü belirler). Default `0.01`.
+    #[serde(default)]
+    pub open_delta: Option<f64>,
+    /// Alis: AggTrade pyramid taker FAK delta'sı. Default `0.015`.
+    #[serde(default)]
+    pub pyramid_agg_delta: Option<f64>,
+    /// Alis: FakTrade pyramid taker FAK delta'sı (daha agresif). Default `0.025`.
+    #[serde(default)]
+    pub pyramid_fak_delta: Option<f64>,
+    /// Alis: pyramid emir başına USDC. `None` → opener `order_usdc` ile aynı.
+    #[serde(default)]
+    pub pyramid_usdc: Option<f64>,
 }
 
 impl StrategyParams {
@@ -144,6 +157,26 @@ impl StrategyParams {
     /// `[0, 30]` sn'ye clamp; default `3.0`. Üst sınır spike koruması.
     pub fn signal_lookahead_secs_or_default(&self) -> f64 {
         self.signal_lookahead_secs.unwrap_or(3.0).clamp(0.0, 30.0)
+    }
+
+    /// Alis opener delta'sı; default `0.01`.
+    pub fn open_delta_or_default(&self) -> f64 {
+        self.open_delta.unwrap_or(0.01).max(0.0)
+    }
+
+    /// Alis AggTrade pyramid delta'sı; default `0.015`.
+    pub fn pyramid_agg_delta_or_default(&self) -> f64 {
+        self.pyramid_agg_delta.unwrap_or(0.015).max(0.0)
+    }
+
+    /// Alis FakTrade pyramid delta'sı; default `0.025`.
+    pub fn pyramid_fak_delta_or_default(&self) -> f64 {
+        self.pyramid_fak_delta.unwrap_or(0.025).max(0.0)
+    }
+
+    /// Alis pyramid USDC; verilmemişse caller'ın opener `order_usdc`'sine düşer.
+    pub fn pyramid_usdc_or(&self, fallback: f64) -> f64 {
+        self.pyramid_usdc.unwrap_or(fallback).max(0.0)
     }
 }
 

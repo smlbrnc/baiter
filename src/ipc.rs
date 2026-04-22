@@ -135,6 +135,22 @@ pub enum FrontendEvent {
         avg_down: Option<f64>,
         ts_ms: u64,
     },
+    /// Alis stratejisi profit-lock şartını sağlayıp `Locked` state'ine geçti.
+    /// `lock_method` lock'un nasıl tetiklendiğini söyler:
+    /// - `"taker_fak"`: dominant + opp.best_ask ≤ avg_threshold → FAK ile kapatıldı.
+    /// - `"passive_hedge_fill"`: pasif hedge emri doldu, ek emir yok.
+    /// - `"symmetric_fill"`: aynı tick'te iki taraf da doldu.
+    ///
+    /// `expected_profit` = `pair_count − cost_basis − fee_total` (USDC).
+    ProfitLocked {
+        bot_id: i64,
+        slug: String,
+        avg_up: f64,
+        avg_down: f64,
+        expected_profit: f64,
+        lock_method: String,
+        ts_ms: u64,
+    },
     Error {
         bot_id: i64,
         message: String,

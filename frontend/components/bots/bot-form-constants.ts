@@ -12,7 +12,8 @@ export const STRATEGY_OPTIONS: {
   {
     id: "alis",
     label: "Alis",
-    description: "İskelet — strateji kuralları henüz tanımlanmadı.",
+    description:
+      "Profit-lock öncelikli FSM: DeepTrade opener çifti, NormalTrade avg-down, AggTrade/FakTrade trend-pyramid; FAK ile aktif lock.",
   },
   {
     id: "elis",

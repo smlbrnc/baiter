@@ -1,7 +1,8 @@
 //! MarketSession + decision loop + DryRun simulator.
 
 use crate::config::BotConfig;
-use crate::strategy::alis::AlisEngine;
+use crate::ipc::{self, FrontendEvent};
+use crate::strategy::alis::{AlisEngine, AlisState};
 use crate::strategy::aras::ArasEngine;
 use crate::strategy::elis::ElisEngine;
 use crate::strategy::metrics::{MarketPnL, StrategyMetrics};
@@ -128,7 +129,9 @@ impl MarketSession {
             cooldown_threshold: self.cooldown_threshold,
             avg_threshold: cfg.strategy_params.avg_threshold(),
             signal_ready,
+            strategy_params: &cfg.strategy_params,
         };
+        let prev_state = self.state;
         let (next_state, decision) = match self.state {
             StrategyState::Alis(s) => {
                 let (ns, d) = AlisEngine::decide(s, &ctx);
@@ -144,8 +147,54 @@ impl MarketSession {
             }
         };
         self.state = next_state;
+        if let Some(method) = detect_alis_lock_transition(&prev_state, &next_state, &decision) {
+            emit_profit_locked(self, method, now_ms_v);
+        }
         decision
     }
+}
+
+/// Alis için `… → Locked` geçişini tespit eder + lock yöntemini etiketler.
+/// Returns `None` eğer geçiş Alis lock değilse.
+fn detect_alis_lock_transition(
+    prev: &StrategyState,
+    next: &StrategyState,
+    decision: &Decision,
+) -> Option<&'static str> {
+    let prev_alis = match prev {
+        StrategyState::Alis(s) => *s,
+        _ => return None,
+    };
+    let next_alis = match next {
+        StrategyState::Alis(s) => *s,
+        _ => return None,
+    };
+    if next_alis != AlisState::Locked || prev_alis == AlisState::Locked {
+        return None;
+    }
+    // Lock yöntemini Decision'dan çıkar.
+    let method = match decision {
+        Decision::PlaceOrders(_) | Decision::CancelAndPlace { .. } => "taker_fak",
+        Decision::NoOp | Decision::CancelOrders(_) => match prev_alis {
+            AlisState::OpenPlaced { .. } => "symmetric_fill",
+            _ => "passive_hedge_fill",
+        },
+    };
+    Some(method)
+}
+
+fn emit_profit_locked(session: &MarketSession, method: &str, ts_ms: u64) {
+    let m = &session.metrics;
+    let expected_profit = m.pair_count() - m.cost_basis() - m.fee_total;
+    ipc::emit(&FrontendEvent::ProfitLocked {
+        bot_id: session.bot_id,
+        slug: session.slug.clone(),
+        avg_up: m.avg_up,
+        avg_down: m.avg_down,
+        expected_profit,
+        lock_method: method.to_string(),
+        ts_ms,
+    });
 }
 
 /// User WS `trade MATCHED` fill'ini metrics'e yansıt + son fill zamanını
