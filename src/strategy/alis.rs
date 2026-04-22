@@ -75,8 +75,11 @@ pub struct AlisEngine;
 
 impl AlisEngine {
     pub fn decide(state: AlisState, ctx: &StrategyContext<'_>) -> (AlisState, Decision) {
-        // Skor accumulation (sadece PositionOpen biriktirir).
+        // Skor accumulation + dominant re-derive (sadece PositionOpen).
+        // Gerçek metrics, etiketten önce gelir (plan §2: "etiketler değil,
+        // gerçeklik komuta verir") — hedge fill dominantı flip ettirebilir.
         let state = update_score(state, ctx.effective_score);
+        let state = sync_dominant(state, ctx);
 
         // 1. StopTrade: tüm emirleri iptal et, Done.
         if ctx.zone == MarketZone::StopTrade {
@@ -153,6 +156,39 @@ impl AlisEngine {
 }
 
 // ---------- Helpers ----------
+
+/// `PositionOpen` state'indeki `dominant_dir`'i gerçek metrics'e göre
+/// yeniden değerlendirir. Plan §2 "etiketler değil, gerçeklik komuta verir"
+/// kuralı: hedge fill (örn. UP 173 share) dominantı flip ettirebilir; aksi
+/// halde requote/reconcile/profit-lock state'teki eski etikete göre yanlış
+/// karar verir. Flag'ler (avg_down_used, pyramid_used, score_*) korunur.
+fn sync_dominant(state: AlisState, ctx: &StrategyContext<'_>) -> AlisState {
+    let AlisState::PositionOpen {
+        dominant_dir,
+        avg_down_used,
+        agg_pyramid_used,
+        fak_pyramid_used,
+        score_sum,
+        score_samples,
+    } = state
+    else {
+        return state;
+    };
+    let Some(real_dom) = detect_dominant(ctx) else {
+        return state;
+    };
+    if real_dom == dominant_dir {
+        return state;
+    }
+    AlisState::PositionOpen {
+        dominant_dir: real_dom,
+        avg_down_used,
+        agg_pyramid_used,
+        fak_pyramid_used,
+        score_sum,
+        score_samples,
+    }
+}
 
 fn update_score(state: AlisState, score: f64) -> AlisState {
     if let AlisState::PositionOpen {
@@ -243,8 +279,15 @@ fn profit_lock_check(
     let m = ctx.metrics;
 
     // Pasif lock: iki taraf da fill aldı + avg_sum ≤ avg_threshold.
+    // Bu durumda fazladan fill toplamamak için tüm açık alis emirlerini iptal et.
     if m.profit_locked(ctx.avg_threshold) {
-        return Some((AlisState::Locked, Decision::NoOp));
+        let cancels = collect_alis_open_ids(ctx);
+        let decision = if cancels.is_empty() {
+            Decision::NoOp
+        } else {
+            Decision::CancelOrders(cancels)
+        };
+        return Some((AlisState::Locked, decision));
     }
 
     // Aktif lock taker: dominant + opp.best_ask ≤ threshold ise FAK.
@@ -276,7 +319,28 @@ fn profit_lock_check(
         order_type: OrderType::Fak,
         reason: format!("alis:lock:{}", opp.as_lowercase()),
     };
-    Some((AlisState::Locked, Decision::PlaceOrders(vec![order])))
+
+    // Lock atılırken tüm alis open/hedge/avgdown/pyramid emirlerini iptal et;
+    // aksi halde overfill (örn. avg-down GTC kitapta kalıyordu).
+    let cancels = collect_alis_open_ids(ctx);
+    let decision = if cancels.is_empty() {
+        Decision::PlaceOrders(vec![order])
+    } else {
+        Decision::CancelAndPlace {
+            cancels,
+            places: vec![order],
+        }
+    };
+    Some((AlisState::Locked, decision))
+}
+
+/// Tüm aktif `alis:*` emirlerinin id'lerini toplar (Locked transition için).
+fn collect_alis_open_ids(ctx: &StrategyContext<'_>) -> Vec<String> {
+    ctx.open_orders
+        .iter()
+        .filter(|o| o.reason.starts_with("alis:"))
+        .map(|o| o.id.clone())
+        .collect()
 }
 
 // ---------- 4. Re-quote (Kural A) ----------
@@ -595,8 +659,23 @@ fn try_avg_down(state: AlisState, ctx: &StrategyContext<'_>) -> (AlisState, Deci
         return (state, Decision::NoOp);
     }
 
+    // Denominator guard: target − best_bid_dom < 2 × tick_size ise formül
+    // patlar (x → ∞). Plan §11 sınır koşulunu kapatmamıştı; bu guard order
+    // budget'i koruyor (gerçek dryrun'da $5 budgetli bot 17× shares ile
+    // $54'lük avg-down attığı senaryonun fix'i).
+    let denom = target - best_bid_dom;
+    if denom < ctx.tick_size * 2.0 {
+        return (state, Decision::NoOp);
+    }
+
     // x = (avg_d − target) × shares_d / (target − best_bid_dom)
-    let x = (avg_d - target) * shares_d / (target - best_bid_dom);
+    let raw_x = (avg_d - target) * shares_d / denom;
+    let max_mult = ctx.strategy_params.avg_down_max_mult_or_default();
+    let x = if max_mult > 0.0 {
+        raw_x.min(shares_d * max_mult)
+    } else {
+        raw_x
+    };
     if x <= 0.0 {
         return (state, Decision::NoOp);
     }
@@ -1010,6 +1089,192 @@ mod tests {
         match d {
             Decision::CancelOrders(ids) => assert_eq!(ids, vec!["o-1".to_string()]),
             other => panic!("expected CancelOrders, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn lock_transition_cancels_open_alis_orders() {
+        // Sorun 2 fix: profit_lock_check Locked'a geçerken kitapta kalan
+        // avg-down/hedge GTC'leri iptal etmeli — aksi halde overfill.
+        let m = StrategyMetrics {
+            up_filled: 173.0,
+            avg_up: 0.64,
+            down_filled: 9.6,
+            avg_down: 0.51,
+            ..Default::default()
+        };
+        let p = StrategyParams::default();
+        let stale_avgdown = OpenOrder {
+            id: "o-stale".into(),
+            outcome: Outcome::Down,
+            side: Side::Buy,
+            price: 0.33,
+            size: 163.46,
+            reason: "alis:avgdown:down".into(),
+            placed_at_ms: 0,
+            size_matched: 0.0,
+        };
+        let orders = vec![stale_avgdown];
+        // dominant=UP (up_filled > down_filled), avg_up + best_ask_down =
+        // 0.64 + 0.34 = 0.98 ≤ 0.98 → lock şartı sağlanır.
+        let ctx = make_ctx(CtxArgs {
+            m: &m,
+            params: &p,
+            zone: MarketZone::NormalTrade,
+            score: 5.0,
+            signal_ready: true,
+            now_ms: 44_000,
+            last_avg: 0,
+            open_orders: &orders,
+            bests: (0.66, 0.67, 0.33, 0.34),
+        });
+        // dominant_dir=DOWN olarak başlasak bile sync_dominant flip eder.
+        let state = AlisState::PositionOpen {
+            dominant_dir: Outcome::Down,
+            avg_down_used: true,
+            agg_pyramid_used: false,
+            fak_pyramid_used: false,
+            score_sum: 5.0,
+            score_samples: 1,
+        };
+        let (next, d) = AlisEngine::decide(state, &ctx);
+        assert_eq!(next, AlisState::Locked);
+        match d {
+            Decision::CancelAndPlace { cancels, places } => {
+                assert!(cancels.contains(&"o-stale".to_string()));
+                assert_eq!(places.len(), 1);
+                assert_eq!(places[0].outcome, Outcome::Down);
+                assert_eq!(places[0].order_type, OrderType::Fak);
+            }
+            other => panic!("expected CancelAndPlace, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn avg_down_denominator_guard_blocks_explosion() {
+        // Sorun 1 fix: target − best_bid_dom < 2 × tick_size ise NoOp.
+        // Aksi halde x patlardı (örn. denom=0.01 = 1 tick → x = 17 × shares).
+        let m = StrategyMetrics {
+            down_filled: 9.6154,
+            avg_down: 0.51,
+            ..Default::default()
+        };
+        let p = StrategyParams::default();
+        // up_best_ask=0.64 → target = 0.34; down_best_bid=0.33 → denom = 0.01
+        // < 2 × tick_size (0.02). Guard tetiklenmeli.
+        let ctx = make_ctx(CtxArgs {
+            m: &m,
+            params: &p,
+            zone: MarketZone::NormalTrade,
+            score: 5.0,
+            signal_ready: true,
+            now_ms: 60_000,
+            last_avg: 0,
+            open_orders: &[],
+            bests: (0.63, 0.64, 0.33, 0.34),
+        });
+        let state = AlisState::PositionOpen {
+            dominant_dir: Outcome::Down,
+            avg_down_used: false,
+            agg_pyramid_used: false,
+            fak_pyramid_used: false,
+            score_sum: 5.0,
+            score_samples: 1,
+        };
+        let (_next, d) = AlisEngine::decide(state, &ctx);
+        assert!(matches!(d, Decision::NoOp), "denom guard failed: {:?}", d);
+    }
+
+    #[test]
+    fn avg_down_size_capped_by_max_mult() {
+        // Sorun 1 fix: x ≤ shares_d × avg_down_max_mult. Dar gap'te raw_x
+        // patlar (default mult=5.0 → x ≤ 5 × shares). Tick_size 0.001 ile
+        // denom guard tetiklenmez (0.02 > 2 × 0.001 = 0.002).
+        let m = StrategyMetrics {
+            down_filled: 10.0,
+            avg_down: 0.60,
+            ..Default::default()
+        };
+        let p = StrategyParams::default();
+        // up_best_ask=0.50 → target=0.48; down_best_bid=0.46 → denom=0.02.
+        // raw_x = (0.60-0.48) × 10 / 0.02 = 60. cap = 5 × 10 = 50.
+        let mut ctx = make_ctx(CtxArgs {
+            m: &m,
+            params: &p,
+            zone: MarketZone::NormalTrade,
+            score: 5.0,
+            signal_ready: true,
+            now_ms: 60_000,
+            last_avg: 0,
+            open_orders: &[],
+            bests: (0.49, 0.50, 0.46, 0.47),
+        });
+        ctx.tick_size = 0.001; // denom guard'ı bypass et
+        let state = AlisState::PositionOpen {
+            dominant_dir: Outcome::Down,
+            avg_down_used: false,
+            agg_pyramid_used: false,
+            fak_pyramid_used: false,
+            score_sum: 5.0,
+            score_samples: 1,
+        };
+        let (_next, d) = AlisEngine::decide(state, &ctx);
+        match d {
+            Decision::PlaceOrders(orders) | Decision::CancelAndPlace { places: orders, .. } => {
+                let avgdown = orders
+                    .iter()
+                    .find(|o| o.reason.starts_with("alis:avgdown:"))
+                    .expect("avg-down order present");
+                // raw_x ≈ 60 → capped to shares_d × 5 = 50.
+                assert!(
+                    (avgdown.size - 50.0).abs() < 1e-6,
+                    "avg-down size not capped: got {}",
+                    avgdown.size,
+                );
+            }
+            other => panic!("expected place/cancel-and-place, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn dominant_dir_flips_when_metrics_disagree_with_state() {
+        // Sorun 3 fix: state PositionOpen{dom=DOWN} ama metrics up_filled >>
+        // down_filled → sync_dominant state'i UP'a flip etmeli.
+        let m = StrategyMetrics {
+            up_filled: 173.0,
+            avg_up: 0.64,
+            down_filled: 9.6,
+            avg_down: 0.51,
+            ..Default::default()
+        };
+        let p = StrategyParams::default();
+        // Lock şartı sağlanmaz (avg_up + best_ask_down = 0.64 + 0.50 = 1.14
+        // > 0.98) — sadece sync_dominant'in çalıştığını test ediyoruz.
+        let ctx = make_ctx(CtxArgs {
+            m: &m,
+            params: &p,
+            zone: MarketZone::NormalTrade,
+            score: 5.0,
+            signal_ready: true,
+            now_ms: 60_000,
+            last_avg: 60_000, // cooldown henüz dolmadı → avg-down NoOp
+            open_orders: &[],
+            bests: (0.62, 0.63, 0.49, 0.50),
+        });
+        let state = AlisState::PositionOpen {
+            dominant_dir: Outcome::Down, // yanlış etiket
+            avg_down_used: true,
+            agg_pyramid_used: false,
+            fak_pyramid_used: false,
+            score_sum: 5.0,
+            score_samples: 1,
+        };
+        let (next, _d) = AlisEngine::decide(state, &ctx);
+        match next {
+            AlisState::PositionOpen { dominant_dir, .. } => {
+                assert_eq!(dominant_dir, Outcome::Up, "dominant flip failed");
+            }
+            other => panic!("expected PositionOpen, got {:?}", other),
         }
     }
 
