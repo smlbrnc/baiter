@@ -67,13 +67,6 @@ impl MarketZone {
     }
 }
 
-/// Pencere bitişine kalan süre (saniye). `now_ms` milisaniye, `end_ts`
-/// saniye cinsinden. Pencere kapandıktan sonra `0`. Strateji time-window
-/// kararlarında (örn. "son N sn'de FAK'a geç") kullanılır.
-pub fn zone_remaining_secs(end_ts: i64, now_ms: i64) -> i64 {
-    (end_ts - now_ms / 1000).max(0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

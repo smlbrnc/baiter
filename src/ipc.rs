@@ -134,23 +134,6 @@ pub enum FrontendEvent {
         status: String,
         ts_ms: u64,
     },
-    BestBidAsk {
-        bot_id: i64,
-        up_best_bid: f64,
-        up_best_ask: f64,
-        down_best_bid: f64,
-        down_best_ask: f64,
-        ts_ms: u64,
-    },
-    SignalUpdate {
-        bot_id: i64,
-        symbol: String,
-        signal_score: f64,
-        bsi: f64,
-        ofi: f64,
-        cvd: f64,
-        ts_ms: u64,
-    },
     RtdsUpdate {
         bot_id: i64,
         current_price: f64,
@@ -158,7 +141,7 @@ pub enum FrontendEvent {
         window_delta_bps: f64,
         ts_ms: u64,
     },
-    /// 1 sn cadence: BestBidAsk + SignalUpdate verilerini tek event'te birleştirir.
+    /// 1 sn cadence: book + composite sinyal verilerini tek event'te taşır.
     /// `slug` ile session'a bağlanır; frontend REST polling'i kaldırabilir.
     TickSnapshot {
         bot_id: i64,

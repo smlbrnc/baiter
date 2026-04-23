@@ -46,7 +46,6 @@ pub async fn run_window(
 
     let result = run_trading_loop(
         ctx,
-        slug,
         session,
         streams.event_rx,
         streams.book_rx,
@@ -77,7 +76,7 @@ async fn prepare_window(
         .tick_size
         .ok_or_else(|| AppError::Gamma(format!("orderPriceMinTickSize eksik (slug={slug_str})")))?;
     let api_min_order_size = market
-        .minimum_order_size
+        .min_order_size
         .ok_or_else(|| AppError::Gamma(format!("orderMinSize eksik (slug={slug_str})")))?;
     let neg_risk = market.neg_risk.unwrap_or(false);
     let (start_ts, end_ts) = (slug.ts, slug.end_ts());
@@ -215,7 +214,6 @@ fn log_loop_start(ctx: &Ctx, label: &str) {
 /// Trading döngüsü. `None` = pencere bitti, `Some(reason)` = sigterm/sigint.
 async fn run_trading_loop(
     ctx: &Ctx,
-    slug: SlugInfo,
     mut sess: MarketSession,
     mut event_rx: mpsc::Receiver<PolymarketEvent>,
     mut book_rx: mpsc::Receiver<PolymarketEvent>,
@@ -244,7 +242,7 @@ async fn run_trading_loop(
             _ = tick_timer.tick() => tick::tick(ctx, &mut sess).await,
             _ = frontend_timer.tick() => {
                 let sig = observed_snapshot(ctx, &sess).await;
-                zone::emit_frontend_snapshot(ctx, &sess, slug, &sig);
+                zone::emit_frontend_snapshot(ctx, &sess, &sig);
                 persist::snapshot_pnl(&ctx.pool, &sess);
                 persist::snapshot_tick(ctx, &sess, &sig);
                 if !rtds_open_persisted && sess.market_session_id > 0 {

@@ -37,8 +37,6 @@ pub struct RtdsState {
     pub recent_velocity_bps_per_sec: f64,
     /// Son tick unix ms — stale/zombie bağlantı tespiti için.
     pub last_tick_ms: u64,
-    /// WS bağlantısı aktif mi.
-    pub connected: bool,
     /// Velocity hesabı için (ts_ms, price) kayar penceresi. `Serialize` skip
     /// (transient state).
     #[serde(skip)]
@@ -176,10 +174,6 @@ pub async fn run_rtds_task(
     loop {
         ipc::log_line(&label, format!("🌐 RTDS connecting symbol={symbol}"));
         let res = connect_and_stream(&ws_url, &symbol, stale_threshold_ms, &state, &label).await;
-        {
-            let mut s = state.write().await;
-            s.connected = false;
-        }
         match res {
             Ok(()) => {
                 ipc::log_line(
@@ -233,11 +227,6 @@ async fn connect_and_stream(
         .send(Message::Text(Utf8Bytes::from(subscribe)))
         .await
         .map_err(|e| anyhow::anyhow!("subscribe send: {e}"))?;
-
-    {
-        let mut s = state.write().await;
-        s.connected = true;
-    }
 
     let mut ping_tick = interval(PING_INTERVAL);
     ping_tick.tick().await;

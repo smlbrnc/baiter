@@ -160,7 +160,6 @@ fn default_cooldown_threshold() -> u64 {
 fn validate_bot_settings(
     min_price: f64,
     max_price: f64,
-    cooldown_threshold: u64,
     start_offset: u32,
 ) -> Result<(), AppError> {
     let mut errors: Vec<String> = Vec::new();
@@ -168,9 +167,6 @@ fn validate_bot_settings(
         errors.push(format!(
             "price bounds: 0 < min_price ({min_price}) < max_price ({max_price}) < 1 olmalı"
         ));
-    }
-    if cooldown_threshold == 0 {
-        errors.push("cooldown_threshold: > 0 ms olmalı".into());
     }
     if start_offset > 1 {
         errors.push(format!(
@@ -195,12 +191,7 @@ async fn create_bot(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CreateBotReq>,
 ) -> Result<Json<CreateBotResp>, AppError> {
-    validate_bot_settings(
-        req.min_price,
-        req.max_price,
-        req.cooldown_threshold,
-        req.start_offset,
-    )?;
+    validate_bot_settings(req.min_price, req.max_price, req.start_offset)?;
     let cfg = BotConfig {
         id: 0,
         name: req.name,
@@ -261,12 +252,7 @@ async fn update_bot(
             s = row.state
         )));
     }
-    validate_bot_settings(
-        req.min_price,
-        req.max_price,
-        req.cooldown_threshold,
-        req.start_offset,
-    )?;
+    validate_bot_settings(req.min_price, req.max_price, req.start_offset)?;
     let upd = BotUpdate {
         name: req.name,
         run_mode: req.run_mode,

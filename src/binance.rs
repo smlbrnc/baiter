@@ -16,7 +16,6 @@ use tokio_tungstenite::tungstenite::Message;
 
 use crate::ipc;
 use crate::slug::Interval;
-use crate::time::now_ms;
 
 /// Strateji katmanına açılan anlık sinyal durumu.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -25,9 +24,6 @@ pub struct BinanceSignalState {
     pub bsi: f64,
     pub ofi: f64,
     pub signal_score: f64,
-    pub warmup: bool,
-    pub updated_at_ms: u64,
-    pub connected: bool,
 }
 
 impl Default for BinanceSignalState {
@@ -37,9 +33,6 @@ impl Default for BinanceSignalState {
             bsi: 0.0,
             ofi: 0.0,
             signal_score: 5.0,
-            warmup: true,
-            updated_at_ms: 0,
-            connected: false,
         }
     }
 }
@@ -164,7 +157,7 @@ impl SignalComputer {
 
     pub fn snapshot(&self) -> (f64, f64, f64, f64, bool) {
         let ofi = self.current_ofi();
-        // Warmup: cvd window dolana kadar (yaklaşık MAX_WARMUP_TRADES) nötr ver.
+        // Warmup: ofi history WARMUP_TRADES dolana kadar nötr skor ver.
         let warmup = self.ofi_history.len() < WARMUP_TRADES;
         let signal_score = if warmup {
             NEUTRAL
@@ -235,7 +228,6 @@ pub async fn run_binance_signal(
         }
         {
             let mut s = state.write().await;
-            s.connected = false;
             s.signal_score = NEUTRAL;
         }
         sleep(Duration::from_secs(backoff)).await;
@@ -260,14 +252,10 @@ async fn connect_stream(
     let mut computer = SignalComputer::new(interval);
     {
         let mut s = state.write().await;
-        s.connected = true;
-        s.warmup = true;
         s.signal_score = NEUTRAL;
     }
 
     let mut prev_warmup = true;
-    let mut trade_count: u64 = 0;
-    let mut last_progress_log: u64 = 0;
     loop {
         let next = match timeout(FRAME_IDLE_TIMEOUT, read.next()).await {
             Ok(Some(msg)) => msg,
@@ -303,7 +291,6 @@ async fn connect_stream(
         };
 
         computer.ingest(trade.event_time_ms, qty, !trade.is_buyer_maker);
-        trade_count += 1;
         let (cvd, bsi, ofi, score, warmup) = computer.snapshot();
         {
             let mut s = state.write().await;
@@ -311,21 +298,8 @@ async fn connect_stream(
             s.bsi = bsi;
             s.ofi = ofi;
             s.signal_score = score;
-            s.warmup = warmup;
-            s.updated_at_ms = now_ms();
-            s.connected = true;
         }
 
-        if warmup && trade_count - last_progress_log >= 100 {
-            last_progress_log = trade_count;
-            ipc::log_line(
-                label,
-                format!(
-                    "🛰️  Binance warmup {}/{MAX_STATS} (cvd={cvd:.3} bsi={bsi:.3} ofi={ofi:+.3})",
-                    computer.ofi_history.len(),
-                ),
-            );
-        }
         if prev_warmup && !warmup {
             prev_warmup = false;
             ipc::log_line(

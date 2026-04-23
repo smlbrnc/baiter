@@ -194,7 +194,7 @@ fn emit_profit_locked(session: &MarketSession, method: &str, ts_ms: u64) {
 /// User WS `trade MATCHED` fill'ini metrics'e yansıt + son fill zamanını
 /// `last_averaging_ms`'e damgala. Strateji bu damgayı cooldown referansı olarak
 /// okur (`now_ms - last_averaging_ms ≥ cooldown_threshold`).
-pub fn absorb_trade_matched(
+pub fn apply_live_fill(
     session: &mut MarketSession,
     outcome: Outcome,
     side: Side,
@@ -207,7 +207,12 @@ pub fn absorb_trade_matched(
     session.last_averaging_ms = now_ms();
 }
 
-pub fn update_best(session: &mut MarketSession, asset_id: &str, best_bid: f64, best_ask: f64) {
+pub fn update_top_of_book(
+    session: &mut MarketSession,
+    asset_id: &str,
+    best_bid: f64,
+    best_ask: f64,
+) {
     if asset_id == session.up_token_id {
         session.up_best_bid = best_bid;
         session.up_best_ask = best_ask;

@@ -18,7 +18,7 @@ pub struct GammaMarket {
     #[serde(default, rename = "orderPriceMinTickSize")]
     pub tick_size: Option<f64>,
     #[serde(default, rename = "orderMinSize")]
-    pub minimum_order_size: Option<f64>,
+    pub min_order_size: Option<f64>,
     #[serde(default, rename = "negRisk")]
     pub neg_risk: Option<bool>,
 }

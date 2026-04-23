@@ -7,7 +7,7 @@ use sqlx::SqlitePool;
 
 use crate::db;
 use crate::engine::{
-    absorb_trade_matched, simulate_passive_fills, update_best, MarketSession,
+    apply_live_fill, simulate_passive_fills, update_top_of_book, MarketSession,
 };
 use crate::ipc::{self, FrontendEvent};
 use crate::polymarket::{
@@ -26,7 +26,7 @@ pub fn handle_event(
     match ev {
         PolymarketEvent::BestBidAsk { asset_id, best_bid, best_ask }
         | PolymarketEvent::Book { asset_id, best_bid, best_ask } => {
-            update_best(sess, &asset_id, best_bid, best_ask);
+            update_top_of_book(sess, &asset_id, best_bid, best_ask);
             after_book_update(sess, pool, run_mode);
         }
         PolymarketEvent::PriceChange { changes } => {
@@ -47,7 +47,7 @@ fn on_price_change(
     let mut any_update = false;
     for ch in changes {
         if let (Some(bb), Some(ba)) = (ch.best_bid, ch.best_ask) {
-            update_best(sess, &ch.asset_id, bb, ba);
+            update_top_of_book(sess, &ch.asset_id, bb, ba);
             any_update = true;
         }
     }
@@ -137,12 +137,20 @@ impl PersistedTrade {
 /// Fill attribution **sadece** `MATCHED`'te; sonraki `MINED/CONFIRMED` aynı
 /// `trade_id`'yi upsert eder, outcome/price/size FREEZE.
 fn on_trade(sess: &mut MarketSession, pool: &SqlitePool, ev: &TradePayload) {
-    let bot_id = sess.bot_id;
-    let label = bot_id.to_string();
-
-    log_ws_trade_line(&label, ev);
+    let label = sess.bot_id.to_string();
 
     let fills: Vec<Fill> = if ev.status.is_initial_match() {
+        ipc::log_line(
+            &label,
+            format!(
+                "WS trade | id={} status={} side={} size={} price={}",
+                ev.trade_id,
+                ev.status.as_str(),
+                ev.side.as_str(),
+                ev.size,
+                ev.price,
+            ),
+        );
         extract_fills(sess, ev)
     } else {
         Vec::new()
@@ -153,7 +161,7 @@ fn on_trade(sess: &mut MarketSession, pool: &SqlitePool, ev: &TradePayload) {
     let total_fee: f64 = fees.iter().sum();
 
     for (f, &fee) in fills.iter().zip(&fees) {
-        apply_fill(sess, &label, bot_id, &ev.trade_id, ev.status, f, fee);
+        apply_fill(sess, &label, &ev.trade_id, ev.status, f, fee);
     }
 
     let view = if fills.is_empty() {
@@ -212,17 +220,16 @@ fn extract_taker_fill(ev: &TradePayload) -> Option<Fill> {
 fn apply_fill(
     sess: &mut MarketSession,
     label: &str,
-    bot_id: i64,
     trade_id: &str,
     status: TradeStatus,
     fill: &Fill,
     fee: f64,
 ) {
-    absorb_trade_matched(sess, fill.outcome, fill.side, fill.price, fill.size, fee);
+    apply_live_fill(sess, fill.outcome, fill.side, fill.price, fill.size, fee);
     record_fill_and_prune_if_full(sess, fill.role.open_order_id(), fill.size, label);
     log_fill_and_position(label, sess, fill.outcome, fill.size, fill.price);
     ipc::emit(&FrontendEvent::Fill {
-        bot_id,
+        bot_id: sess.bot_id,
         trade_id: trade_id.to_string(),
         outcome: fill.outcome,
         side: fill.side.as_str().to_string(),
@@ -285,13 +292,7 @@ fn record_fill_and_prune_if_full(
         let remaining = (o.size - o.size_matched).max(0.0);
         fully_filled = remaining < FILL_DUST_THRESHOLD;
         if fully_filled {
-            ipc::log_line(
-                label,
-                format!(
-                    "open_order effectively filled — pruning id={id} size={} matched={} remaining={remaining} (< {FILL_DUST_THRESHOLD})",
-                    o.size, o.size_matched
-                ),
-            );
+            ipc::log_line(label, format!("order filled, pruning id={id}"));
         }
     }
     if fully_filled {
@@ -299,73 +300,42 @@ fn record_fill_and_prune_if_full(
     }
 }
 
-fn log_ws_trade_line(label: &str, ev: &TradePayload) {
-    ipc::log_line(
-        label,
-        format!(
-            "WS trade | id={} status={} side={} size={} price={}",
-            ev.trade_id,
-            ev.status.as_str(),
-            ev.side.as_str(),
-            ev.size,
-            ev.price,
-        ),
-    );
-}
-
 fn log_fill_and_position(label: &str, sess: &MarketSession, outcome: Outcome, size: f64, price: f64) {
-    ipc::log_line(
-        label,
-        format!("fill_summary outcome={} size={size} price={price}", outcome.as_str()),
-    );
     let imb = sess.metrics.imbalance();
     ipc::log_line(
         label,
         format!(
-            "[{}] Position: UP={}, DOWN={} (imbalance: {imb:+})",
+            "fill {} size={size} price={price} | [{}] UP={} DOWN={} imb={imb:+}",
+            outcome.as_str(),
             sess.state.label(),
             sess.metrics.up_filled,
-            sess.metrics.down_filled
+            sess.metrics.down_filled,
         ),
     );
 }
 
 /// `UPDATE`'te prune yapma — `on_trade` `MATCHED`'te yapar; aksi halde maker
 /// fill attribution `open_orders` boş bulup yanlış TAKER'a düşer.
+///
+/// `Placement` / `Update` için log atmıyoruz: outgoing place/cancel zaten
+/// `tick.rs::log_placements` / `log_cancel_request`'te, fill akışı `on_trade`
+/// üzerinden geçiyor.
 fn on_order(sess: &mut MarketSession, ev: &OrderPayload) {
-    let label = sess.bot_id.to_string();
-    match ev.lifecycle {
-        OrderLifecycle::Placement => {
-            let mut parts = vec!["type=PLACEMENT".to_string()];
-            if let Some(ot) = ev.order_type {
-                parts.push(format!("order_type={}", ot.as_str()));
-            }
-            parts.push(format!("status={}", ev.status));
-            parts.push(format!("id={}", ev.order_id));
-            ipc::log_line(&label, format!("WS order {}", parts.join(" ")));
-        }
-        OrderLifecycle::Update => {
-            let mut parts = vec!["type=UPDATE".to_string(), format!("id={}", ev.order_id)];
-            if let Some(sm) = ev.size_matched {
-                parts.push(format!("size_matched={sm}"));
-            }
-            ipc::log_line(&label, format!("WS order {}", parts.join(" ")));
-        }
-        OrderLifecycle::Cancellation => {
-            ipc::log_line(&label, format!("WS order type=CANCELLATION id={}", ev.order_id));
-            let before = sess.open_orders.len();
-            sess.open_orders.retain(|o| o.id != ev.order_id);
-            if sess.open_orders.len() < before {
-                ipc::log_line(
-                    &label,
-                    format!(
-                        "open_order canceled — pruning id={} (WS CANCELLATION)",
-                        ev.order_id
-                    ),
-                );
-            }
-        }
+    if !matches!(ev.lifecycle, OrderLifecycle::Cancellation) {
+        return;
     }
+    let label = sess.bot_id.to_string();
+    let before = sess.open_orders.len();
+    sess.open_orders.retain(|o| o.id != ev.order_id);
+    let pruned = sess.open_orders.len() < before;
+    ipc::log_line(
+        &label,
+        format!(
+            "WS cancel id={}{}",
+            ev.order_id,
+            if pruned { " (pruned)" } else { "" }
+        ),
+    );
 }
 
 fn on_market_resolved(sess: &MarketSession, pool: &SqlitePool, ev: &MarketResolvedPayload) {

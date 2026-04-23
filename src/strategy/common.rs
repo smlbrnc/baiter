@@ -71,7 +71,6 @@ pub struct StrategyContext<'a> {
     pub down_best_ask: f64,
     pub api_min_order_size: f64,
     pub order_usdc: f64,
-    /// Composite skor `[0, 10]`; 5.0 nötr (long/short eşit).
     pub effective_score: f64,
     pub zone: MarketZone,
     pub now_ms: u64,
@@ -80,14 +79,9 @@ pub struct StrategyContext<'a> {
     pub open_orders: &'a [OpenOrder],
     pub min_price: f64,
     pub max_price: f64,
-    /// Averaging cooldown (ms) + GTC max age. `BotConfig.cooldown_threshold`.
     pub cooldown_threshold: u64,
-    /// Profit-lock eşiği — `StrategyParams::avg_threshold()` (default 0.98).
-    /// `metrics.profit_locked()` bu değerle çalışır.
     pub avg_threshold: f64,
     pub signal_ready: bool,
-    /// Strateji-spesifik ayarlar (Alis: `open_delta`, `pyramid_*` vb.). Tüm
-    /// stratejiler ihtiyaçları olan alanları buradan okur.
     pub strategy_params: &'a StrategyParams,
 }
 

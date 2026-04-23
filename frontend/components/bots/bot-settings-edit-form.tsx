@@ -66,9 +66,9 @@ export function BotSettingsEditForm({ bot, onUpdated }: Props) {
       return;
     }
     const cooldown = Number(form.cooldown_threshold);
-    if (!(Number.isFinite(cooldown) && cooldown > 0)) {
+    if (!(Number.isFinite(cooldown) && cooldown >= 0)) {
       setError(
-        `Geçersiz cooldown_threshold (${cooldown}). 0'dan büyük bir milisaniye değeri gir.`,
+        `Geçersiz cooldown_threshold (${cooldown}). 0 veya pozitif milisaniye değeri gir.`,
       );
       return;
     }

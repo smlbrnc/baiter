@@ -235,32 +235,7 @@ export type FrontendEvent =
       ts_ms: number;
     }
   | {
-      kind: "BestBidAsk";
-      bot_id: number;
-      up_best_bid: number;
-      up_best_ask: number;
-      down_best_bid: number;
-      down_best_ask: number;
-      ts_ms: number;
-    }
-  | {
-      kind: "SignalUpdate";
-      bot_id: number;
-      symbol: string;
-      signal_score: number;
-      bsi: number;
-      ofi: number;
-      cvd: number;
-      ts_ms: number;
-    }
-  | {
-      kind: "StateChanged";
-      bot_id: number;
-      state: string;
-      ts_ms: number;
-    }
-  | {
-      /** BestBidAsk + SignalUpdate birleşimi; session slug ile eşleştirilir. */
+      /** 1 sn cadence book + composite sinyal snapshot'ı; session slug ile eşleştirilir. */
       kind: "TickSnapshot";
       bot_id: number;
       slug: string;

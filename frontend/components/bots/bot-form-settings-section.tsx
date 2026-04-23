@@ -44,7 +44,7 @@ export function BotFormSettingsSection({ form, setForm }: Props) {
             <Input
               type="number"
               step="500"
-              min="500"
+              min="0"
               value={form.cooldown_threshold}
               onChange={(e) =>
                 setForm({
