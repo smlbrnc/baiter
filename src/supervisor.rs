@@ -1,9 +1,6 @@
 //! Supervisor — bot süreç spawn + lifecycle + stdout köprüsü (§1, §5.1, §18).
-//!
-//! Her bot ayrı `Child` (PID izolasyonu); stdout satırları `[[EVENT]]`
-//! prefix'ine göre SSE kanalı veya logs tablosuna yönlendirilir. Crash'te
-//! exponential backoff (1s..60s); stop'ta `BotHandle::shutdown` oneshot
-//! ile `kill_on_drop` SIGKILL.
+//! Stdout satırları `[[EVENT]]` prefix'ine göre SSE veya `logs` tablosuna ayrışır;
+//! crash'te exp backoff (1s..60s), stop'ta oneshot + `kill_on_drop` SIGKILL.
 
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -47,15 +44,15 @@ impl AppState {
 
 /// Bir bot'u başlat — zaten çalışıyorsa no-op.
 pub async fn start_bot(state: Arc<AppState>, bot_id: i64) -> Result<(), AppError> {
-    let (shutdown_tx, shutdown_rx) = oneshot::channel();
-    {
+    let shutdown_rx = {
         let mut children = state.children.lock().await;
         if children.contains_key(&bot_id) {
             return Ok(());
         }
+        let (shutdown_tx, shutdown_rx) = oneshot::channel();
         children.insert(bot_id, BotHandle { shutdown: shutdown_tx });
-    }
-
+        shutdown_rx
+    };
     let st = state.clone();
     tokio::spawn(async move { run_bot_with_backoff(st, bot_id, shutdown_rx).await });
     Ok(())
@@ -63,12 +60,10 @@ pub async fn start_bot(state: Arc<AppState>, bot_id: i64) -> Result<(), AppError
 
 /// Bot'u durdur — child SIGKILL ile sonlandırılır, state STOPPED'e set edilir.
 pub async fn stop_bot(state: Arc<AppState>, bot_id: i64) -> Result<(), AppError> {
-    let handle = state.children.lock().await.remove(&bot_id);
-    if let Some(h) = handle {
+    if let Some(h) = state.children.lock().await.remove(&bot_id) {
         let _ = h.shutdown.send(());
     }
-    let _ = db::set_bot_state(&state.pool, bot_id, "STOPPED").await;
-    Ok(())
+    db::set_bot_state(&state.pool, bot_id, "STOPPED").await
 }
 
 async fn run_bot_with_backoff(
@@ -88,7 +83,9 @@ async fn run_bot_with_backoff(
             res = spawn_once(state.clone(), bot_id) => match res {
                 Ok(0) => {
                     tracing::info!(bot_id, "bot exited cleanly");
-                    let _ = db::set_bot_state(&state.pool, bot_id, "STOPPED").await;
+                    if let Err(e) = db::set_bot_state(&state.pool, bot_id, "STOPPED").await {
+                        tracing::warn!(bot_id, error = %e, "set_bot_state STOPPED failed");
+                    }
                     return;
                 }
                 Ok(code) => {
@@ -100,13 +97,16 @@ async fn run_bot_with_backoff(
             }
         }
 
-        let _ = db::insert_log(
+        if let Err(e) = db::insert_log(
             &state.pool,
             Some(bot_id),
             "error",
             &format!("bot crashed, restarting in {backoff:?}"),
         )
-        .await;
+        .await
+        {
+            tracing::warn!(bot_id, error = %e, "insert_log failed");
+        }
 
         tokio::select! {
             _ = &mut shutdown_rx => return,
@@ -128,16 +128,12 @@ async fn spawn_once(state: Arc<AppState>, bot_id: i64) -> Result<i32, AppError> 
         .spawn()?;
 
     tracing::info!(bot_id, pid = child.id(), "bot spawned");
-    let _ = db::set_bot_state(&state.pool, bot_id, "RUNNING").await;
+    if let Err(e) = db::set_bot_state(&state.pool, bot_id, "RUNNING").await {
+        tracing::warn!(bot_id, error = %e, "set_bot_state RUNNING failed");
+    }
 
-    let stdout = child
-        .stdout
-        .take()
-        .ok_or_else(|| AppError::Config("stdout pipe missing".into()))?;
-    let stderr = child
-        .stderr
-        .take()
-        .ok_or_else(|| AppError::Config("stderr pipe missing".into()))?;
+    let stdout = child.stdout.take().expect("stdout piped");
+    let stderr = child.stderr.take().expect("stderr piped");
 
     let s_out = state.clone();
     tokio::spawn(async move {
@@ -151,7 +147,9 @@ async fn spawn_once(state: Arc<AppState>, bot_id: i64) -> Result<i32, AppError> 
     tokio::spawn(async move {
         let mut lines = BufReader::new(stderr).lines();
         while let Ok(Some(line)) = lines.next_line().await {
-            let _ = db::insert_log(&s_err.pool, Some(bot_id), "error", &line).await;
+            if let Err(e) = db::insert_log(&s_err.pool, Some(bot_id), "error", &line).await {
+                tracing::warn!(bot_id, error = %e, "stderr insert_log failed");
+            }
         }
     });
 
@@ -160,24 +158,25 @@ async fn spawn_once(state: Arc<AppState>, bot_id: i64) -> Result<i32, AppError> 
 }
 
 async fn handle_stdout_line(state: &AppState, bot_id: i64, line: &str) {
-    if let Some(rest) = line.strip_prefix(EVENT_PREFIX) {
+    if line.is_empty() {
+        return;
+    }
+    if line.starts_with(EVENT_PREFIX) {
         match parse_event_line(line) {
             Some(ev) => {
                 let _ = state.events.send(ev);
             }
-            None => tracing::warn!(bot_id, payload = rest, "event parse failed"),
+            None => tracing::warn!(bot_id, line, "event parse failed"),
         }
         return;
     }
-    if line.is_empty() {
-        return;
-    }
     let level = detect_log_level(line);
-    let _ = db::insert_log(&state.pool, Some(bot_id), level, line).await;
+    if let Err(e) = db::insert_log(&state.pool, Some(bot_id), level, line).await {
+        tracing::warn!(bot_id, error = %e, "stdout insert_log failed");
+    }
 }
 
-/// Tracing compact formatı satır başına `INFO`/`WARN`/`ERROR` token koyar
-/// (örn. `WARN ws error...`); diğer her şey `info`.
+/// `INFO`/`WARN`/`ERROR` token'ı (tracing compact format) → log level; diğer her şey `info`.
 fn detect_log_level(line: &str) -> &'static str {
     match line.split_whitespace().next().unwrap_or("") {
         "ERROR" => "error",
@@ -197,6 +196,8 @@ pub async fn restart_previously_running(state: Arc<AppState>) {
     };
     for b in bots.into_iter().filter(|b| b.state == "RUNNING") {
         tracing::info!(bot_id = b.id, "auto-restart previously running bot");
-        let _ = start_bot(state.clone(), b.id).await;
+        if let Err(e) = start_bot(state.clone(), b.id).await {
+            tracing::error!(bot_id = b.id, error = %e, "auto-restart start_bot failed");
+        }
     }
 }

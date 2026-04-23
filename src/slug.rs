@@ -3,7 +3,6 @@
 
 use crate::error::AppError;
 
-/// Desteklenen crypto asset'ler.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Asset {
@@ -54,7 +53,6 @@ impl Asset {
     }
 }
 
-/// Desteklenen pencere aralıkları.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Interval {

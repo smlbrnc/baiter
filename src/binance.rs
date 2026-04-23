@@ -57,7 +57,6 @@ struct AggTrade {
     event_time_ms: u64,
     #[serde(rename = "q")]
     qty: String,
-    /// `m=true` → buyer is market maker → taker satış; `false` → taker alış.
     #[serde(rename = "m")]
     is_buyer_maker: bool,
 }
@@ -71,11 +70,9 @@ struct TradeEntry {
 
 const NEUTRAL: f64 = 5.0;
 const MAX_STATS: usize = 300;
-/// OFI history dolana kadar nötr skor; CVD window'ı şekillendirmek için 30 yeter.
 const WARMUP_TRADES: usize = 30;
 const HAWKES_KAPPA: f64 = 0.1;
 
-/// aggTrade işleyici — sliding-window CVD + BSI + OFI + signal_score (§14.2-14.3).
 pub struct SignalComputer {
     window_ms: u64,
     window_trades: VecDeque<TradeEntry>,

@@ -30,7 +30,6 @@ use crate::types::{RunMode, Strategy};
 #[derive(Debug, Clone, Deserialize)]
 struct CredentialsInput {
     private_key: String,
-    /// 0 = EOA, 1 = POLY_PROXY, 2 = POLY_GNOSIS_SAFE.
     signature_type: i32,
     /// `signature_type ∈ {1,2}` ise zorunlu (proxy/safe adresi).
     #[serde(default)]

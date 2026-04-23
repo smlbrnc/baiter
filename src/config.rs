@@ -15,10 +15,8 @@ pub struct RuntimeEnv {
     pub gamma_base_url: String,
     pub clob_base_url: String,
     pub clob_ws_base: String,
-    /// EIP-712 imza için zincir id (Polygon mainnet = 137).
     pub polygon_chain_id: u64,
     pub rtds_ws_url: String,
-    /// Tick boşluğu eşiği (ms); aşıldığında force reconnect (zombie detection).
     pub rtds_stale_threshold_ms: u64,
     pub rtds_reconnect_max_backoff_ms: u64,
 }

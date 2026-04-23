@@ -28,7 +28,6 @@ pub struct Ctx {
     pub creds: Option<Credentials>,
     pub executor: Executor,
     pub signal_state: SharedSignalState,
-    /// RTDS Chainlink feed snapshot'u — disable iken default (nötr) kalır.
     pub rtds_state: SharedRtdsState,
 }
 

@@ -1,12 +1,7 @@
-//! IPC — bot → supervisor event/log köprüsü (§5.1, §5.2).
-//!
-//! Bot süreçleri stdout'a iki satır türü yazar: `[HH:MM:SS.mmm] [bot] msg`
-//! sade log ve `[[EVENT]] {json}` `FrontendEvent` payload'ı. Supervisor
-//! prefix'e bakıp logs tablosuna ya da SSE kanalına yönlendirir.
-//!
-//! `init_async_writer()` sonrası hot path bounded mpsc'ye `try_send` yapıp
-//! döner; drain task batch'leyip stdout'a basar (ordering korunur). Init
-//! yoksa veya kanal doluysa sync stdout fallback.
+//! IPC — bot → supervisor stdout köprüsü (§5.1, §5.2).
+//! İki satır türü: `[HH:MM:SS.mmm ET] [bot] msg` log + `[[EVENT]] {json}` SSE payload.
+//! `init_async_writer()` bounded mpsc + drain task kurar (FIFO); init yoksa veya
+//! kanal doluysa sync `stdout.write_all` ile satır kaybolmaz.
 
 use std::io::{self, Write};
 use std::sync::OnceLock;
@@ -138,7 +133,6 @@ pub enum FrontendEvent {
         window_delta_bps: f64,
         ts_ms: u64,
     },
-    /// 1 sn cadence: book + composite sinyal; `slug` ile session'a bağlanır.
     TickSnapshot {
         bot_id: i64,
         slug: String,
@@ -152,7 +146,6 @@ pub enum FrontendEvent {
         cvd: f64,
         ts_ms: u64,
     },
-    /// 1 sn cadence: PnL snapshot.
     PnlUpdate {
         bot_id: i64,
         slug: String,
@@ -168,12 +161,7 @@ pub enum FrontendEvent {
         avg_down: Option<f64>,
         ts_ms: u64,
     },
-    /// Alis stratejisi profit-lock şartını sağlayıp `Locked` state'ine geçti.
-    /// `lock_method` lock'un nasıl tetiklendiğini söyler:
-    /// - `"taker_fak"`: dominant + opp.best_ask ≤ avg_threshold → FAK ile kapatıldı.
-    /// - `"passive_hedge_fill"`: pasif hedge emri doldu, ek emir yok.
-    /// - `"symmetric_fill"`: aynı tick'te iki taraf da doldu.
-    ///
+    /// Alis Locked. `lock_method` ∈ {`taker_fak`, `passive_hedge_fill`, `symmetric_fill`}.
     /// `expected_profit` = `pair_count − cost_basis − fee_total` (USDC).
     ProfitLocked {
         bot_id: i64,
