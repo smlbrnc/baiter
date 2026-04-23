@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use alloy::primitives::{address, Address, U256};
+use alloy::primitives::{address, Address, FixedBytes, U256};
 use alloy::signers::local::PrivateKeySigner;
 use alloy::signers::Signer;
 use alloy::sol_types::{eip712_domain, SolStruct};
@@ -14,24 +14,25 @@ use crate::types::Side;
 
 const TOKEN_DECIMALS: u32 = 6;
 
-const CTF_EXCHANGE: Address = address!("0x4bFb41d5B3570DeFd03C39a9A4D8dE6Bd8B8982E");
+/// CLOB V2 CTF Exchange (binary markets).
+const CTF_EXCHANGE: Address = address!("0xE111180000d2663C0091e4f400237545B87B996B");
 
-const NEG_RISK_CTF_EXCHANGE: Address = address!("0xC5d563A36AE78145C45a50134d48A1215220f80a");
+/// CLOB V2 NegRisk CTF Exchange (multi-outcome markets).
+const NEG_RISK_CTF_EXCHANGE: Address = address!("0xe2222d279d744050d28e00520010520000310F59");
 
 alloy::sol! {
     struct Order {
         uint256 salt;
         address maker;
         address signer;
-        address taker;
         uint256 tokenId;
         uint256 makerAmount;
         uint256 takerAmount;
-        uint256 expiration;
-        uint256 nonce;
-        uint256 feeRateBps;
         uint8 side;
         uint8 signatureType;
+        uint256 timestamp;
+        bytes32 metadata;
+        bytes32 builder;
     }
 }
 
@@ -41,10 +42,11 @@ pub struct BuildArgs<'a> {
     pub side: Side,
     pub size: f64,
     pub price: f64,
-    pub expiration_secs: u64,
     pub neg_risk: bool,
-    pub fee_rate_bps: u32,
     pub tick_size: f64,
+    /// Builder code (bytes32 hex, `0x` + 64 hex chars). Attribution istemeyen
+    /// kullanıcı zero-hex girer; geçersiz format → `AppError::Auth`.
+    pub builder_code: &'a str,
 }
 
 fn rounding_config(tick_size: f64) -> (u32, u32, u32) {
@@ -118,19 +120,20 @@ pub fn build_order(args: &BuildArgs<'_>) -> Result<Order, AppError> {
     let token_id = U256::from_str_radix(args.token_id, 10)
         .map_err(|e| AppError::Auth(format!("token_id parse: {e}")))?;
 
+    let builder = parse_bytes32(args.builder_code)?;
+
     Ok(Order {
         salt: order_salt(),
         maker: maker_addr,
         signer: signer_addr,
-        taker: Address::ZERO,
         tokenId: token_id,
         makerAmount: U256::from(maker_amount),
         takerAmount: U256::from(taker_amount),
-        expiration: U256::from(args.expiration_secs),
-        nonce: U256::ZERO,
-        feeRateBps: U256::from(args.fee_rate_bps),
         side: side_byte,
         signatureType: args.creds.signature_type as u8,
+        timestamp: U256::from(now_ms()),
+        metadata: FixedBytes::<32>::ZERO,
+        builder,
     })
 }
 
@@ -148,7 +151,7 @@ pub async fn sign_order(
 
     let domain = eip712_domain! {
         name: "Polymarket CTF Exchange",
-        version: "1",
+        version: "2",
         chain_id: chain_id,
         verifying_contract: verifying_contract(neg_risk),
     };
@@ -161,7 +164,9 @@ pub async fn sign_order(
     Ok(format!("0x{}", hex::encode(sig.as_bytes())))
 }
 
-pub fn order_to_json(order: &Order, signature_hex: &str) -> Value {
+/// V2 wire body: imzalı 11 alan + `expiration` (GTD için unix-secs, aksi `0`)
+/// + `signature`. `nonce/feeRateBps/taker` body'den de çıktı.
+pub fn order_to_json(order: &Order, expiration_secs: u64, signature_hex: &str) -> Value {
     let side_str = if order.side == 0 { "BUY" } else { "SELL" };
     let salt: u64 = order
         .salt
@@ -171,22 +176,24 @@ pub fn order_to_json(order: &Order, signature_hex: &str) -> Value {
         "salt": salt,
         "maker": format!("{:#x}", order.maker),
         "signer": format!("{:#x}", order.signer),
-        "taker": format!("{:#x}", order.taker),
         "tokenId": order.tokenId.to_string(),
         "makerAmount": order.makerAmount.to_string(),
         "takerAmount": order.takerAmount.to_string(),
-        "expiration": order.expiration.to_string(),
-        "nonce": order.nonce.to_string(),
-        "feeRateBps": order.feeRateBps.to_string(),
         "side": side_str,
         "signatureType": order.signatureType,
+        "expiration": expiration_secs.to_string(),
+        "timestamp": order.timestamp.to_string(),
+        "metadata": format!("0x{}", hex::encode(order.metadata)),
+        "builder":  format!("0x{}", hex::encode(order.builder)),
         "signature": signature_hex,
     })
 }
 
+/// V2 GTD: protocol enforces a 60s security buffer. Effective lifetime N
+/// requires `expiration = now + 60 + N` (resmi `trading/orders/create.md`).
 pub fn expiration_for(order_type: &str, timeout_secs: u64) -> u64 {
     if order_type.eq_ignore_ascii_case("GTD") {
-        now_secs() + timeout_secs
+        now_secs() + 60 + timeout_secs
     } else {
         0
     }
@@ -204,4 +211,20 @@ fn order_salt() -> U256 {
     let now = now_ms();
     let r: u64 = rand::rng().random_range(0..now.max(1));
     U256::from(r)
+}
+
+/// `0x` + tam 64 hex char → `FixedBytes<32>`. Geçersiz → `AppError::Auth`.
+fn parse_bytes32(hex_str: &str) -> Result<FixedBytes<32>, AppError> {
+    let stripped = hex_str
+        .strip_prefix("0x")
+        .ok_or_else(|| AppError::Auth(format!("bytes32 must start with 0x: '{hex_str}'")))?;
+    if stripped.len() != 64 {
+        return Err(AppError::Auth(format!(
+            "bytes32 must be 64 hex chars (got {})",
+            stripped.len()
+        )));
+    }
+    let bytes = hex::decode(stripped)
+        .map_err(|e| AppError::Auth(format!("bytes32 hex decode: {e}")))?;
+    Ok(FixedBytes::<32>::from_slice(&bytes))
 }

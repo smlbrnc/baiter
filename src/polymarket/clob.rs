@@ -10,6 +10,15 @@ use crate::error::AppError;
 use crate::polymarket::auth::{body_to_string, make_l2_headers};
 use crate::time::now_secs;
 
+/// `/clob-markets/{condition_id}.fd` parse'ı — taker fee parametreleri.
+/// Resmi formül (`trading/fees.md`): `fee = size × rate × p × (1-p)`.
+/// Maker hiçbir markette ücret ödemez (`taker_only` daima true varsayılır).
+#[derive(Debug, Clone, Copy)]
+pub struct TakerFee {
+    pub rate: f64,
+    pub taker_only: bool,
+}
+
 pub fn shared_http_client() -> Client {
     Client::builder()
         .pool_max_idle_per_host(16)
@@ -43,14 +52,30 @@ impl ClobClient {
             .ok_or_else(|| AppError::Auth("credentials eksik (dry run? env?)".to_string()))
     }
 
-    pub async fn fetch_fee_rate_bps(&self, token_id: &str) -> Result<u32, AppError> {
-        #[derive(Deserialize)]
-        struct FeeRate {
-            base_fee: u32,
-        }
-        let url = format!("{}/fee-rate?token_id={token_id}", self.base);
+    /// CLOB V2 public GET — auth gerektirmez.
+    async fn public_get_json(&self, path: &str) -> Result<Value, AppError> {
+        let url = format!("{}{}", self.base, path);
         let resp = self.http.get(&url).send().await?.error_for_status()?;
-        Ok(resp.json::<FeeRate>().await?.base_fee)
+        Ok(resp.json::<Value>().await?)
+    }
+
+    /// `GET /clob-markets/{condition_id}` → `fd.r` (rate) + `fd.to` (taker_only).
+    /// Diğer alanlar (`mts/mos/mbf/tbf/rfqe/oas`) parse edilmez — Gamma'dan zaten
+    /// gelen `tick_size`/`min_order_size` ile duplicate olur.
+    pub async fn get_taker_fee(&self, condition_id: &str) -> Result<TakerFee, AppError> {
+        let v = self
+            .public_get_json(&format!("/clob-markets/{condition_id}"))
+            .await?;
+        let fd = v
+            .get("fd")
+            .ok_or_else(|| AppError::Clob(format!("clob-markets/{condition_id}: 'fd' missing")))?;
+        let rate = fd.get("r").and_then(Value::as_f64).ok_or_else(|| {
+            AppError::Clob(format!("clob-markets/{condition_id}: 'fd.r' missing or not number"))
+        })?;
+        let taker_only = fd.get("to").and_then(Value::as_bool).ok_or_else(|| {
+            AppError::Clob(format!("clob-markets/{condition_id}: 'fd.to' missing or not bool"))
+        })?;
+        Ok(TakerFee { rate, taker_only })
     }
 
     async fn auth_request(

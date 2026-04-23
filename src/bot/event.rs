@@ -9,7 +9,7 @@ use crate::engine::{
 };
 use crate::ipc::{self, FrontendEvent};
 use crate::polymarket::{
-    fee_for_role, MarketResolvedPayload, OrderLifecycle, OrderPayload, PolymarketEvent,
+    fee_for_role, FeeParams, MarketResolvedPayload, OrderLifecycle, OrderPayload, PolymarketEvent,
     PriceChangeLevel, TradePayload, TradeStatus,
 };
 use crate::time::now_ms;
@@ -91,8 +91,13 @@ struct Fill {
 }
 
 impl Fill {
-    fn fee(&self, bps: u32) -> f64 {
-        fee_for_role(self.price, self.size, bps, self.role.is_taker())
+    fn fee(&self, rate: f64) -> f64 {
+        fee_for_role(
+            self.price,
+            self.size,
+            &FeeParams { rate, taker_only: true },
+            self.role.is_taker(),
+        )
     }
 }
 
@@ -152,8 +157,8 @@ fn on_trade(sess: &mut MarketSession, pool: &SqlitePool, ev: &TradePayload) {
         Vec::new()
     };
 
-    let bps = sess.fee_rate_bps;
-    let fees: Vec<f64> = fills.iter().map(|f| f.fee(bps)).collect();
+    let rate = sess.fee_rate;
+    let fees: Vec<f64> = fills.iter().map(|f| f.fee(rate)).collect();
     let total_fee: f64 = fees.iter().sum();
 
     for (f, &fee) in fills.iter().zip(&fees) {

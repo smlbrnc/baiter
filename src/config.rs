@@ -30,7 +30,7 @@ impl RuntimeEnv {
             bot_binary: env_or("BOT_BINARY", default_bot_binary()),
             heartbeat_dir: env_or("HEARTBEAT_DIR", "./data/heartbeat"),
             gamma_base_url: env_or("GAMMA_BASE_URL", "https://gamma-api.polymarket.com"),
-            clob_base_url: env_or("CLOB_BASE_URL", "https://clob.polymarket.com"),
+            clob_base_url: env_or("CLOB_BASE_URL", "https://clob-v2.polymarket.com"),
             clob_ws_base: env_or(
                 "CLOB_WS_BASE",
                 "wss://ws-subscriptions-clob.polymarket.com/ws",
@@ -77,7 +77,12 @@ pub struct Credentials {
     pub polygon_private_key: String,
     pub signature_type: i32,
     pub funder: Option<String>,
+    pub builder_code: String,
 }
+
+/// Attribution istemeyen kullanıcı için default — DB migration'ın varsayılanı.
+pub const BUILDER_CODE_ZERO: &str =
+    "0x0000000000000000000000000000000000000000000000000000000000000000";
 
 /// `bots` tablosundan yüklenen tek bir bot konfigürasyonu.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,35 +104,25 @@ pub struct BotConfig {
 /// parse edilir, tüm stratejiler (Alis/Elis/Aras) buradan okur.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StrategyParams {
-    /// ProfitLock eşik oranı (örn. `0.02` → `avg_threshold = 0.98`).
     #[serde(default)]
     pub profit_lock_pct: Option<f64>,
-    /// RTDS Chainlink sinyali aktif mi. Default `true`.
     #[serde(default)]
     pub rtds_enabled: Option<bool>,
-    /// Composite ağırlığı (window_delta payı). Default `0.70`.
     #[serde(default)]
     pub window_delta_weight: Option<f64>,
-    /// Sinyal projeksiyon ileri-bakış süresi (sn); `tick.rs` velocity'yi bu
-    /// süreyle çarpıp `window_delta_bps`'e ekler. Default `3.0`, `0.0` = kapalı.
     #[serde(default)]
     pub signal_lookahead_secs: Option<f64>,
-    /// Alis opener fiyat delta'sı (`best_ask + delta`). Default `0.01`.
     #[serde(default)]
     pub open_delta: Option<f64>,
-    /// Alis AggTrade pyramid taker FAK delta'sı. Default `0.015`.
     #[serde(default)]
     pub pyramid_agg_delta: Option<f64>,
-    /// Alis FakTrade pyramid taker FAK delta'sı. Default `0.025`.
     #[serde(default)]
     pub pyramid_fak_delta: Option<f64>,
-    /// Alis pyramid emir başına USDC; verilmezse caller `order_usdc`'sine düşer.
     #[serde(default)]
     pub pyramid_usdc: Option<f64>,
 }
 
 impl StrategyParams {
-    /// Profit-lock canonical eşiği; `profit_lock_pct = 0.02` → `0.98`.
     pub fn avg_threshold(&self) -> f64 {
         self.profit_lock_pct
             .map(|p| 1.0 - p.abs())

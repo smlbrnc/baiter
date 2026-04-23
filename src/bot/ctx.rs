@@ -166,13 +166,15 @@ fn build_executor(
         env_.clob_base_url.clone(),
         Some(c.clone()),
     ));
-    let exec = Executor::Live(LiveExecutor {
+    let exec = Executor::Live(Box::new(LiveExecutor {
         client: clob.clone(),
         creds: c.clone(),
         chain_id: env_.polygon_chain_id,
-        // GTD timeout = cooldown_threshold (ms→s).
+        // GTD timeout = cooldown_threshold (ms→s); V2 protocol +60s buffer
+        // `expiration_for` içinde uygulanır.
         gtd_timeout_secs: cfg.cooldown_threshold / 1000,
-    });
+        builder_code: c.builder_code.clone(),
+    }));
     (exec, Some(clob))
 }
 

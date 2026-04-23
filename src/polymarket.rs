@@ -9,8 +9,8 @@ pub mod gamma;
 pub mod order;
 pub mod ws;
 
-pub use clob::{shared_http_client, CancelResponse, ClobClient, PostOrderStatus};
-pub use fees::fee_for_role;
+pub use clob::{shared_http_client, CancelResponse, ClobClient, PostOrderStatus, TakerFee};
+pub use fees::{fee_for_role, FeeParams};
 pub use gamma::{GammaClient, GammaMarket};
 pub use ws::{
     run_market_ws, run_user_ws, MarketResolvedPayload, OrderLifecycle, OrderPayload,

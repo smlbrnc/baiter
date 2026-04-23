@@ -57,7 +57,10 @@ pub struct MarketSession {
     pub min_price: f64,
     pub max_price: f64,
     pub cooldown_threshold: u64,
-    pub fee_rate_bps: u32,
+    /// V2 protocol fee rate (raw, e.g. `0.04`); `MarketSession::new`'da `0.0`,
+    /// Live'da `prepare_window` `get_taker_fee` ile doldurur. DryRun'da 0
+    /// kalır — fill simülasyonu `DRYRUN_FEE_RATE` üzerinden ücret çıkartır.
+    pub fee_rate: f64,
     pub book_ready_logged: bool,
     /// Polymarket `derive-api-key.apiKey` UUID; trade event `owner` /
     /// `maker_orders[].owner` ile eşleşerek bizim fill'ler tespit edilir.
@@ -90,7 +93,7 @@ impl MarketSession {
             min_price: cfg.min_price,
             max_price: cfg.max_price,
             cooldown_threshold: cfg.cooldown_threshold,
-            fee_rate_bps: 0,
+            fee_rate: 0.0,
             book_ready_logged: false,
             owner_uuid: None,
         }

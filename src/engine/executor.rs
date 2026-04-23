@@ -38,7 +38,7 @@ pub trait OrderSink: Send + Sync {
 
 pub enum Executor {
     DryRun(Simulator),
-    Live(LiveExecutor),
+    Live(Box<LiveExecutor>),
 }
 
 /// Live CLOB yürütücü — EIP-712 imza + POST /order.
@@ -47,6 +47,8 @@ pub struct LiveExecutor {
     pub creds: Credentials,
     pub chain_id: u64,
     pub gtd_timeout_secs: u64,
+    /// Builder code (bytes32 hex). Boot anında validate edilmiş; her order'a gömülür.
+    pub builder_code: String,
 }
 
 #[async_trait::async_trait]
@@ -110,13 +112,12 @@ impl LiveExecutor {
             side: planned.side,
             size: planned.size,
             price: planned.price,
-            expiration_secs: exp,
             neg_risk: session.neg_risk,
-            fee_rate_bps: session.fee_rate_bps,
             tick_size: session.tick_size,
+            builder_code: &self.builder_code,
         })?;
         let sig = sign_order(&order, &self.creds, self.chain_id, session.neg_risk).await?;
-        let body = order_to_json(&order, &sig);
+        let body = order_to_json(&order, exp, &sig);
         let owner = self.creds.poly_api_key.clone();
         let resp = self
             .client

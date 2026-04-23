@@ -78,7 +78,7 @@ async fn prepare_window(
 ) -> Result<MarketSession, AppError> {
     let meta = fetch_market_meta(ctx, slug, slug_str, label).await?;
     let session_id = persist_session_setup(ctx, slug_str, &meta).await?;
-    let fee_rate_bps = resolve_fee_rate(ctx, &meta.up_id, label).await?;
+    let fee_rate = resolve_fee_rate(ctx, &meta.condition_id, label).await?;
     let owner_uuid = ctx.creds.as_ref().map(|c| c.poly_api_key.clone());
 
     Ok(MarketSession {
@@ -91,7 +91,7 @@ async fn prepare_window(
         start_ts: meta.start_ts,
         end_ts: meta.end_ts,
         market_session_id: session_id,
-        fee_rate_bps,
+        fee_rate,
         owner_uuid,
         ..MarketSession::new(ctx.bot_id, slug.to_slug(), &ctx.cfg)
     })
@@ -180,18 +180,22 @@ async fn persist_session_setup(
     Ok(session_id)
 }
 
-/// Live'da maker fee marketten markete değişir; DryRun'da 0.
-async fn resolve_fee_rate(ctx: &Ctx, up_id: &str, label: &str) -> Result<u32, AppError> {
+/// V2: `GET /clob-markets/{condition_id}` → taker fee rate. DryRun ayrı path
+/// kullanır (`DRYRUN_FEE_RATE`) → her zaman `0.0`.
+async fn resolve_fee_rate(ctx: &Ctx, condition_id: &str, label: &str) -> Result<f64, AppError> {
     match &ctx.executor {
         Executor::Live(live) => {
-            let bps = live.client.fetch_fee_rate_bps(up_id).await?;
+            let fee = live.client.get_taker_fee(condition_id).await?;
             ipc::log_line(
                 label,
-                format!("💸 Maker fee rate: {bps} bps ({:.2}%)", bps as f64 / 100.0),
+                format!(
+                    "CLOB taker fee rate={:.4} taker_only={}",
+                    fee.rate, fee.taker_only
+                ),
             );
-            Ok(bps)
+            Ok(fee.rate)
         }
-        Executor::DryRun(_) => Ok(0),
+        Executor::DryRun(_) => Ok(0.0),
     }
 }
 

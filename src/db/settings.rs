@@ -20,6 +20,7 @@ pub struct GlobalCredentials {
     pub polygon_private_key: String,
     pub signature_type: i32,
     pub funder: Option<String>,
+    pub builder_code: String,
     pub updated_at_ms: i64,
 }
 
@@ -35,6 +36,7 @@ impl From<GlobalCredentials> for Credentials {
             polygon_private_key: g.polygon_private_key,
             signature_type: g.signature_type,
             funder: g.funder,
+            builder_code: g.builder_code,
         }
     }
 }
@@ -44,8 +46,8 @@ pub async fn get_global_credentials(
 ) -> Result<Option<GlobalCredentials>, AppError> {
     let row = sqlx::query(
         "SELECT poly_address, poly_api_key, poly_passphrase, poly_secret, \
-         polygon_private_key, poly_signature_type, poly_funder, updated_at_ms \
-         FROM global_credentials WHERE id = 1",
+         polygon_private_key, poly_signature_type, poly_funder, poly_builder_code, \
+         updated_at_ms FROM global_credentials WHERE id = 1",
     )
     .fetch_optional(pool)
     .await?;
@@ -60,6 +62,7 @@ pub async fn get_global_credentials(
         polygon_private_key: r.try_get("polygon_private_key")?,
         signature_type: r.try_get("poly_signature_type")?,
         funder: r.try_get("poly_funder")?,
+        builder_code: r.try_get("poly_builder_code")?,
         updated_at_ms: r.try_get("updated_at_ms")?,
     }))
 }
@@ -71,8 +74,9 @@ pub async fn upsert_global_credentials(
     let now = now_ms() as i64;
     sqlx::query(
         "INSERT INTO global_credentials (id, poly_address, poly_api_key, poly_passphrase, \
-         poly_secret, polygon_private_key, poly_signature_type, poly_funder, updated_at_ms) \
-         VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?) \
+         poly_secret, polygon_private_key, poly_signature_type, poly_funder, \
+         poly_builder_code, updated_at_ms) \
+         VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
          ON CONFLICT(id) DO UPDATE SET \
          poly_address = excluded.poly_address, \
          poly_api_key = excluded.poly_api_key, \
@@ -81,6 +85,7 @@ pub async fn upsert_global_credentials(
          polygon_private_key = excluded.polygon_private_key, \
          poly_signature_type = excluded.poly_signature_type, \
          poly_funder = excluded.poly_funder, \
+         poly_builder_code = excluded.poly_builder_code, \
          updated_at_ms = excluded.updated_at_ms",
     )
     .bind(&creds.poly_address)
@@ -90,6 +95,7 @@ pub async fn upsert_global_credentials(
     .bind(&creds.polygon_private_key)
     .bind(creds.signature_type)
     .bind(&creds.funder)
+    .bind(&creds.builder_code)
     .bind(now)
     .execute(pool)
     .await?;
