@@ -1,7 +1,5 @@
 //! Polymarket WS event handler dispatch.
-//!
-//! Sync; DB I/O `spawn_db` ile fire-and-forget. Strateji-kritik in-memory
-//! state her zaman önce, audit persist sonra.
+//! In-memory state önce, DB persist `spawn_db` ile fire-and-forget.
 
 use sqlx::SqlitePool;
 
@@ -66,7 +64,7 @@ fn after_book_update(sess: &mut MarketSession, pool: &SqlitePool, run_mode: RunM
 #[derive(Debug, Clone)]
 enum FillRole {
     Maker { open_order_id: String },
-    Taker { marker_order_id: Option<String> },
+    Taker { taker_order_id: Option<String> },
 }
 
 impl FillRole {
@@ -77,7 +75,7 @@ impl FillRole {
     fn open_order_id(&self) -> Option<&str> {
         match self {
             Self::Maker { open_order_id } => Some(open_order_id.as_str()),
-            Self::Taker { marker_order_id } => marker_order_id.as_deref(),
+            Self::Taker { taker_order_id } => taker_order_id.as_deref(),
         }
     }
 }
@@ -98,8 +96,7 @@ impl Fill {
     }
 }
 
-/// DB persist için tek-satır view: bizim fill'imiz varsa per-fill aggregate,
-/// yoksa top-level (foreign trade audit). `outcome` doğrudan WS payload'undan.
+/// DB tek-satır trade view: bizim fill varsa per-fill aggregate, yoksa top-level (foreign).
 struct PersistedTrade {
     outcome: Option<String>,
     asset_id: String,
@@ -134,8 +131,7 @@ impl PersistedTrade {
     }
 }
 
-/// Fill attribution **sadece** `MATCHED`'te; sonraki `MINED/CONFIRMED` aynı
-/// `trade_id`'yi upsert eder, outcome/price/size FREEZE.
+/// Fill attribution sadece `MATCHED`'te; `MINED/CONFIRMED` aynı `trade_id`'yi upsert eder (freeze).
 fn on_trade(sess: &mut MarketSession, pool: &SqlitePool, ev: &TradePayload) {
     let label = sess.bot_id.to_string();
 
@@ -172,8 +168,7 @@ fn on_trade(sess: &mut MarketSession, pool: &SqlitePool, ev: &TradePayload) {
     persist_trade(pool, sess, ev, &view, total_fee);
 }
 
-/// `ev.owner == sess.owner_uuid` → TAKER (top-level fill).
-/// Aksi → MAKER (`maker_orders[]` içinde owner eşleşen entry'ler).
+/// `owner == sess.owner_uuid` → TAKER (top-level); aksi halde MAKER (`maker_orders[]` filtreli).
 fn extract_fills(sess: &MarketSession, ev: &TradePayload) -> Vec<Fill> {
     let Some(owner) = sess.owner_uuid.as_deref() else {
         return Vec::new();
@@ -207,7 +202,7 @@ fn extract_taker_fill(ev: &TradePayload) -> Option<Fill> {
     let outcome = ev.outcome.as_deref().and_then(Outcome::parse)?;
     Some(Fill {
         role: FillRole::Taker {
-            marker_order_id: ev.taker_order_id.clone(),
+            taker_order_id: ev.taker_order_id.clone(),
         },
         outcome,
         asset_id: ev.asset_id.clone(),
@@ -228,14 +223,34 @@ fn apply_fill(
     apply_live_fill(sess, fill.outcome, fill.side, fill.price, fill.size, fee);
     record_fill_and_prune_if_full(sess, fill.role.open_order_id(), fill.size, label);
     log_fill_and_position(label, sess, fill.outcome, fill.size, fill.price);
+    emit_fill(
+        sess.bot_id,
+        trade_id,
+        fill.outcome,
+        fill.side,
+        fill.price,
+        fill.size,
+        status.as_str(),
+    );
+}
+
+fn emit_fill(
+    bot_id: i64,
+    trade_id: &str,
+    outcome: Outcome,
+    side: Side,
+    price: f64,
+    size: f64,
+    status: &str,
+) {
     ipc::emit(&FrontendEvent::Fill {
-        bot_id: sess.bot_id,
+        bot_id,
         trade_id: trade_id.to_string(),
-        outcome: fill.outcome,
-        side: fill.side.as_str().to_string(),
-        price: fill.price,
-        size: fill.size,
-        status: status.as_str().to_string(),
+        outcome,
+        side: side.as_str().to_string(),
+        price,
+        size,
+        status: status.to_string(),
         ts_ms: now_ms(),
     });
 }
@@ -275,8 +290,7 @@ fn persist_trade(
     db::trades::persist_trade(pool, record, "user_ws upsert_trade");
 }
 
-/// Erken prune kısmi fill'lerin yanlış attribute olmasına yol açar — bu yüzden
-/// eşiği `min_order_size` değil, gerçek dust seviyesinde (0.01) tutuyoruz.
+/// Dust eşiği: erken prune kısmi fill attribution'ı bozar; min_order_size değil, gerçek dust.
 const FILL_DUST_THRESHOLD: f64 = 0.01;
 
 fn record_fill_and_prune_if_full(
@@ -314,28 +328,19 @@ fn log_fill_and_position(label: &str, sess: &MarketSession, outcome: Outcome, si
     );
 }
 
-/// `UPDATE`'te prune yapma — `on_trade` `MATCHED`'te yapar; aksi halde maker
-/// fill attribution `open_orders` boş bulup yanlış TAKER'a düşer.
-///
-/// `Placement` / `Update` için log atmıyoruz: outgoing place/cancel zaten
-/// `tick.rs::log_placements` / `log_cancel_request`'te, fill akışı `on_trade`
-/// üzerinden geçiyor.
+/// Cancellation lifecycle'ında lokal `open_orders`'tan prune et (MATCHED prune'u `on_trade`'te).
 fn on_order(sess: &mut MarketSession, ev: &OrderPayload) {
     if !matches!(ev.lifecycle, OrderLifecycle::Cancellation) {
         return;
     }
-    let label = sess.bot_id.to_string();
     let before = sess.open_orders.len();
     sess.open_orders.retain(|o| o.id != ev.order_id);
-    let pruned = sess.open_orders.len() < before;
-    ipc::log_line(
-        &label,
-        format!(
-            "WS cancel id={}{}",
-            ev.order_id,
-            if pruned { " (pruned)" } else { "" }
-        ),
-    );
+    if sess.open_orders.len() < before {
+        ipc::log_line(
+            &sess.bot_id.to_string(),
+            format!("WS cancel id={} (pruned)", ev.order_id),
+        );
+    }
 }
 
 fn on_market_resolved(sess: &MarketSession, pool: &SqlitePool, ev: &MarketResolvedPayload) {
@@ -395,31 +400,18 @@ fn maybe_log_book_ready(sess: &mut MarketSession) {
 
 fn run_passive_fills_dryrun(sess: &mut MarketSession, pool: &SqlitePool) {
     let bot_id = sess.bot_id;
-    let label = bot_id.to_string();
     for ex in simulate_passive_fills(sess) {
         let p = &ex.planned;
-        let fp = ex.fill_price;
-        let fs = ex.fill_size;
-        ipc::log_line(
-            &label,
-            format!(
-                "passive_fill side={} outcome={} size={fs} price={fp:.4} reason={}",
-                p.side.as_str(),
-                p.outcome.as_str(),
-                p.reason
-            ),
-        );
-        super::persist::persist_dryrun_fill(pool, sess, &ex, fp, fs, "MAKER");
-        ipc::emit(&FrontendEvent::Fill {
+        super::persist::persist_dryrun_fill(pool, sess, &ex, ex.fill_price, ex.fill_size, "MAKER");
+        emit_fill(
             bot_id,
-            trade_id: ex.order_id.clone(),
-            outcome: p.outcome,
-            side: p.side.as_str().to_string(),
-            price: fp,
-            size: fs,
-            status: "MATCHED".to_string(),
-            ts_ms: now_ms(),
-        });
+            &ex.order_id,
+            p.outcome,
+            p.side,
+            ex.fill_price,
+            ex.fill_size,
+            "MATCHED",
+        );
     }
 }
 

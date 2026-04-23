@@ -1,5 +1,4 @@
-//! Bot binary çekirdeği — `src/bin/bot.rs` ince bir `bot::run()` entry point'tir;
-//! sorumluluklar alt modüller arasında bölünmüştür.
+//! Bot binary çekirdeği; sorumluluklar alt modüller arasında bölünmüştür.
 
 pub(crate) mod ctx;
 pub(crate) mod event;
@@ -22,13 +21,6 @@ pub async fn run() -> Result<(), AppError> {
     std::env::set_var("BAITER_BOT_ID", bot_id.to_string());
 
     let (ctx, mut slug, mut sigterm, mut sigint) = ctx::load(bot_id).await?;
-    ipc::log_line(
-        &bot_id.to_string(),
-        format!(
-            "Bot started — strategy={:?} mode={:?} order_usdc={}",
-            ctx.cfg.strategy, ctx.cfg.run_mode, ctx.cfg.order_usdc,
-        ),
-    );
     ipc::emit(&FrontendEvent::BotStarted {
         bot_id,
         name: ctx.cfg.name.clone(),

@@ -1,26 +1,27 @@
-//! DB persistence helper'ları — fire-and-forget yazımlar (§⚡ Kural 4).
-//!
-//! Periyodik PnL/tick snapshot'ları + DryRun fill yazımı buradan; user-WS
-//! kaynaklı orders/trades yazımları `event.rs` içinden tetiklenir.
+//! DB persistence helper'ları — fire-and-forget yazımlar (PnL/tick snapshot + DryRun fill).
 
 use sqlx::SqlitePool;
 
 use crate::db;
 use crate::engine::{ExecutedOrder, MarketSession, DRYRUN_FEE_RATE};
 use crate::ipc::{self, FrontendEvent};
+use crate::strategy::metrics::MarketPnL;
 use crate::time::now_ms;
 
 use super::ctx::Ctx;
 use super::signal::SignalSnapshot;
 
-/// `pnl_snapshots` tablosuna tek satır yazar — `window.rs` 1 sn cadence'inden.
-/// Aynı zamanda `PnlUpdate` SSE event'ini emit eder; frontend REST polling'i kaldırabilir.
+/// 1 sn cadence: `pnl_snapshots` insert + `PnlUpdate` SSE emit.
 pub fn snapshot_pnl(pool: &SqlitePool, sess: &MarketSession) {
     if sess.market_session_id == 0 {
         return;
     }
     let pool = pool.clone();
     let pnl = sess.pnl();
+    let pair_count = sess.metrics.pair_count();
+    let avg_up = sess.metrics.avg_up;
+    let avg_down = sess.metrics.avg_down;
+    let ts_ms = now_ms();
     let snap = db::pnl::PnlSnapshot {
         cost_basis: pnl.cost_basis,
         fee_total: pnl.fee_total,
@@ -29,27 +30,20 @@ pub fn snapshot_pnl(pool: &SqlitePool, sess: &MarketSession) {
         pnl_if_up: pnl.pnl_if_up,
         pnl_if_down: pnl.pnl_if_down,
         mtm_pnl: pnl.mtm_pnl,
-        pair_count: sess.metrics.pair_count(),
-        avg_up: sess.metrics.avg_up,
-        avg_down: sess.metrics.avg_down,
-        ts_ms: 0, // DB tarafı now_ms() kullanır.
+        pair_count,
+        avg_up,
+        avg_down,
+        ts_ms: ts_ms as i64,
     };
-    let ts_ms = now_ms();
-    ipc::emit(&FrontendEvent::PnlUpdate {
-        bot_id: sess.bot_id,
-        slug: sess.slug.clone(),
-        cost_basis: pnl.cost_basis,
-        fee_total: pnl.fee_total,
-        up_filled: pnl.up_filled,
-        down_filled: pnl.down_filled,
-        pnl_if_up: pnl.pnl_if_up,
-        pnl_if_down: pnl.pnl_if_down,
-        mtm_pnl: pnl.mtm_pnl,
-        pair_count: sess.metrics.pair_count(),
-        avg_up: Some(sess.metrics.avg_up),
-        avg_down: Some(sess.metrics.avg_down),
+    ipc::emit(&build_pnl_event(
+        sess.bot_id,
+        &sess.slug,
+        &pnl,
+        pair_count,
+        avg_up,
+        avg_down,
         ts_ms,
-    });
+    ));
     let bot_id = sess.bot_id;
     let market_session_id = sess.market_session_id;
     db::spawn_db("pnl_snapshot insert", async move {
@@ -57,9 +51,33 @@ pub fn snapshot_pnl(pool: &SqlitePool, sess: &MarketSession) {
     });
 }
 
-/// `market_ticks` tablosuna 1 sn cadence BBA + composite signal snapshot'ı yazar.
-/// `sig` `window.rs::run_trading_loop`'ta `observed_snapshot` ile tek kez hesaplanıp
-/// `zone::emit_frontend_snapshot` ile paylaşılır — duplicate RwLock + composite yok.
+fn build_pnl_event(
+    bot_id: i64,
+    slug: &str,
+    pnl: &MarketPnL,
+    pair_count: f64,
+    avg_up: f64,
+    avg_down: f64,
+    ts_ms: u64,
+) -> FrontendEvent {
+    FrontendEvent::PnlUpdate {
+        bot_id,
+        slug: slug.to_string(),
+        cost_basis: pnl.cost_basis,
+        fee_total: pnl.fee_total,
+        up_filled: pnl.up_filled,
+        down_filled: pnl.down_filled,
+        pnl_if_up: pnl.pnl_if_up,
+        pnl_if_down: pnl.pnl_if_down,
+        mtm_pnl: pnl.mtm_pnl,
+        pair_count,
+        avg_up: Some(avg_up),
+        avg_down: Some(avg_down),
+        ts_ms,
+    }
+}
+
+/// 1 sn cadence: `market_ticks` insert (BBA + composite + RTDS alt sinyalleri).
 pub fn snapshot_tick(ctx: &Ctx, sess: &MarketSession, sig: &SignalSnapshot) {
     if sess.market_session_id == 0 {
         return;
@@ -84,8 +102,7 @@ pub fn snapshot_tick(ctx: &Ctx, sess: &MarketSession, sig: &SignalSnapshot) {
     );
 }
 
-/// RTDS pencere açılışını `market_sessions`'a bir kez yazar (fire-and-forget).
-/// `true` döndüğünde çağırıcı aynı pencerede tekrar çağırmamalı.
+/// RTDS pencere açılışını `market_sessions`'a tek sefer yazar; `true` ise tekrar çağırma.
 pub async fn maybe_persist_rtds_window_open(ctx: &Ctx, sess: &MarketSession) -> bool {
     let (price, ts_ms) = {
         let snap = ctx.rtds_state.read().await;
@@ -103,8 +120,7 @@ pub async fn maybe_persist_rtds_window_open(ctx: &Ctx, sess: &MarketSession) -> 
     true
 }
 
-/// DryRun fill → `trades` tablosuna fire-and-forget. `trader_side` =
-/// `"TAKER"` (immediate match) | `"MAKER"` (passive fill).
+/// DryRun fill → `trades` insert; `trader_side` = `"TAKER"` (immediate) | `"MAKER"` (passive).
 pub fn persist_dryrun_fill(
     pool: &SqlitePool,
     sess: &MarketSession,

@@ -129,20 +129,11 @@ impl LiveExecutor {
                 resp.error_msg
             )));
         }
-        // REST `status=matched` partial fill'i de işaretler. `size_matched=0` push;
-        // gerçek fill miktarı + metrics yalnız User WS `trade MATCHED`'den toplanır
-        // (REST `planned.price` VWAP'ı bozabilir, partial size REST'te yok).
+        // Partial fill miktarı yalnız User WS `trade MATCHED`'den toplanır; REST `size_matched` push edilmez.
         let filled = resp.status.is_filled();
-        session.open_orders.push(OpenOrder {
-            id: resp.order_id.clone(),
-            outcome: planned.outcome,
-            side: planned.side,
-            price: planned.price,
-            size: planned.size,
-            reason: planned.reason.clone(),
-            placed_at_ms: now_ms(),
-            size_matched: 0.0,
-        });
+        session
+            .open_orders
+            .push(open_order_from_planned(resp.order_id.clone(), planned));
         Ok(ExecutedOrder {
             order_id: resp.order_id,
             planned: planned.clone(),
@@ -166,16 +157,9 @@ impl Simulator {
         let order_id = format!("dry-{}", Uuid::new_v4());
         let Some(fill_price) = dryrun_cross(session, planned.outcome, planned.side, planned.price)
         else {
-            session.open_orders.push(OpenOrder {
-                id: order_id.clone(),
-                outcome: planned.outcome,
-                side: planned.side,
-                price: planned.price,
-                size: planned.size,
-                reason: planned.reason.clone(),
-                placed_at_ms: now_ms(),
-                size_matched: 0.0,
-            });
+            session
+                .open_orders
+                .push(open_order_from_planned(order_id.clone(), planned));
             return ExecutedOrder {
                 order_id,
                 planned: planned.clone(),
@@ -195,6 +179,19 @@ impl Simulator {
             fill_price,
             fill_size,
         }
+    }
+}
+
+fn open_order_from_planned(id: String, planned: &PlannedOrder) -> OpenOrder {
+    OpenOrder {
+        id,
+        outcome: planned.outcome,
+        side: planned.side,
+        price: planned.price,
+        size: planned.size,
+        reason: planned.reason.clone(),
+        placed_at_ms: now_ms(),
+        size_matched: 0.0,
     }
 }
 
@@ -303,12 +300,8 @@ async fn place_batch<S: OrderSink + ?Sized>(
     Ok(())
 }
 
-/// Polymarket `not_canceled` reason'larında order'ın artık book'ta olmadığını
-/// kesinleştiren terminal substring'ler. Bu reason'lar geldiğinde lokal
-/// `open_orders` state'inden de **mutlaka** prune edilmeli; aksi halde hedge
-/// drift gibi sürekli re-trigger olan replace mantığı sonsuz cancel-spam +
-/// balance-lock loop'una düşer (bkz. btc-updown-5m-1776845700, 5dk = 8944
-/// cancel reject + 1254 balance error).
+/// Order'ın book'tan kesin düştüğünü gösteren `not_canceled` reason substring'leri.
+/// Lokal `open_orders` state'inden prune edilmezse hedge replace mantığı sonsuz cancel-spam loop'una düşer.
 const TERMINAL_NOT_CANCELED_REASONS: &[&str] = &[
     "order can't be found",        // already canceled or matched
     "matched orders can't",        // fully matched after we read the book
@@ -329,10 +322,8 @@ async fn cancel_batch<S: OrderSink + ?Sized>(
     out: &mut ExecuteOutput,
 ) -> Result<(), AppError> {
     let label = session.bot_id.to_string();
-    // Yalnız Polymarket'in gerçekten iptal ettiği id'leri **veya** terminal
-    // bir reason ile reddettiği id'leri lokal state'ten sil. "Order is being
-    // matched" gibi geçici (non-terminal) red'leri olduğu gibi bırak — order
-    // hâlâ canlı/matched ve sonraki fill event için referans olarak gerek.
+    // Sadece truly-canceled veya terminal-rejected id'leri prune et; "being matched"
+    // gibi non-terminal red'lerde order hâlâ canlı, sonraki fill event için saklı tutulur.
     let mut truly_canceled: HashSet<String> = HashSet::new();
     let mut terminal_reject: HashSet<String> = HashSet::new();
     for id in ids {

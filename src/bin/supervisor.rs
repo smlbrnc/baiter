@@ -1,11 +1,5 @@
 //! Supervisor binary — HTTP API + bot process orchestration.
-//!
-//! Çalıştırma:
-//! ```bash
-//! cargo run --bin supervisor
-//! ```
-//!
-//! Referans: [docs/bot-platform-mimari.md §1 §2](../../../docs/bot-platform-mimari.md).
+//! Detaylar: [docs/bot-platform-mimari.md §1 §2](../../../docs/bot-platform-mimari.md).
 
 use std::net::SocketAddr;
 

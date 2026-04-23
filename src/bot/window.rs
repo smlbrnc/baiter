@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use tokio::signal::unix::Signal;
 use tokio::sync::mpsc;
-use tokio::time::{interval as tokio_interval, sleep};
+use tokio::time::{interval, sleep};
 
 use crate::db;
 use crate::engine::{Executor, MarketSession};
@@ -58,13 +58,51 @@ pub async fn run_window(
     Ok(result)
 }
 
-/// T-15 ön hazırlığı: Gamma fetch → DB session upsert → MarketSession + SessionOpened IPC.
+struct MarketMeta {
+    up_id: String,
+    down_id: String,
+    condition_id: String,
+    tick_size: f64,
+    api_min_order_size: f64,
+    neg_risk: bool,
+    start_ts: u64,
+    end_ts: u64,
+}
+
+/// T-15 ön hazırlığı: Gamma → DB session → fee rate → `MarketSession`.
 async fn prepare_window(
     ctx: &Ctx,
     slug: SlugInfo,
     slug_str: &str,
     label: &str,
 ) -> Result<MarketSession, AppError> {
+    let meta = fetch_market_meta(ctx, slug, slug_str, label).await?;
+    let session_id = persist_session_setup(ctx, slug_str, &meta).await?;
+    let fee_rate_bps = resolve_fee_rate(ctx, &meta.up_id, label).await?;
+    let owner_uuid = ctx.creds.as_ref().map(|c| c.poly_api_key.clone());
+
+    Ok(MarketSession {
+        up_token_id: meta.up_id,
+        down_token_id: meta.down_id,
+        condition_id: meta.condition_id,
+        tick_size: meta.tick_size,
+        api_min_order_size: meta.api_min_order_size,
+        neg_risk: meta.neg_risk,
+        start_ts: meta.start_ts,
+        end_ts: meta.end_ts,
+        market_session_id: session_id,
+        fee_rate_bps,
+        owner_uuid,
+        ..MarketSession::new(ctx.bot_id, slug.to_slug(), &ctx.cfg)
+    })
+}
+
+async fn fetch_market_meta(
+    ctx: &Ctx,
+    slug: SlugInfo,
+    slug_str: &str,
+    label: &str,
+) -> Result<MarketMeta, AppError> {
     ipc::log_line(label, format!("📡 Fetching market: {slug_str}"));
     let market = ctx.gamma.get_market_by_slug(slug_str).await?;
     let (up_id, down_id) = market.parse_token_ids()?;
@@ -91,71 +129,70 @@ async fn prepare_window(
     ipc::log_line(label, format!("    UP:   {up_id}"));
     ipc::log_line(label, format!("    DOWN: {down_id}"));
 
-    let session_id = db::sessions::upsert_market_session(
-        &ctx.pool,
-        ctx.bot_id,
-        slug_str,
-        start_ts as i64,
-        end_ts as i64,
-    )
-    .await?;
-
-    rtds::reset_window(&ctx.rtds_state, start_ts * 1000).await;
-
-    db::sessions::update_market_session_meta(
-        &ctx.pool,
-        session_id,
-        &condition_id,
-        &up_id,
-        &down_id,
-        tick_size,
-        api_min_order_size,
-    )
-    .await?;
-
-    ipc::emit(&FrontendEvent::SessionOpened {
-        bot_id: ctx.bot_id,
-        slug: slug_str.to_string(),
-        start_ts,
-        end_ts,
-        up_token_id: up_id.clone(),
-        down_token_id: down_id.clone(),
-    });
-
-    // Live modda CLOB'dan maker fee rate'i çek. Marketten markete değişir
-    // (5dk btc-updown şu an 1000 bps = %10); hardcoded 0 göndermek 400 verir.
-    // DryRun'da gereksiz network turu — atlıyoruz, simülatör fee'siz.
-    let fee_rate_bps = match &ctx.executor {
-        Executor::Live(live) => {
-            let bps = live.client.fetch_fee_rate_bps(&up_id).await?;
-            ipc::log_line(
-                label,
-                format!("💸 Maker fee rate: {bps} bps ({:.2}%)", bps as f64 / 100.0),
-            );
-            bps
-        }
-        Executor::DryRun(_) => 0,
-    };
-
-    // User channel `apiKey` ile filtreli; aynı UUID trade event'lerinde
-    // `owner` / `maker_orders[].owner` alanlarında geri gelir → bizim
-    // maker fill'lerini bu UUID ile ayırt ediyoruz.
-    let owner_uuid = ctx.creds.as_ref().map(|c| c.poly_api_key.clone());
-
-    Ok(MarketSession {
-        up_token_id: up_id,
-        down_token_id: down_id,
+    Ok(MarketMeta {
+        up_id,
+        down_id,
         condition_id,
         tick_size,
         api_min_order_size,
         neg_risk,
         start_ts,
         end_ts,
-        market_session_id: session_id,
-        fee_rate_bps,
-        owner_uuid,
-        ..MarketSession::new(ctx.bot_id, slug.to_slug(), &ctx.cfg)
     })
+}
+
+async fn persist_session_setup(
+    ctx: &Ctx,
+    slug_str: &str,
+    meta: &MarketMeta,
+) -> Result<i64, AppError> {
+    let session_id = db::sessions::upsert_market_session(
+        &ctx.pool,
+        ctx.bot_id,
+        slug_str,
+        meta.start_ts as i64,
+        meta.end_ts as i64,
+    )
+    .await?;
+
+    rtds::reset_window(&ctx.rtds_state, meta.start_ts * 1000).await;
+
+    db::sessions::update_market_session_meta(
+        &ctx.pool,
+        session_id,
+        &meta.condition_id,
+        &meta.up_id,
+        &meta.down_id,
+        meta.tick_size,
+        meta.api_min_order_size,
+    )
+    .await?;
+
+    ipc::emit(&FrontendEvent::SessionOpened {
+        bot_id: ctx.bot_id,
+        slug: slug_str.to_string(),
+        start_ts: meta.start_ts,
+        end_ts: meta.end_ts,
+        up_token_id: meta.up_id.clone(),
+        down_token_id: meta.down_id.clone(),
+    });
+
+    Ok(session_id)
+}
+
+/// Live'da maker fee marketten markete değişir; DryRun'da 0.
+async fn resolve_fee_rate(ctx: &Ctx, up_id: &str, label: &str) -> Result<u32, AppError> {
+    match &ctx.executor {
+        Executor::Live(live) => {
+            let bps = live.client.fetch_fee_rate_bps(up_id).await?;
+            ipc::log_line(
+                label,
+                format!("💸 Maker fee rate: {bps} bps ({:.2}%)", bps as f64 / 100.0),
+            );
+            Ok(bps)
+        }
+        Executor::DryRun(_) => Ok(0),
+    }
 }
 
 struct WindowStreams {
@@ -220,8 +257,7 @@ async fn run_trading_loop(
     sigterm: &mut Signal,
     sigint: &mut Signal,
 ) -> Option<&'static str> {
-    let mut tick_timer = tokio_interval(Duration::from_secs(1));
-    let mut frontend_timer = tokio_interval(Duration::from_secs(1));
+    let mut cadence = interval(Duration::from_secs(1));
     let mut rtds_open_persisted = false;
 
     loop {
@@ -239,8 +275,8 @@ async fn run_trading_loop(
                     event::handle_event(&mut sess, &ctx.pool, ctx.cfg.run_mode, more);
                 }
             }
-            _ = tick_timer.tick() => tick::tick(ctx, &mut sess).await,
-            _ = frontend_timer.tick() => {
+            _ = cadence.tick() => {
+                tick::tick(ctx, &mut sess).await;
                 let sig = observed_snapshot(ctx, &sess).await;
                 zone::emit_frontend_snapshot(ctx, &sess, &sig);
                 persist::snapshot_pnl(&ctx.pool, &sess);

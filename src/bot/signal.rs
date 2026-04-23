@@ -1,20 +1,13 @@
-//! Sinyal snapshot helper — composite skor + RTDS bileşenlerini tek noktadan
-//! hesaplar. `tick`, `zone`, `persist` üçü de aynı formülü tekrar etmesin.
-//!
-//! İki varyant:
-//! - [`decision_composite`]: opener karar gecikmesi için lookahead'lı projeksiyon
-//!   (`recent_velocity_bps_per_sec * lookahead_secs`) + `signal_ready` flag'i.
-//! - [`observed_snapshot`]: anlık (lookahead'sız) — chart/log/IPC push'ları için.
+//! Composite skor + RTDS bileşenlerini tek noktadan hesaplar.
+//! `decision_composite`: opener kararı için lookahead'lı (`signal_ready` döner).
+//! `observed_snapshot`: anlık (lookahead'sız) — chart/log/IPC için.
 
 use crate::engine::MarketSession;
-use crate::rtds;
+use crate::rtds::{self, RtdsState};
 
 use super::ctx::Ctx;
 
-/// Her iki snapshot için ortak ham alanlar (composite + RTDS alt sinyalleri).
-/// `rtds` `Some(...)` iken RTDS aktif; frontend `RtdsUpdate` push'u burada
-/// taşınan değerleri kullanır — `zone::emit_frontend_snapshot` ayrıca
-/// `rtds_state.read()` çağırmaz.
+/// Composite + opsiyonel RTDS alt sinyalleri (frontend RtdsUpdate için).
 #[derive(Debug, Clone, Copy)]
 pub struct SignalSnapshot {
     pub composite: f64,
@@ -24,8 +17,6 @@ pub struct SignalSnapshot {
     pub rtds: Option<RtdsSnapshot>,
 }
 
-/// `observed_snapshot` zaten `rtds_state.read()` çağırdığı için aynı
-/// kilit aralığında frontend push'u için gereken RTDS alanlarını da yakalar.
 #[derive(Debug, Clone, Copy)]
 pub struct RtdsSnapshot {
     pub current_price: f64,
@@ -33,22 +24,20 @@ pub struct RtdsSnapshot {
     pub window_delta_bps: f64,
 }
 
-/// `tick.rs` için: lookahead'lı opener composite skoru + RTDS hazır mı flag'i.
-/// Yalnız composite kullanıldığı için struct değil iki tuple döner.
+const NEUTRAL_WINDOW_SCORE: f64 = 5.0;
+
+/// Lookahead'lı opener composite skoru + RTDS pencere açılışı yakalandı mı.
 pub async fn decision_composite(ctx: &Ctx, sess: &MarketSession) -> (f64, bool) {
     let binance_score = ctx.signal_state.read().await.signal_score;
     let rtds_enabled = ctx.cfg.strategy_params.rtds_enabled_or_default();
     let (window_score, signal_ready) = if rtds_enabled {
         let rtds_snap = ctx.rtds_state.read().await;
         let ready = rtds_snap.window_open_price.is_some();
-        let interval_secs = sess.end_ts.saturating_sub(sess.start_ts);
         let lookahead = ctx.cfg.strategy_params.signal_lookahead_secs_or_default();
-        let projected_bps =
-            rtds_snap.window_delta_bps + rtds_snap.recent_velocity_bps_per_sec * lookahead;
-        let score = rtds::window_delta_score(projected_bps, rtds::interval_scale(interval_secs));
-        (score, ready)
+        let interval_secs = sess.end_ts.saturating_sub(sess.start_ts);
+        (rtds_window_score(&rtds_snap, interval_secs, lookahead), ready)
     } else {
-        (5.0, true)
+        (NEUTRAL_WINDOW_SCORE, true)
     };
     let composite = rtds::composite_score(
         window_score,
@@ -58,10 +47,7 @@ pub async fn decision_composite(ctx: &Ctx, sess: &MarketSession) -> (f64, bool) 
     (composite, signal_ready)
 }
 
-/// `zone.rs` ve `persist.rs` için: lookahead'sız anlık composite + alt sinyaller.
-/// RTDS aktif iken kilit tek kez alınır; `window_delta_score` hesabı +
-/// frontend `RtdsUpdate` için gereken `current_price/window_open/window_delta_bps`
-/// aynı kilit aralığında okunur — `zone.rs` ek `read()` yapmaz.
+/// Lookahead'sız anlık composite + alt sinyaller. Tek RwLock turu.
 pub async fn observed_snapshot(ctx: &Ctx, sess: &MarketSession) -> SignalSnapshot {
     let (binance_score, bsi, ofi, cvd) = {
         let snap = ctx.signal_state.read().await;
@@ -69,10 +55,8 @@ pub async fn observed_snapshot(ctx: &Ctx, sess: &MarketSession) -> SignalSnapsho
     };
     let (window_score, rtds) = if ctx.cfg.strategy_params.rtds_enabled_or_default() {
         let rtds_snap = ctx.rtds_state.read().await;
-        let score = rtds::window_delta_score(
-            rtds_snap.window_delta_bps,
-            rtds::interval_scale(sess.end_ts.saturating_sub(sess.start_ts)),
-        );
+        let interval_secs = sess.end_ts.saturating_sub(sess.start_ts);
+        let score = rtds_window_score(&rtds_snap, interval_secs, 0.0);
         let snap = RtdsSnapshot {
             current_price: rtds_snap.current_price,
             window_open_price: rtds_snap.window_open_price,
@@ -80,7 +64,7 @@ pub async fn observed_snapshot(ctx: &Ctx, sess: &MarketSession) -> SignalSnapsho
         };
         (score, Some(snap))
     } else {
-        (5.0, None)
+        (NEUTRAL_WINDOW_SCORE, None)
     };
     let composite = rtds::composite_score(
         window_score,
@@ -94,4 +78,11 @@ pub async fn observed_snapshot(ctx: &Ctx, sess: &MarketSession) -> SignalSnapsho
         cvd,
         rtds,
     }
+}
+
+/// `lookahead_secs > 0` → projeksiyon (`delta + velocity * lookahead`); `= 0` → anlık.
+fn rtds_window_score(rtds_snap: &RtdsState, interval_secs: u64, lookahead_secs: f64) -> f64 {
+    let projected_bps =
+        rtds_snap.window_delta_bps + rtds_snap.recent_velocity_bps_per_sec * lookahead_secs;
+    rtds::window_delta_score(projected_bps, rtds::interval_scale(interval_secs))
 }

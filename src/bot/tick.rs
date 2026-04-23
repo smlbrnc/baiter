@@ -1,7 +1,5 @@
 //! Strateji tick + place/cancel logu.
-//!
-//! ⚡ Kural 1: `decide → execute (POST/DELETE)` arasına sync I/O girmez. Tüm
-//! log/IPC push'lar `execute` döndükten sonra `tokio::spawn` ile arkaplana atılır.
+//! Kural 1: `decide → execute` arasına sync I/O girmez; log/IPC push'lar `execute` sonrası spawn'lı.
 
 use crate::engine::{execute, ExecuteOutput, MarketSession};
 use crate::ipc::{self, FrontendEvent};
@@ -13,19 +11,16 @@ use crate::types::RunMode;
 use super::ctx::Ctx;
 use super::signal::decision_composite;
 
-/// Composite skor `[0, 10]`; 5.0 = nötr (long/short eşit ağırlık).
+/// Composite skor `[0, 10]`; 5.0 = nötr.
 const NEUTRAL_COMPOSITE: f64 = 5.0;
 
-/// `δ = (composite − 5) / 5 ∈ [−1, +1]`. Log helper'ları ortak kullansın diye
-/// tek noktada.
+/// `δ = (composite − 5) / 5 ∈ [−1, +1]`.
 fn delta_from_composite(composite: f64) -> f64 {
     (composite - NEUTRAL_COMPOSITE) / NEUTRAL_COMPOSITE
 }
 
 /// Strateji çağrısı + decision execute.
 pub async fn tick(ctx: &Ctx, sess: &mut MarketSession) {
-    // Sinyal hazırlığı: RTDS aktif iken pencere açılış fiyatı yakalanana
-    // kadar opener basılmaz (composite skoru sadece Binance OFI'a düşmesin).
     let (composite, signal_ready) = decision_composite(ctx, sess).await;
     let decision = sess.tick(&ctx.cfg, now_ms(), composite, signal_ready);
     let bot_id = ctx.bot_id;
@@ -45,7 +40,7 @@ pub async fn tick(ctx: &Ctx, sess: &mut MarketSession) {
         }
     };
 
-    // DryRun taker (immediate match) → trades. Passive fill'ler `event.rs`'de yazılır.
+    // DryRun taker (immediate match) → trades; passive fill'ler `event.rs`'te.
     if ctx.cfg.run_mode == RunMode::Dryrun {
         for ex in &out.placed {
             if ex.filled {
@@ -62,8 +57,7 @@ pub async fn tick(ctx: &Ctx, sess: &mut MarketSession) {
     }
 
     tokio::spawn(async move {
-        log_cancel_request(&decision_for_log, &label);
-        log_cancel_responses(&out.canceled, &label);
+        log_cancel(&decision_for_log, &out.canceled, &label);
         log_placements(&out, composite, &label);
         emit_order_events(bot_id, &out);
     });
@@ -95,7 +89,7 @@ fn emit_order_events(bot_id: i64, out: &ExecuteOutput) {
     }
 }
 
-fn log_cancel_request(decision: &Decision, label: &str) {
+fn log_cancel(decision: &Decision, canceled: &[CancelResponse], label: &str) {
     let cancel_ids: &[String] = match decision {
         Decision::CancelOrders(ids) => ids,
         Decision::CancelAndPlace { cancels, .. } => cancels,
@@ -104,19 +98,17 @@ fn log_cancel_request(decision: &Decision, label: &str) {
     if cancel_ids.is_empty() {
         return;
     }
+    let canceled_n: usize = canceled.iter().map(|c| c.canceled.len()).sum();
+    let not_canceled_n: usize = canceled
+        .iter()
+        .filter_map(|c| c.not_canceled.as_object().map(|m| m.len()))
+        .sum();
     ipc::log_line(
         label,
-        format!("🚫 DELETE /order ({} ids) ids={:?}", cancel_ids.len(), cancel_ids),
+        format!(
+            "🚫 cancel ids={cancel_ids:?} → canceled={canceled_n} not_canceled={not_canceled_n}"
+        ),
     );
-}
-
-fn log_cancel_responses(canceled: &[CancelResponse], label: &str) {
-    for c in canceled {
-        ipc::log_line(
-            label,
-            format!("    canceled={:?} not_canceled={}", c.canceled, c.not_canceled),
-        );
-    }
 }
 
 fn log_placements(out: &ExecuteOutput, composite: f64, label: &str) {

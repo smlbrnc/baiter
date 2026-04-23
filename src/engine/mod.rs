@@ -7,7 +7,7 @@ use crate::strategy::aras::ArasEngine;
 use crate::strategy::elis::ElisEngine;
 use crate::strategy::metrics::{MarketPnL, StrategyMetrics};
 use crate::strategy::{Decision, OpenOrder, PlannedOrder, StrategyContext, StrategyState};
-use crate::time::{zone_pct, MarketZone};
+use crate::time::{now_ms, zone_pct, MarketZone};
 use crate::types::{Outcome, Side};
 
 pub mod executor;
@@ -59,10 +59,9 @@ pub struct MarketSession {
     pub cooldown_threshold: u64,
     pub fee_rate_bps: u32,
     pub book_ready_logged: bool,
-    /// Polymarket API key UUID (`derive-api-key.apiKey`). User channel
-    /// `apiKey` ile filtrelenir → trade event `owner` ve `maker_orders[].owner`
-    /// alanları bu UUID ile karşılaştırılarak bizim fill'ler tespit edilir.
-    /// DryRun'da `None` (live executor yok).
+    /// Polymarket `derive-api-key.apiKey` UUID; trade event `owner` /
+    /// `maker_orders[].owner` ile eşleşerek bizim fill'ler tespit edilir.
+    /// DryRun'da `None`.
     pub owner_uuid: Option<String>,
 }
 
@@ -191,9 +190,7 @@ fn emit_profit_locked(session: &MarketSession, method: &str, ts_ms: u64) {
     });
 }
 
-/// User WS `trade MATCHED` fill'ini metrics'e yansıt + son fill zamanını
-/// `last_averaging_ms`'e damgala. Strateji bu damgayı cooldown referansı olarak
-/// okur (`now_ms - last_averaging_ms ≥ cooldown_threshold`).
+/// User WS fill'ini metrics'e yansıtır + cooldown için `last_averaging_ms`'i damgalar.
 pub fn apply_live_fill(
     session: &mut MarketSession,
     outcome: Outcome,
@@ -202,7 +199,6 @@ pub fn apply_live_fill(
     size: f64,
     fee: f64,
 ) {
-    use crate::time::now_ms;
     session.metrics.ingest_fill(outcome, side, price, size, fee);
     session.last_averaging_ms = now_ms();
 }

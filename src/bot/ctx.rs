@@ -60,8 +60,7 @@ pub fn parse_bot_id() -> Result<i64, AppError> {
         .map_err(|_| AppError::Config("BAITER_BOT_ID must be integer".into()))
 }
 
-/// `Ctx` + ilk slug + signal handler'ları kur. `Strategy::{Alis|Elis|Aras}`
-/// — üçü de aktif; dispatch `engine::MarketSession::tick` içinde.
+/// `Ctx` + ilk `SlugInfo` + SIGTERM/SIGINT handler'larını kur.
 pub async fn load(bot_id: i64) -> Result<(Ctx, SlugInfo, Signal, Signal), AppError> {
     let env_ = RuntimeEnv::from_env()?;
     let pool = db::open(&env_.db_path).await?;
@@ -78,16 +77,16 @@ pub async fn load(bot_id: i64) -> Result<(Ctx, SlugInfo, Signal, Signal), AppErr
 
     let signal_state = new_shared_state();
     let rtds_state = rtds::new_shared_state();
-    spawn_background_tasks(
+    spawn_background_tasks(BackgroundTasksArgs {
         bot_id,
         slug,
-        env_.heartbeat_dir.clone(),
-        signal_state.clone(),
-        rtds_state.clone(),
-        clob.as_ref(),
-        &cfg,
-        &env_,
-    );
+        heartbeat_dir: env_.heartbeat_dir.clone(),
+        signal_state: signal_state.clone(),
+        rtds_state: rtds_state.clone(),
+        clob: clob.as_ref(),
+        cfg: &cfg,
+        env_: &env_,
+    });
 
     let (sigterm, sigint) = register_signals()?;
 
@@ -109,8 +108,6 @@ pub async fn load(bot_id: i64) -> Result<(Ctx, SlugInfo, Signal, Signal), AppErr
     ))
 }
 
-/// DB'den bot config'i okur. `Strategy::{Alis|Elis|Aras}` — üçü de aktif;
-/// `engine::MarketSession::tick` dispatch eder.
 async fn load_and_validate_cfg(pool: &SqlitePool, bot_id: i64) -> Result<BotConfig, AppError> {
     db::get_bot(pool, bot_id)
         .await?
@@ -118,11 +115,7 @@ async fn load_and_validate_cfg(pool: &SqlitePool, bot_id: i64) -> Result<BotConf
         .to_config()
 }
 
-/// Live modda credentials zorunludur ve `signature_type`/`funder` doğrulanır.
-///
-/// Çözümleme sırası: önce `bot_credentials` (bota özel), yoksa
-/// `global_credentials` (Settings sayfasında kaydedilen, NOT NULL alanlarla
-/// `From` impl'i üzerinden trivial dönüşüm). İkisi de yoksa `MissingCredentials`.
+/// Live modda creds zorunlu. Çözümleme sırası: `bot_credentials` → `global_credentials`.
 async fn load_validated_creds(
     pool: &SqlitePool,
     bot_id: i64,
@@ -142,8 +135,7 @@ async fn load_validated_creds(
     Ok(Some(c))
 }
 
-/// Polymarket EIP-712: 0 (EOA), 1 (POLY_PROXY), 2 (POLY_GNOSIS_SAFE).
-/// 1|2 için `funder` (proxy/safe adresi) zorunlu — order'da `maker` olarak kullanılır.
+/// EIP-712 signature_type: 0 (EOA), 1 (POLY_PROXY), 2 (POLY_GNOSIS_SAFE); 1|2 için `funder` zorunlu.
 fn validate_signature_type(bot_id: i64, c: &Credentials) -> Result<(), AppError> {
     if !matches!(c.signature_type, 0..=2) {
         return Err(AppError::Config(format!(
@@ -160,8 +152,7 @@ fn validate_signature_type(bot_id: i64, c: &Credentials) -> Result<(), AppError>
     Ok(())
 }
 
-/// Credentials varsa Live executor + paylaşımlı `ClobClient` döner; aksi halde
-/// `DryRun(Simulator)` ve `None`.
+/// Live'da `LiveExecutor` + paylaşılan `ClobClient`; DryRun'da `Simulator` + `None`.
 fn build_executor(
     http: &reqwest::Client,
     env_: &RuntimeEnv,
@@ -180,25 +171,35 @@ fn build_executor(
         client: clob.clone(),
         creds: c.clone(),
         chain_id: env_.polygon_chain_id,
-        // GTD timeout'u averaging cooldown ile aynı (doc §13); ms → s.
+        // GTD timeout = cooldown_threshold (ms→s).
         gtd_timeout_secs: cfg.cooldown_threshold / 1000,
     });
     (exec, Some(clob))
 }
 
-/// Binance signal + RTDS + heartbeat + (varsa) CLOB heartbeat task'larını
-/// arkaplana atar. RTDS yalnız `strategy_params.rtds_enabled` iken başlar.
-#[allow(clippy::too_many_arguments)]
-fn spawn_background_tasks(
+struct BackgroundTasksArgs<'a> {
     bot_id: i64,
     slug: SlugInfo,
     heartbeat_dir: String,
     signal_state: SharedSignalState,
     rtds_state: SharedRtdsState,
-    clob: Option<&Arc<ClobClient>>,
-    cfg: &BotConfig,
-    env_: &RuntimeEnv,
-) {
+    clob: Option<&'a Arc<ClobClient>>,
+    cfg: &'a BotConfig,
+    env_: &'a RuntimeEnv,
+}
+
+/// Binance signal + (opsiyonel) RTDS + heartbeat + (Live'da) CLOB ping task'larını spawn eder.
+fn spawn_background_tasks(args: BackgroundTasksArgs<'_>) {
+    let BackgroundTasksArgs {
+        bot_id,
+        slug,
+        heartbeat_dir,
+        signal_state,
+        rtds_state,
+        clob,
+        cfg,
+        env_,
+    } = args;
     let symbol = slug.asset.binance_symbol().to_string();
     tokio::spawn(async move {
         binance::run_binance_signal(&symbol, slug.interval, signal_state, bot_id).await;
@@ -229,7 +230,6 @@ fn spawn_background_tasks(
     }
 }
 
-/// SIGTERM + SIGINT handler'larını kur.
 fn register_signals() -> Result<(Signal, Signal), AppError> {
     let sigterm =
         signal(SignalKind::terminate()).map_err(|e| AppError::Config(format!("sigterm: {e}")))?;

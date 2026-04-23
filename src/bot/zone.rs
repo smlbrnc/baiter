@@ -1,6 +1,4 @@
-//! Periyodik (1 sn) frontend snapshot emit'i: TickSnapshot (book + sinyal) +
-//! opsiyonel RtdsUpdate. PnL snapshot'ı `bot/persist.rs` içinde aynı timer'dan
-//! çağrılır.
+//! 1 sn cadence frontend emit: `TickSnapshot` + opsiyonel `RtdsUpdate`.
 
 use crate::engine::MarketSession;
 use crate::ipc::{self, FrontendEvent};
@@ -9,13 +7,7 @@ use crate::time::now_ms;
 use super::ctx::Ctx;
 use super::signal::SignalSnapshot;
 
-/// 1 sn cadence: book fiyatlarını ve composite sinyal skorunu tek
-/// `TickSnapshot` event'inde frontend'e push'lar. Değişim filtresi yok —
-/// frontend her saniye güncel snapshot alır.
-///
-/// Çağıran (`window.rs::run_trading_loop`) `observed_snapshot`'ı tek seferde
-/// hesaplayıp ref geçer; aynı tick'te `persist::snapshot_tick` de aynı snapshot'ı
-/// alır — RwLock + composite hesabı tek noktaya indirgenir.
+/// `TickSnapshot` (book + composite) + `RtdsUpdate` (varsa) emit'i; cadence caller'da.
 pub fn emit_frontend_snapshot(ctx: &Ctx, sess: &MarketSession, sig: &SignalSnapshot) {
     let ts_ms = now_ms();
 

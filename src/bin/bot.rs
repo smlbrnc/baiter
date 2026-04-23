@@ -1,9 +1,5 @@
 //! Bot binary — supervisor tarafından `--bot-id <id>` ile spawn edilir.
-//!
-//! Tüm iş mantığı `baiter_pro::bot` modülünde; bu dosya yalnız:
-//! 1) tracing/rustls init,
-//! 2) `bot::run()` çağrısı,
-//! 3) hata yakalama + frontend Error event'i.
+//! İş mantığı `baiter_pro::bot::run()`; burada yalnız init + hata yakalama.
 
 use std::env;
 
@@ -14,10 +10,7 @@ use baiter_pro::time::now_ms;
 #[tokio::main]
 async fn main() {
     let _ = rustls::crypto::ring::default_provider().install_default();
-    // Mimari §5.1: tracing satırları da supervisor → SQLite logs tablosuna gider.
-    // Stdout'a (ANSI'sız, compact, timestamp'siz) yazıyoruz; supervisor stdout
-    // pipe'ında `[[EVENT]]` prefix'i olmayan satırları logs'a yazar ve seviyeyi
-    // satır başındaki `INFO`/`WARN`/`ERROR` token'ından çözer.
+    // Stdout (ANSI'sız, compact, timestamp'siz) → supervisor pipe; level token'ı satır başında.
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| {

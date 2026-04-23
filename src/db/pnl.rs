@@ -4,7 +4,6 @@ use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqlitePool};
 
 use crate::error::AppError;
-use crate::time::now_ms;
 
 /// `pnl_snapshots` tablosundan tek satır (api JSON'una eşlenir).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -45,7 +44,7 @@ pub async fn insert_pnl_snapshot(
     .bind(snap.pair_count)
     .bind(snap.avg_up)
     .bind(snap.avg_down)
-    .bind(now_ms() as i64)
+    .bind(snap.ts_ms)
     .execute(pool)
     .await?;
     Ok(())
