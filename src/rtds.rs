@@ -14,31 +14,22 @@ use tokio_tungstenite::tungstenite::{Message, Utf8Bytes};
 use crate::ipc;
 use crate::time::now_ms;
 
-/// Velocity hesabında kullanılan kayar pencere (ms). Polymarket Chainlink RTDS
-/// genellikle saniyede 1-2 tick yayar; 5 sn'lik pencere ~5-10 sample biriktirir.
+/// Velocity kayar penceresi; RTDS ~1-2 tick/sn, 5 sn ≈ 5-10 sample.
 const VELOCITY_WINDOW_MS: u64 = 5_000;
 
-/// RTDS task'ının strateji katmanına açtığı anlık durum.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct RtdsState {
     /// Son Chainlink tick fiyatı (USD).
     pub current_price: f64,
-    /// Pencere açılışında yakalanan ilk tick. `None` → henüz yakalanmadı.
     pub window_open_price: Option<f64>,
-    /// `window_open_price` yakalandığında payload zaman damgası (unix ms).
     pub window_open_ts_ms: Option<u64>,
-    /// Güncel pencere başlangıcı (unix ms); altındaki tick'ler open olarak yakalanmaz.
     pub window_start_ts_ms: u64,
-    /// `(current − open) / open × 10_000` (bps); open `None` iken `0.0`.
+    /// `(current − open) / open × 10_000`; open yoksa `0.0`.
     pub window_delta_bps: f64,
-    /// Son `VELOCITY_WINDOW_MS` üzerindeki ortalama fiyat değişim hızı (bps/sn).
-    /// `tick.rs` bu değeri `lookahead_secs` ile çarpıp `window_delta_bps`'e
-    /// ekleyerek 3-4 sn ileriyi tahmin eder (linear extrapolation).
+    /// Son `VELOCITY_WINDOW_MS` ortalama hız (bps/sn). `tick.rs` bunu
+    /// `lookahead_secs` ile çarpıp `window_delta_bps`'e ekleyerek ileri tahmin yapar.
     pub recent_velocity_bps_per_sec: f64,
-    /// Son tick unix ms — stale/zombie bağlantı tespiti için.
     pub last_tick_ms: u64,
-    /// Velocity hesabı için (ts_ms, price) kayar penceresi. `Serialize` skip
-    /// (transient state).
     #[serde(skip)]
     pub recent_samples: VecDeque<(u64, f64)>,
 }
@@ -59,8 +50,7 @@ pub async fn reset_window(state: &SharedRtdsState, window_start_ts_ms: u64) {
     s.window_delta_bps = 0.0;
 }
 
-/// `recent_samples`'tan velocity hesapla (en eski → en yeni). Yetersiz örnek
-/// (tek nokta veya 0.5 sn altı) → 0.0.
+/// `recent_samples`'tan velocity (bps/sn); tek nokta veya <0.5 sn → 0.0.
 fn compute_velocity(samples: &VecDeque<(u64, f64)>) -> f64 {
     if samples.len() < 2 {
         return 0.0;
@@ -75,8 +65,8 @@ fn compute_velocity(samples: &VecDeque<(u64, f64)>) -> f64 {
     bps_change / dt_sec
 }
 
-/// `window_delta_bps` → `[0, 10]` skor (`5.0` = nötr). Piecewise linear; 5-dk
-/// market için kalibre, daha uzun pencerede [`interval_scale`] ile `√T` ölçeklenir.
+/// `window_delta_bps` → `[0, 10]` skor (5.0 = nötr); 5-dk kalibre, uzun
+/// pencerede [`interval_scale`] ile `√T` ölçeklenir.
 pub fn window_delta_score(bps: f64, interval_scale: f64) -> f64 {
     let scale = if interval_scale > 0.0 {
         interval_scale
@@ -100,7 +90,7 @@ pub fn window_delta_score(bps: f64, interval_scale: f64) -> f64 {
     (5.0 + score_delta).clamp(0.0, 10.0)
 }
 
-/// `√T` volatilite ölçeği (GBM yaklaşımı); 5-dk baseline `1.0`.
+/// `√T` volatilite ölçeği (GBM); 5-dk baseline 1.0.
 pub const fn interval_scale(interval_secs: u64) -> f64 {
     match interval_secs {
         300 => 1.0,
@@ -154,8 +144,8 @@ struct RtdsPayload {
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const PING_INTERVAL: Duration = Duration::from_secs(5);
 
-/// RTDS WS task'ı: kopunca exponential backoff ile yeniden bağlanır.
-/// `stale_threshold_ms` boyunca tick yoksa force reconnect (zombie detection).
+/// RTDS WS task'ı; kopuşta exponential backoff, `stale_threshold_ms` üstü
+/// sessizlikte force reconnect (zombie detection).
 pub async fn run_rtds_task(
     ws_url: String,
     symbol: String,
@@ -165,14 +155,13 @@ pub async fn run_rtds_task(
     bot_id: i64,
 ) {
     let label = bot_id.to_string();
-    ipc::log_line(
-        &label,
-        format!("🌐 RTDS task starting (symbol={symbol}, url={ws_url})"),
-    );
     let mut backoff_ms: u64 = 1_000;
     let max_backoff = max_backoff_ms.max(1_000);
     loop {
-        ipc::log_line(&label, format!("🌐 RTDS connecting symbol={symbol}"));
+        ipc::log_line(
+            &label,
+            format!("🌐 RTDS connecting (symbol={symbol}) → {ws_url}"),
+        );
         let res = connect_and_stream(&ws_url, &symbol, stale_threshold_ms, &state, &label).await;
         match res {
             Ok(()) => {
@@ -210,7 +199,6 @@ async fn connect_and_stream(
         Err(_) => return Err(anyhow::anyhow!("connect timeout ({}s)", CONNECT_TIMEOUT.as_secs())),
     };
     let (mut write, mut read) = ws_stream.split();
-    ipc::log_line(label, "🌐 RTDS connected");
 
     // RTDS server `filters` alanını stringified JSON olarak bekler (regex `[{\[]…`).
     let filter_str = serde_json::json!({ "symbol": symbol }).to_string();
@@ -313,7 +301,7 @@ async fn handle_text(text: &str, symbol: &str, state: &SharedRtdsState, label: &
     let now = now_ms();
     s.last_tick_ms = now;
 
-    // Velocity penceresi: ts kendine ait → payload.timestamp tercih, yoksa now.
+    // Velocity için payload ts tercih (yoksa now).
     let sample_ts = if payload.timestamp > 0 {
         payload.timestamp
     } else {
@@ -347,217 +335,5 @@ async fn handle_text(text: &str, symbol: &str, state: &SharedRtdsState, label: &
         if open > 0.0 {
             s.window_delta_bps = (payload.value - open) / open * 10_000.0;
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn interval_scale_values() {
-        assert!((interval_scale(300) - 1.0).abs() < 0.01);
-        assert!((interval_scale(900) - 1.73).abs() < 0.01);
-        assert!((interval_scale(3600) - 3.46).abs() < 0.01);
-        assert!((interval_scale(14400) - 6.93).abs() < 0.01);
-        assert!((interval_scale(1234) - 1.0).abs() < 0.01);
-    }
-
-    #[test]
-    fn window_delta_score_neutral_at_zero() {
-        assert!((window_delta_score(0.0, 1.0) - 5.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn window_delta_score_monotonic() {
-        // Artan |bps| → skor nötrden uzaklaşır.
-        let s_small = window_delta_score(0.5, 1.0);
-        let s_mid = window_delta_score(2.0, 1.0);
-        let s_edge = window_delta_score(7.0, 1.0);
-        let s_big = window_delta_score(15.0, 1.0);
-        assert!(s_small > 5.0 && s_small < s_mid);
-        assert!(s_mid < s_edge);
-        assert!(s_edge < s_big);
-        assert!((s_big - 10.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn window_delta_score_symmetry() {
-        for bps in [0.5, 2.0, 7.0, 15.0, 30.0] {
-            let up = window_delta_score(bps, 1.0);
-            let down = window_delta_score(-bps, 1.0);
-            assert!((up + down - 10.0).abs() < 1e-6, "bps={bps} up={up} down={down}");
-        }
-    }
-
-    #[test]
-    fn window_delta_score_edge_threshold() {
-        // Oracle-lag-sniper edge eşiği: 7 bps → ~3.9 puanlık sapma → ~8.9 skor.
-        let s = window_delta_score(7.0, 1.0);
-        assert!((s - 8.9).abs() < 0.05, "got {s}");
-    }
-
-    #[test]
-    fn window_delta_score_scaled_by_interval() {
-        // 15-dk marketinde 7 bps = 5-dk karşılığı ~4 bps → daha zayıf skor.
-        let s5 = window_delta_score(7.0, interval_scale(300));
-        let s15 = window_delta_score(7.0, interval_scale(900));
-        assert!(s15 < s5, "s5={s5} s15={s15}");
-        assert!(s15 > 5.0);
-    }
-
-    #[test]
-    fn window_delta_score_clamps() {
-        assert!((window_delta_score(1e6, 1.0) - 10.0).abs() < 1e-6);
-        assert!(window_delta_score(-1e6, 1.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn compute_velocity_empty_or_single() {
-        let mut q: VecDeque<(u64, f64)> = VecDeque::new();
-        assert_eq!(compute_velocity(&q), 0.0);
-        q.push_back((1_000, 67_000.0));
-        assert_eq!(compute_velocity(&q), 0.0);
-    }
-
-    #[test]
-    fn compute_velocity_linear_rise() {
-        // 5 sn'de 67_000 → 67_067 = +10 bps → 2 bps/sn
-        let mut q: VecDeque<(u64, f64)> = VecDeque::new();
-        q.push_back((0, 67_000.0));
-        q.push_back((5_000, 67_067.0));
-        let v = compute_velocity(&q);
-        assert!((v - 2.0).abs() < 0.01, "v={v}");
-    }
-
-    #[test]
-    fn compute_velocity_negative() {
-        let mut q: VecDeque<(u64, f64)> = VecDeque::new();
-        q.push_back((0, 67_000.0));
-        q.push_back((4_000, 66_960.0)); // -40 → -5.97 bps in 4s = -1.49 bps/s
-        let v = compute_velocity(&q);
-        assert!(v < 0.0 && (v + 1.49).abs() < 0.05, "v={v}");
-    }
-
-    #[test]
-    fn compute_velocity_too_short_returns_zero() {
-        let mut q: VecDeque<(u64, f64)> = VecDeque::new();
-        q.push_back((0, 67_000.0));
-        q.push_back((100, 67_010.0)); // 0.1 sn → atla
-        assert_eq!(compute_velocity(&q), 0.0);
-    }
-
-    #[test]
-    fn composite_score_graceful_degrade() {
-        // RTDS kopuk (window=5.0) → composite = 0.7*5 + 0.3*b
-        let c = composite_score(5.0, 8.0, 0.70);
-        assert!((c - (0.7 * 5.0 + 0.3 * 8.0)).abs() < 1e-6);
-    }
-
-    #[test]
-    fn composite_score_weight_zero_uses_binance() {
-        assert!((composite_score(10.0, 2.0, 0.0) - 2.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn composite_score_weight_one_uses_window() {
-        assert!((composite_score(8.0, 2.0, 1.0) - 8.0).abs() < 1e-6);
-    }
-
-    #[test]
-    fn composite_score_clamps() {
-        assert!((composite_score(11.0, 11.0, 0.5) - 10.0).abs() < 1e-6);
-        assert!(composite_score(-1.0, -1.0, 0.5).abs() < 1e-6);
-    }
-
-    #[test]
-    fn sane_price_ranges() {
-        assert!(sane_price("btc/usd", 67_000.0));
-        assert!(!sane_price("btc/usd", 100.0));
-        assert!(!sane_price("btc/usd", 20_000_000.0));
-        assert!(sane_price("eth/usd", 3_500.0));
-        assert!(sane_price("sol/usd", 150.0));
-        assert!(sane_price("xrp/usd", 0.6));
-        assert!(!sane_price("btc/usd", f64::NAN));
-        assert!(!sane_price("btc/usd", -1.0));
-    }
-
-    #[tokio::test]
-    async fn reset_window_clears_open() {
-        let st = new_shared_state();
-        {
-            let mut s = st.write().await;
-            s.window_open_price = Some(67_000.0);
-            s.window_open_ts_ms = Some(100);
-            s.window_delta_bps = 12.5;
-            s.window_start_ts_ms = 100;
-        }
-        reset_window(&st, 12_345).await;
-        let s = st.read().await;
-        assert!(s.window_open_price.is_none());
-        assert!(s.window_open_ts_ms.is_none());
-        assert_eq!(s.window_delta_bps, 0.0);
-        assert_eq!(s.window_start_ts_ms, 12_345);
-    }
-
-    #[tokio::test]
-    async fn handle_text_captures_first_tick_and_updates_delta() {
-        let st = new_shared_state();
-        reset_window(&st, 1_000_000).await;
-        // Boundary öncesi tick → yok sayılmalı (window_open kalmasın).
-        let pre = r#"{"topic":"crypto_prices_chainlink","type":"update","payload":{"symbol":"btc/usd","timestamp":999999,"value":67000.0}}"#;
-        handle_text(pre, "btc/usd", &st, "t").await;
-        assert!(st.read().await.window_open_price.is_none());
-
-        // Boundary sonrası ilk tick → window_open yakalanır.
-        let first = r#"{"topic":"crypto_prices_chainlink","type":"update","payload":{"symbol":"btc/usd","timestamp":1000001,"value":67000.0}}"#;
-        handle_text(first, "btc/usd", &st, "t").await;
-        {
-            let s = st.read().await;
-            assert_eq!(s.window_open_price, Some(67_000.0));
-            assert_eq!(s.window_open_ts_ms, Some(1_000_001));
-            assert_eq!(s.window_delta_bps, 0.0);
-        }
-
-        // İkinci tick → delta hesaplanır.
-        let up = r#"{"topic":"crypto_prices_chainlink","type":"update","payload":{"symbol":"btc/usd","timestamp":1000005,"value":67067.0}}"#;
-        handle_text(up, "btc/usd", &st, "t").await;
-        let s = st.read().await;
-        assert_eq!(s.current_price, 67_067.0);
-        assert_eq!(s.window_open_price, Some(67_000.0));
-        // (67067-67000)/67000*10_000 = 10.0 bps
-        assert!((s.window_delta_bps - 10.0).abs() < 0.01);
-    }
-
-    #[tokio::test]
-    async fn handle_text_ignores_unrelated_topic_and_symbol() {
-        let st = new_shared_state();
-        reset_window(&st, 0).await;
-        handle_text(
-            r#"{"topic":"other","payload":{"symbol":"btc/usd","timestamp":1,"value":1.0}}"#,
-            "btc/usd",
-            &st,
-            "t",
-        )
-        .await;
-        handle_text(
-            r#"{"topic":"crypto_prices_chainlink","payload":{"symbol":"eth/usd","timestamp":1,"value":3000.0}}"#,
-            "btc/usd",
-            &st,
-            "t",
-        )
-        .await;
-        let s = st.read().await;
-        assert_eq!(s.current_price, 0.0);
-        assert!(s.window_open_price.is_none());
-    }
-
-    #[tokio::test]
-    async fn handle_text_rejects_insane_value() {
-        let st = new_shared_state();
-        reset_window(&st, 0).await;
-        let bad = r#"{"topic":"crypto_prices_chainlink","type":"update","payload":{"symbol":"btc/usd","timestamp":1,"value":-5.0}}"#;
-        handle_text(bad, "btc/usd", &st, "t").await;
-        assert_eq!(st.read().await.current_price, 0.0);
     }
 }

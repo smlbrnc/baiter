@@ -1,7 +1,5 @@
-//! Strateji modülü — `metrics` + ortak tipler + 3 aktif strateji (Alis, Elis, Aras).
-//!
-//! Her strateji kendi state enum'una ve karar motoruna sahip; engine
-//! `StrategyState` discriminated union'ı üzerinden dispatch eder.
+//! Strateji modülü: `metrics`, ortak tipler ve 3 aktif strateji (Alis, Elis,
+//! Aras). Engine dispatch'i `StrategyState` discriminated union üzerinden gider.
 
 pub mod alis;
 pub mod aras;
@@ -19,8 +17,7 @@ use alis::AlisState;
 use aras::ArasState;
 use elis::ElisState;
 
-/// `MarketSession` içinde tutulan FSM state'i — aktif stratejinin discriminated union'ı.
-/// `Strategy::from_default_state` her strateji tipi için Pending varyant üretir.
+/// `MarketSession` FSM state'i — aktif stratejinin discriminated union'ı.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum StrategyState {
     Alis(AlisState),
@@ -29,7 +26,6 @@ pub enum StrategyState {
 }
 
 impl StrategyState {
-    /// Bot başlangıcında `BotConfig.strategy`'ye göre default Pending state üret.
     pub fn pending_for(strategy: Strategy) -> Self {
         match strategy {
             Strategy::Alis => Self::Alis(AlisState::default()),

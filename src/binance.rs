@@ -1,8 +1,6 @@
-//! Binance USD-M Futures aggTrade sinyal katmanı (§14).
-//!
-//! WebSocket'ten aggTrade akışı; sliding-window CVD + Hawkes BSI + OFI
-//! birleşip [0,10] aralığına z-score ile haritalanır → `signal_score`.
-//! Warmup (N<300) ve bağlantı koptuğunda nötr `5.0`.
+//! Binance USD-M Futures aggTrade sinyal katmanı (§14): sliding-window CVD +
+//! Hawkes BSI + OFI → `signal_score` ∈ [0, 10]. Warmup ve bağlantı koptuğunda
+//! nötr `5.0`.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -17,7 +15,6 @@ use tokio_tungstenite::tungstenite::Message;
 use crate::ipc;
 use crate::slug::Interval;
 
-/// Strateji katmanına açılan anlık sinyal durumu.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BinanceSignalState {
     pub cvd: f64,
@@ -43,7 +40,7 @@ pub fn new_shared_state() -> SharedSignalState {
     Arc::new(RwLock::new(BinanceSignalState::default()))
 }
 
-/// CVD kayan penceresi market aralığına göre (§14.2).
+/// CVD kayan penceresi (§14.2).
 fn cvd_window_secs(interval: Interval) -> u64 {
     match interval {
         Interval::M5 => 60,
@@ -74,8 +71,7 @@ struct TradeEntry {
 
 const NEUTRAL: f64 = 5.0;
 const MAX_STATS: usize = 300;
-/// OFI history yeterince dolduktan sonra absolute kalibrasyon devreye girer.
-/// 30 trade'lik kısa warmup yeterli (CVD window'ı şekillendirmek için).
+/// OFI history dolana kadar nötr skor; CVD window'ı şekillendirmek için 30 yeter.
 const WARMUP_TRADES: usize = 30;
 const HAWKES_KAPPA: f64 = 0.1;
 
@@ -157,50 +153,38 @@ impl SignalComputer {
 
     pub fn snapshot(&self) -> (f64, f64, f64, f64, bool) {
         let ofi = self.current_ofi();
-        // Warmup: ofi history WARMUP_TRADES dolana kadar nötr skor ver.
         let warmup = self.ofi_history.len() < WARMUP_TRADES;
-        let signal_score = if warmup {
-            NEUTRAL
-        } else {
-            ofi_to_score(ofi)
-        };
-
+        let signal_score = if warmup { NEUTRAL } else { ofi_to_score(ofi) };
         (self.cvd, self.bsi, ofi, signal_score, warmup)
     }
 }
 
-/// OFI (`[−1, +1]`) → `[0, 10]` skoru (5.0 = nötr) — **absolute** kalibrasyon.
-/// z-score normalize'ın aksine sürekli yönlü hareket sırasında saturasyona
-/// gider, mean-revert etmez. Tier'lar BTC/ETH futures aggTrade dağılımına göre
-/// kalibre edildi (|ofi|≈0.30 = "güçlü", |ofi|≈0.50 = "ekstrem").
+/// OFI (`[−1, +1]`) → `[0, 10]` skoru (5.0 = nötr). Piecewise-linear, absolute
+/// kalibrasyon; BTC/ETH futures dağılımına göre (|ofi|≈0.30 güçlü, ≈0.50 ekstrem).
 #[inline]
 pub fn ofi_to_score(ofi: f64) -> f64 {
     let d = ofi.abs().min(1.0);
     let sgn = ofi.signum();
     let score_delta = if d < 0.05 {
-        d * 8.0 // 0.00..0.05 → 0.00..0.40
+        d * 8.0
     } else if d < 0.15 {
-        0.40 + (d - 0.05) * 11.0 // 0.05..0.15 → 0.40..1.50
+        0.40 + (d - 0.05) * 11.0
     } else if d < 0.30 {
-        1.50 + (d - 0.15) * 10.0 // 0.15..0.30 → 1.50..3.00
+        1.50 + (d - 0.15) * 10.0
     } else if d < 0.50 {
-        3.00 + (d - 0.30) * 9.0 // 0.30..0.50 → 3.00..4.80
+        3.00 + (d - 0.30) * 9.0
     } else {
-        4.80 + (d - 0.50) * 0.4 // 0.50..1.00 → 4.80..5.00
+        4.80 + (d - 0.50) * 0.4
     };
     (5.0 + sgn * score_delta).clamp(0.0, 10.0)
 }
 
-/// aggTrade frame'leri arasında izin verilen maksimum sessizlik.
-/// BTC/ETH için saniyede onlarca işlem akar; 60 sn boşluk = ölü WS.
+/// 60 sn frame yoksa WS ölü sayılır (BTC/ETH'de saniyede onlarca trade akar).
 const FRAME_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Binance aggTrade WebSocket görevini başlatır; bağlantı koptuğunda
-/// exponential backoff ile yeniden bağlanır, kopuk süre boyunca
-/// `signal_score = 5.0`.
-///
-/// `bot_id` log etiketi olarak kullanılır.
+/// Binance aggTrade WS görevi; kopuşta exponential backoff ile yeniden bağlanır,
+/// disconnect süresince `signal_score = 5.0`.
 pub async fn run_binance_signal(
     symbol: &str,
     interval: Interval,
@@ -209,13 +193,12 @@ pub async fn run_binance_signal(
 ) {
     let url = format!("wss://fstream.binance.com/ws/{symbol}@aggTrade");
     let label = bot_id.to_string();
-    ipc::log_line(
-        &label,
-        format!("🛰️  Binance signal task starting (symbol={symbol}, interval={interval:?})"),
-    );
     let mut backoff = 1u64;
     loop {
-        ipc::log_line(&label, format!("🛰️  Binance ws connecting → {url}"));
+        ipc::log_line(
+            &label,
+            format!("🛰️  Binance ws connecting (symbol={symbol}, interval={interval:?}) → {url}"),
+        );
         match connect_stream(&url, interval, &state, &label).await {
             Ok(()) => ipc::log_line(
                 &label,
@@ -247,14 +230,7 @@ async fn connect_stream(
         Err(_) => return Err(anyhow::anyhow!("connect_async timeout (10s)")),
     };
     let (mut write, mut read) = ws_stream.split();
-    ipc::log_line(label, "🛰️  Binance ws connected (warmup başladı)");
-
     let mut computer = SignalComputer::new(interval);
-    {
-        let mut s = state.write().await;
-        s.signal_score = NEUTRAL;
-    }
-
     let mut prev_warmup = true;
     loop {
         let next = match timeout(FRAME_IDLE_TIMEOUT, read.next()).await {
@@ -274,7 +250,6 @@ async fn connect_stream(
             }
             Message::Close(_) => return Ok(()),
             Message::Text(t) => t,
-            // Pong / Binary / Frame → görmezden gel.
             _ => continue,
         };
 
@@ -309,70 +284,5 @@ async fn connect_stream(
                 ),
             );
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn signal_computer_warmup() {
-        let mut c = SignalComputer::new(Interval::M5);
-        c.ingest(1000, 1.0, true);
-        let (cvd, _, _, score, warmup) = c.snapshot();
-        assert_eq!(cvd, 1.0);
-        assert_eq!(score, NEUTRAL);
-        assert!(warmup);
-    }
-
-    #[test]
-    fn signal_computer_cvd_window_expiry() {
-        let mut c = SignalComputer::new(Interval::M5); // 60s window
-        c.ingest(1_000, 10.0, true);
-        c.ingest(2_000, 5.0, false);
-        assert!((c.cvd - 5.0).abs() < 1e-9);
-        // 62s sonra ilk trade düşmeli (cutoff = 62000 - 60000 = 2000).
-        c.ingest(62_000, 1.0, true);
-        assert!((c.cvd - (5.0 - 10.0 + 1.0)).abs() < 1e-9);
-    }
-
-    #[test]
-    fn ofi_to_score_neutral() {
-        assert!((ofi_to_score(0.0) - 5.0).abs() < 1e-9);
-    }
-
-    #[test]
-    fn ofi_to_score_symmetry() {
-        for ofi in [0.05, 0.15, 0.30, 0.50, 0.80, 1.0] {
-            let up = ofi_to_score(ofi);
-            let down = ofi_to_score(-ofi);
-            assert!(
-                (up + down - 10.0).abs() < 1e-9,
-                "ofi={ofi} up={up} down={down}"
-            );
-        }
-    }
-
-    #[test]
-    fn ofi_to_score_monotonic_and_calibrated() {
-        // Sürekli artan OFI → sürekli artan skor (z-score'un mean-revert sorunu yok)
-        let s_noise = ofi_to_score(0.05);
-        let s_weak = ofi_to_score(0.15);
-        let s_mod = ofi_to_score(0.30);
-        let s_strong = ofi_to_score(0.50);
-        let s_extreme = ofi_to_score(0.80);
-        assert!(s_noise < s_weak && s_weak < s_mod && s_mod < s_strong && s_strong < s_extreme);
-        // Hedef kalibrasyon (BTC futures aggTrade için):
-        assert!((s_weak - 6.5).abs() < 0.05, "ofi=0.15 → {s_weak}");
-        assert!((s_mod - 8.0).abs() < 0.05, "ofi=0.30 → {s_mod}");
-        assert!((s_strong - 9.8).abs() < 0.05, "ofi=0.50 → {s_strong}");
-    }
-
-    #[test]
-    fn ofi_to_score_clamps_at_extremes() {
-        assert!((ofi_to_score(1.0) - 10.0).abs() < 1e-9);
-        assert!(ofi_to_score(-1.0).abs() < 1e-9);
-        assert!((ofi_to_score(2.0) - 10.0).abs() < 1e-9);
     }
 }

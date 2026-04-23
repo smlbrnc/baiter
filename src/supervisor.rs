@@ -1,12 +1,9 @@
-//! Supervisor — bot süreç spawn + lifecycle + stdout event köprüsü (§1, §5.1, §18).
+//! Supervisor — bot süreç spawn + lifecycle + stdout köprüsü (§1, §5.1, §18).
 //!
-//! - Her bot ayrı `Child` olarak başlar (PID izolasyonu).
-//! - `ChildStdout` satır satır okunur, `[[EVENT]]` prefix'li satırlar
-//!   `parse_event_line` ile parse edilip SSE kanalına yayılır; diğerleri
-//!   `logs` tablosuna yazılır.
-//! - Crash loop: exit_code ≠ 0 → exponential backoff (1s, 2s, …, max 60s).
-//! - Stop: `BotHandle::shutdown` oneshot tetiklenince `kill_on_drop` aracılığıyla
-//!   child SIGKILL ile sonlandırılır.
+//! Her bot ayrı `Child` (PID izolasyonu); stdout satırları `[[EVENT]]`
+//! prefix'ine göre SSE kanalı veya logs tablosuna yönlendirilir. Crash'te
+//! exponential backoff (1s..60s); stop'ta `BotHandle::shutdown` oneshot
+//! ile `kill_on_drop` SIGKILL.
 
 use std::collections::HashMap;
 use std::process::Stdio;
@@ -179,9 +176,8 @@ async fn handle_stdout_line(state: &AppState, bot_id: i64, line: &str) {
     let _ = db::insert_log(&state.pool, Some(bot_id), level, line).await;
 }
 
-/// Tracing'in compact formatı satır başına `INFO`/`WARN`/`ERROR` token koyar
-/// (örn. `WARN ws error...`); spec §5.2 düz metin satırlarında token yoktur
-/// ve `info` sayılır. `DEBUG`/`TRACE` de `info` seviyesine düşer.
+/// Tracing compact formatı satır başına `INFO`/`WARN`/`ERROR` token koyar
+/// (örn. `WARN ws error...`); diğer her şey `info`.
 fn detect_log_level(line: &str) -> &'static str {
     match line.split_whitespace().next().unwrap_or("") {
         "ERROR" => "error",
@@ -190,7 +186,7 @@ fn detect_log_level(line: &str) -> &'static str {
     }
 }
 
-/// Uygulama açılışında previously RUNNING botları otomatik yeniden başlatır.
+/// Açılışta previously RUNNING botları otomatik yeniden başlatır.
 pub async fn restart_previously_running(state: Arc<AppState>) {
     let bots = match db::list_bots(&state.pool).await {
         Ok(b) => b,

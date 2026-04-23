@@ -1,11 +1,6 @@
-//! Polymarket istemci facade'ı.
-//!
-//! Alt modüller: [`auth`] (L1/L2 imza, EIP-712), [`clob`] (REST CLOB),
-//! [`gamma`] (markets metadata), [`order`] (EIP-712 build/sign),
-//! [`ws`] (Market + User WebSocket akışları).
-//!
-//! Sık kullanılan tipler buradan re-export edilir; çağırıcılar
-//! `polymarket::ClobClient` gibi sığ yollar kullanır.
+//! Polymarket istemci facade'ı; alt modüller: [`auth`] (L1/L2 EIP-712),
+//! [`clob`] (REST), [`gamma`] (markets), [`order`] (build/sign), [`ws`]
+//! (Market + User WebSocket). Sık kullanılan tipler re-export edilir.
 
 pub mod auth;
 pub mod clob;

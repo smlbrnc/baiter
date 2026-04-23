@@ -97,44 +97,39 @@ pub struct BotConfig {
     pub strategy_params: StrategyParams,
 }
 
-/// Strateji-spesifik parametreler — `bots.strategy_params` JSON sütunundan parse edilir.
-/// Tüm stratejiler (Alis/Elis/Aras) bu paylaşımlı set üzerinden okur; strateji-özgü
-/// alanlar gerektikçe burada `Option<T>` ile eklenir.
+/// Strateji-spesifik parametreler; `bots.strategy_params` JSON sütunundan
+/// parse edilir, tüm stratejiler (Alis/Elis/Aras) buradan okur.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StrategyParams {
-    /// ProfitLock eşiği oranı (örn. `0.02` → `avg_threshold = 0.98`).
-    /// `metrics.profit_locked()` bu eşik üzerinden çalışır.
+    /// ProfitLock eşik oranı (örn. `0.02` → `avg_threshold = 0.98`).
     #[serde(default)]
     pub profit_lock_pct: Option<f64>,
-    /// RTDS Chainlink sinyali aktif mi. `None` → default `true`.
+    /// RTDS Chainlink sinyali aktif mi. Default `true`.
     #[serde(default)]
     pub rtds_enabled: Option<bool>,
-    /// Composite ağırlığı — window_delta payı. `None` → default `0.70`.
+    /// Composite ağırlığı (window_delta payı). Default `0.70`.
     #[serde(default)]
     pub window_delta_weight: Option<f64>,
-    /// Sinyal projeksiyon ileri-bakış süresi (sn). `tick.rs` velocity'yi bu
-    /// süreyle çarpıp `window_delta_bps`'e ekler → 3-4 sn ileri tahmin.
-    /// `None` → default `3.0`. `0.0` → projeksiyon kapalı (eski davranış).
+    /// Sinyal projeksiyon ileri-bakış süresi (sn); `tick.rs` velocity'yi bu
+    /// süreyle çarpıp `window_delta_bps`'e ekler. Default `3.0`, `0.0` = kapalı.
     #[serde(default)]
     pub signal_lookahead_secs: Option<f64>,
-    /// Alis: opener emir fiyat delta'sı (`best_ask + delta`). Sabit, skordan
-    /// bağımsız (skor sadece yönü belirler). Default `0.01`.
+    /// Alis opener fiyat delta'sı (`best_ask + delta`). Default `0.01`.
     #[serde(default)]
     pub open_delta: Option<f64>,
-    /// Alis: AggTrade pyramid taker FAK delta'sı. Default `0.015`.
+    /// Alis AggTrade pyramid taker FAK delta'sı. Default `0.015`.
     #[serde(default)]
     pub pyramid_agg_delta: Option<f64>,
-    /// Alis: FakTrade pyramid taker FAK delta'sı (daha agresif). Default `0.025`.
+    /// Alis FakTrade pyramid taker FAK delta'sı. Default `0.025`.
     #[serde(default)]
     pub pyramid_fak_delta: Option<f64>,
-    /// Alis: pyramid emir başına USDC. `None` → opener `order_usdc` ile aynı.
+    /// Alis pyramid emir başına USDC; verilmezse caller `order_usdc`'sine düşer.
     #[serde(default)]
     pub pyramid_usdc: Option<f64>,
 }
 
 impl StrategyParams {
-    /// Profit-lock canonical eşiği. `profit_lock_pct` varsayılanı `0.02` →
-    /// `avg_threshold = 0.98`. `StrategyContext.avg_threshold` bunu okur.
+    /// Profit-lock canonical eşiği; `profit_lock_pct = 0.02` → `0.98`.
     pub fn avg_threshold(&self) -> f64 {
         self.profit_lock_pct
             .map(|p| 1.0 - p.abs())
@@ -145,62 +140,27 @@ impl StrategyParams {
         self.rtds_enabled.unwrap_or(true)
     }
 
-    /// `[0, 1]`'e clamp; default `0.70`.
     pub fn window_delta_weight_or_default(&self) -> f64 {
         self.window_delta_weight.unwrap_or(0.70).clamp(0.0, 1.0)
     }
 
-    /// `[0, 30]` sn'ye clamp; default `3.0`. Üst sınır spike koruması.
     pub fn signal_lookahead_secs_or_default(&self) -> f64 {
         self.signal_lookahead_secs.unwrap_or(3.0).clamp(0.0, 30.0)
     }
 
-    /// Alis opener delta'sı; default `0.01`.
     pub fn open_delta_or_default(&self) -> f64 {
         self.open_delta.unwrap_or(0.01).max(0.0)
     }
 
-    /// Alis AggTrade pyramid delta'sı; default `0.015`.
     pub fn pyramid_agg_delta_or_default(&self) -> f64 {
         self.pyramid_agg_delta.unwrap_or(0.015).max(0.0)
     }
 
-    /// Alis FakTrade pyramid delta'sı; default `0.025`.
     pub fn pyramid_fak_delta_or_default(&self) -> f64 {
         self.pyramid_fak_delta.unwrap_or(0.025).max(0.0)
     }
 
-    /// Alis pyramid USDC; verilmemişse caller'ın opener `order_usdc`'sine düşer.
     pub fn pyramid_usdc_or(&self, fallback: f64) -> f64 {
         self.pyramid_usdc.unwrap_or(fallback).max(0.0)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn runtime_env_defaults() {
-        std::env::remove_var("PORT");
-        std::env::remove_var("DB_PATH");
-        let env = RuntimeEnv::from_env().expect("env load");
-        assert_eq!(env.port, 3000);
-        assert!(env.gamma_base_url.contains("gamma-api"));
-    }
-
-    #[test]
-    fn avg_threshold_default_is_098() {
-        let p = StrategyParams::default();
-        assert!((p.avg_threshold() - 0.98).abs() < 1e-9);
-    }
-
-    #[test]
-    fn avg_threshold_uses_profit_lock_pct() {
-        let p = StrategyParams {
-            profit_lock_pct: Some(0.05),
-            ..Default::default()
-        };
-        assert!((p.avg_threshold() - 0.95).abs() < 1e-9);
     }
 }

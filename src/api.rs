@@ -25,26 +25,21 @@ use crate::polymarket::GammaClient;
 use crate::supervisor::{self, AppState};
 use crate::types::{RunMode, Strategy};
 
-/// Frontend, kullanıcıdan yalnızca `(private_key, signature_type, funder?)`
-/// alır; backend Polymarket'ten L1 EIP-712 ile `apiKey/secret/passphrase`
-/// türetip tam `Credentials`'i kurar. Bu sayede UI'da hassas alanların
-/// (PK + L2 secret) ayrı ayrı gezdirilmesine gerek kalmaz.
+/// Frontend yalnız `(private_key, signature_type, funder?)` gönderir; backend
+/// L1 EIP-712 ile `apiKey/secret/passphrase`'i türetir.
 #[derive(Debug, Clone, Deserialize)]
 struct CredentialsInput {
-    /// Polygon EOA private key (`0x...` veya çıplak hex). Asla cevap döndürülmez.
     private_key: String,
     /// 0 = EOA, 1 = POLY_PROXY, 2 = POLY_GNOSIS_SAFE.
     signature_type: i32,
     /// `signature_type ∈ {1,2}` ise zorunlu (proxy/safe adresi).
     #[serde(default)]
     funder: Option<String>,
-    /// EIP-712 nonce — Polymarket tek nonce kullanır. Frontend her zaman gönderir.
     #[serde(default)]
     nonce: u64,
 }
 
 impl CredentialsInput {
-    /// PK + funder validasyonu, L1 derive çağrısı, tam `Credentials` kurulumu.
     async fn into_credentials(
         self,
         http: &reqwest::Client,
@@ -146,17 +141,14 @@ struct CreateBotReq {
 fn default_min_price() -> f64 {
     0.05
 }
-
 fn default_max_price() -> f64 {
     0.95
 }
-
 fn default_cooldown_threshold() -> u64 {
     30_000
 }
 
-/// Bot ayarlarının ortak doğrulaması — tüm ihlaller tek bir
-/// `AppError::Config` mesajında birleştirilip 400 olarak döner.
+/// Tüm ihlalleri tek `AppError::Config` mesajında birleştirip 400 döner.
 fn validate_bot_settings(
     min_price: f64,
     max_price: f64,
@@ -245,7 +237,7 @@ async fn update_bot(
     let row = db::get_bot(&state.pool, id)
         .await?
         .ok_or(AppError::BotNotFound { bot_id: id })?;
-    // Koşan bot'ta state ↔ config drift'i önlemek için yalnızca STOPPED kabul.
+    // State ↔ config drift'i önlemek için yalnız STOPPED kabul.
     if row.state != "STOPPED" {
         return Err(AppError::Conflict(format!(
             "bot {id} state={s}; ayarları güncellemek için önce durdur",
@@ -352,22 +344,22 @@ async fn bot_session(
     State(state): State<Arc<AppState>>,
     Path(id): Path<i64>,
 ) -> Result<Json<Value>, AppError> {
-    let summary = db::sessions::latest_session_for_bot(&state.pool, id).await?;
-    match summary {
-        Some(s) => {
-            let gamma = GammaClient::new(reqwest::Client::new(), state.env.gamma_base_url.clone());
-            let m = gamma.get_market_by_slug(&s.slug).await?;
-            Ok(Json(serde_json::json!({
-                "slug":     s.slug,
-                "start_ts": s.start_ts,
-                "end_ts":   s.end_ts,
-                "state":    s.state,
-                "title":    m.question,
-                "image":    m.image,
-            })))
-        }
-        None => Ok(Json(Value::Null)),
-    }
+    let Some(s) = db::sessions::latest_session_for_bot(&state.pool, id).await? else {
+        return Ok(Json(Value::Null));
+    };
+    let m = gamma_client(&state).get_market_by_slug(&s.slug).await?;
+    Ok(Json(serde_json::json!({
+        "slug":     s.slug,
+        "start_ts": s.start_ts,
+        "end_ts":   s.end_ts,
+        "state":    s.state,
+        "title":    m.question,
+        "image":    m.image,
+    })))
+}
+
+fn gamma_client(state: &AppState) -> GammaClient {
+    GammaClient::new(reqwest::Client::new(), state.env.gamma_base_url.clone())
 }
 
 #[derive(Debug, Deserialize)]
@@ -387,7 +379,6 @@ async fn bot_sessions(
     Path(id): Path<i64>,
     Query(q): Query<SessionListQuery>,
 ) -> Result<Json<Value>, AppError> {
-    // Aşırı büyük istekler ve negatif değerler için sınırla.
     let limit = q.limit.clamp(1, 200);
     let offset = q.offset.max(0);
     let (rows, total) = tokio::try_join!(
@@ -430,8 +421,7 @@ async fn session_detail(
     let Some(d) = detail else {
         return Ok(Json(Value::Null));
     };
-    let gamma = GammaClient::new(reqwest::Client::new(), state.env.gamma_base_url.clone());
-    let market = gamma.get_market_by_slug(&d.slug).await.ok();
+    let market = gamma_client(&state).get_market_by_slug(&d.slug).await.ok();
     let now = crate::time::now_secs() as i64;
     let is_live = d.end_ts > now && d.state != "RESOLVED" && d.state != "CLOSED";
     Ok(Json(serde_json::json!({
@@ -460,7 +450,7 @@ struct HistoryQuery {
 }
 
 fn default_history_limit() -> i64 {
-    2000
+    2_000
 }
 
 async fn session_ticks(
@@ -504,26 +494,14 @@ async fn session_trades(
     Ok(Json(trades))
 }
 
-// Settings — global (singleton) Polymarket kimlik bilgileri.
-//
-// Kullanıcı UI'da yalnızca `(private_key, signature_type, funder?)` girer;
-// PUT backend'de Polymarket'ten L1 EIP-712 ile `apiKey/secret/passphrase`
-// türetir ve tam credential'ı global_credentials tablosuna yazar.
-// GET ise hassas alanları döndürmez — sadece "kaydedildi mi" durumunu ve
-// türetilmiş `poly_address` ile `(signature_type, funder)` meta'sını verir.
-
 /// `GET /api/settings/credentials` cevabı. Hassas alanlar (PK, secret, apiKey,
-/// passphrase) kasıtlı olarak yok — sadece "kayıt var mı?" + display meta.
-///
-/// Kayıt yoksa `has_credentials=false`, diğer alanlar boş/sıfır default.
+/// passphrase) kasıtlı olarak yok — yalnız "kayıt var mı?" + display meta.
 #[derive(Debug, Serialize)]
 struct SettingsCredentialsResp {
-    /// L1 imzayı atan EOA adresi. Kayıt yoksa boş string.
     poly_address: String,
     signature_type: i32,
     funder: Option<String>,
     has_credentials: bool,
-    /// Son güncelleme epoch ms. Kayıt yoksa 0.
     updated_at_ms: i64,
 }
 
@@ -565,7 +543,6 @@ async fn put_settings_credentials(
             polygon_private_key: creds.polygon_private_key,
             signature_type: creds.signature_type,
             funder: creds.funder,
-            // upsert overwrite eder (now_ms() yazar); sadece tip için 0 default.
             updated_at_ms: 0,
         },
     )
@@ -594,10 +571,6 @@ async fn events_sse(
 }
 
 fn bot_row_to_json(r: db::BotRow) -> Result<Value, AppError> {
-    // `to_config()` zaten `strategy_params` JSON'unu tipli `StrategyParams`'a parse
-    // ediyor; burada raw string'i ikinci kez `from_str` ile parse etmek bekleyen
-    // alanları tipsiz `Value` olarak fallback'e düşürüyordu. Tek parse yolu:
-    // string → StrategyParams → Value (`serde_json::to_value`).
     let cfg = r.to_config()?;
     let strategy_params = serde_json::to_value(&cfg.strategy_params).map_err(|e| {
         AppError::Config(format!(

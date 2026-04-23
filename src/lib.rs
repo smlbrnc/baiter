@@ -21,6 +21,5 @@ pub mod supervisor;
 pub mod time;
 pub mod types;
 
-// Sık kullanılan tipler — entegrasyon testleri ve harici binary'ler için kısayol.
 pub use error::AppError;
 pub use types::{Outcome, RunMode, Side, Strategy};

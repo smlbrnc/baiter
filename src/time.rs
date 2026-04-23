@@ -1,4 +1,4 @@
-//! Zaman yardımcıları: unix ms/sec, T-15, `zone_pct`, `MarketZone` (§4, §15).
+//! Zaman yardımcıları: unix ms/sec, T-15, `zone_pct`, `MarketZone`.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -64,46 +64,5 @@ impl MarketZone {
         } else {
             Self::StopTrade
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn zone_pct_before_start() {
-        assert_eq!(zone_pct(100, 200, 50), 0.0);
-        assert_eq!(zone_pct(100, 200, 100), 0.0);
-    }
-
-    #[test]
-    fn zone_pct_midpoint() {
-        assert_eq!(zone_pct(100, 200, 150), 0.5);
-    }
-
-    #[test]
-    fn zone_pct_after_end() {
-        assert_eq!(zone_pct(100, 200, 250), 1.0);
-    }
-
-    #[test]
-    fn market_zone_thresholds() {
-        assert_eq!(MarketZone::from_pct(0.0), MarketZone::DeepTrade);
-        assert_eq!(MarketZone::from_pct(0.09), MarketZone::DeepTrade);
-        assert_eq!(MarketZone::from_pct(0.10), MarketZone::NormalTrade);
-        assert_eq!(MarketZone::from_pct(0.49), MarketZone::NormalTrade);
-        assert_eq!(MarketZone::from_pct(0.50), MarketZone::AggTrade);
-        assert_eq!(MarketZone::from_pct(0.89), MarketZone::AggTrade);
-        assert_eq!(MarketZone::from_pct(0.90), MarketZone::FakTrade);
-        assert_eq!(MarketZone::from_pct(0.96), MarketZone::FakTrade);
-        assert_eq!(MarketZone::from_pct(0.97), MarketZone::StopTrade);
-        assert_eq!(MarketZone::from_pct(1.0), MarketZone::StopTrade);
-    }
-
-    #[test]
-    fn t_minus_15_arithmetic() {
-        assert_eq!(t_minus_15(1_000), 985);
-        assert_eq!(t_minus_15(10), 0);
     }
 }

@@ -1,6 +1,5 @@
-//! Polymarket slug parser — `{asset}-updown-{interval}-{unix_ts_sec}` (§1).
-//!
-//! Eşleşmeyen slug → `AppError::InvalidSlug` (bot başlatma reddi).
+//! Polymarket slug parser: `{asset}-updown-{interval}-{unix_ts_sec}` (§1);
+//! eşleşmezse `AppError::InvalidSlug`.
 
 use crate::error::AppError;
 
@@ -24,7 +23,7 @@ impl Asset {
         }
     }
 
-    /// Binance USD-M Futures sembol eşlemesi (`binance_signal` task'ı için).
+    /// Binance USD-M Futures sembol eşlemesi.
     pub fn binance_symbol(self) -> &'static str {
         match self {
             Self::Btc => "btcusdt",
@@ -34,7 +33,7 @@ impl Asset {
         }
     }
 
-    /// Polymarket RTDS `crypto_prices_chainlink` filter formatı (§3.3).
+    /// Polymarket RTDS `crypto_prices_chainlink` filter formatı.
     pub fn rtds_symbol(self) -> &'static str {
         match self {
             Self::Btc => "btc/usd",
@@ -95,7 +94,7 @@ impl Interval {
     }
 }
 
-/// Parse edilmiş slug bilgisi (`ts` = pencere başlangıcı, unix saniye).
+/// Parse edilmiş slug (`ts` = pencere başlangıcı, unix saniye).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SlugInfo {
     pub asset: Asset,
@@ -104,12 +103,10 @@ pub struct SlugInfo {
 }
 
 impl SlugInfo {
-    /// Pencere bitişi, unix saniye.
     pub fn end_ts(&self) -> u64 {
         self.ts + self.interval.seconds()
     }
 
-    /// Slug string'e geri serialize eder.
     pub fn to_slug(&self) -> String {
         format!(
             "{}-updown-{}-{}",
@@ -127,7 +124,7 @@ fn invalid(slug: &str, reason: impl Into<String>) -> AppError {
     }
 }
 
-/// `{asset}-updown-{interval}-{ts}` formatını parse eder.
+/// `{asset}-updown-{interval}-{ts}` parse eder.
 pub fn parse_slug(slug: &str) -> Result<SlugInfo, AppError> {
     let parts: Vec<&str> = slug.split('-').collect();
     if parts.len() != 4 {
@@ -169,8 +166,8 @@ pub fn parse_slug(slug: &str) -> Result<SlugInfo, AppError> {
     Ok(SlugInfo { asset, interval, ts })
 }
 
-/// Tam slug ise direkt parse; aksi halde `{asset}-updown-{interval}` öneki kabul edilir
-/// ve `ts = snap_active + start_offset * interval.seconds()` ile tamamlanır.
+/// Tam slug parse edilebilirse onu döner; aksi halde `{asset}-updown-{interval}`
+/// önekini `ts = snap_active + start_offset * interval.seconds()` ile tamamlar.
 pub fn parse_slug_or_prefix(pattern: &str, start_offset: u32) -> Result<SlugInfo, AppError> {
     if let Ok(info) = parse_slug(pattern) {
         return Ok(info);
