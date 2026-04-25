@@ -72,7 +72,7 @@ pub async fn load(bot_id: i64) -> Result<(Ctx, SlugInfo, Signal, Signal), AppErr
 
     let http = shared_http_client();
     let gamma = GammaClient::new(http.clone(), env_.gamma_base_url.clone());
-    let (executor, clob) = build_executor(&http, &env_, &cfg, creds.as_ref());
+    let (executor, clob) = build_executor(&http, &env_, &cfg, creds.as_ref())?;
 
     let signal_state = new_shared_state();
     let rtds_state = rtds::new_shared_state();
@@ -151,31 +151,28 @@ fn validate_signature_type(bot_id: i64, c: &Credentials) -> Result<(), AppError>
     Ok(())
 }
 
-/// Live'da `LiveExecutor` + paylaşılan `ClobClient`; DryRun'da `Simulator` + `None`.
+/// Live → `LiveExecutor` + paylaşılan `ClobClient`; DryRun → `Simulator` + `None`.
 fn build_executor(
     http: &reqwest::Client,
     env_: &RuntimeEnv,
     cfg: &BotConfig,
     creds: Option<&Credentials>,
-) -> (Executor, Option<Arc<ClobClient>>) {
+) -> Result<(Executor, Option<Arc<ClobClient>>), AppError> {
     let Some(c) = creds else {
-        return (Executor::DryRun(Simulator), None);
+        return Ok((Executor::DryRun(Simulator), None));
     };
     let clob = Arc::new(ClobClient::new(
         http.clone(),
         env_.clob_base_url.clone(),
         Some(c.clone()),
     ));
-    let exec = Executor::Live(Box::new(LiveExecutor {
-        client: clob.clone(),
-        creds: c.clone(),
-        chain_id: env_.polygon_chain_id,
-        // GTD timeout = cooldown_threshold (ms→s); V2 protocol +60s buffer
-        // `expiration_for` içinde uygulanır.
-        gtd_timeout_secs: cfg.cooldown_threshold / 1000,
-        builder_code: c.builder_code.clone(),
-    }));
-    (exec, Some(clob))
+    let live = LiveExecutor::new(
+        clob.clone(),
+        c,
+        env_.polygon_chain_id,
+        cfg.cooldown_threshold / 1000,
+    )?;
+    Ok((Executor::Live(Box::new(live)), Some(clob)))
 }
 
 struct BackgroundTasksArgs<'a> {

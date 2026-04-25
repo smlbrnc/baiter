@@ -1,5 +1,4 @@
-//! Strateji tick + place/cancel logu.
-//! Kural 1: `decide → execute` arasına sync I/O girmez; log/IPC push'lar `execute` sonrası spawn'lı.
+//! Strateji tick + execute + log/IPC dispatch (decide→execute arasında sync I/O yok).
 
 use crate::engine::{execute, ExecuteOutput, MarketSession};
 use crate::ipc::{self, FrontendEvent};
@@ -19,8 +18,10 @@ fn delta_from_composite(composite: f64) -> f64 {
     (composite - NEUTRAL_COMPOSITE) / NEUTRAL_COMPOSITE
 }
 
-/// Strateji çağrısı + decision execute.
+/// Composite signal → decide → execute; başarılı execute sonrası `hot_path_latency` log.
 pub async fn tick(ctx: &Ctx, sess: &mut MarketSession) {
+    let recv_at = std::time::Instant::now();
+    let server_ts = sess.last_book_server_ts_ms;
     let (composite, signal_ready) = decision_composite(ctx, sess).await;
     let decision = sess.tick(&ctx.cfg, now_ms(), composite, signal_ready);
     let bot_id = ctx.bot_id;
@@ -40,7 +41,22 @@ pub async fn tick(ctx: &Ctx, sess: &mut MarketSession) {
         }
     };
 
-    // DryRun taker (immediate match) → trades; passive fill'ler `event.rs`'te.
+    if !out.placed.is_empty() || !out.canceled.is_empty() {
+        let server_to_post_ms = if server_ts > 0 {
+            now_ms().saturating_sub(server_ts)
+        } else {
+            0
+        };
+        tracing::info!(
+            bot_id,
+            server_to_post_ms,
+            decide_to_post_us = recv_at.elapsed().as_micros() as u64,
+            placed = out.placed.len(),
+            canceled = out.canceled.iter().map(|c| c.canceled.len()).sum::<usize>(),
+            "hot_path_latency"
+        );
+    }
+
     if ctx.cfg.run_mode == RunMode::Dryrun {
         for ex in &out.placed {
             if ex.filled {

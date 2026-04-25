@@ -17,6 +17,7 @@ use crate::config::RuntimeEnv;
 use crate::db;
 use crate::error::AppError;
 use crate::ipc::{parse_event_line, FrontendEvent, EVENT_PREFIX};
+use crate::polymarket::GammaClient;
 
 /// Supervisor'un paylaşılan state'i (axum router + bot süreçleri).
 pub struct AppState {
@@ -24,6 +25,8 @@ pub struct AppState {
     pub env: RuntimeEnv,
     pub events: broadcast::Sender<FrontendEvent>,
     pub children: Mutex<HashMap<i64, BotHandle>>,
+    pub http: reqwest::Client,
+    pub gamma: GammaClient,
 }
 
 pub struct BotHandle {
@@ -33,11 +36,15 @@ pub struct BotHandle {
 impl AppState {
     pub fn new(pool: SqlitePool, env: RuntimeEnv) -> Arc<Self> {
         let (tx, _rx) = broadcast::channel(1024);
+        let http = reqwest::Client::new();
+        let gamma = GammaClient::new(http.clone(), env.gamma_base_url.clone());
         Arc::new(Self {
             pool,
             env,
             events: tx,
             children: Mutex::new(HashMap::new()),
+            http,
+            gamma,
         })
     }
 }

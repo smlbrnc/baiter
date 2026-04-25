@@ -64,14 +64,6 @@ impl OrderLifecycle {
             _ => None,
         }
     }
-
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Placement => "PLACEMENT",
-            Self::Update => "UPDATE",
-            Self::Cancellation => "CANCELLATION",
-        }
-    }
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -97,9 +89,9 @@ pub struct TradePayload {
     pub taker_order_id: Option<String>,
     pub trader_side: Option<String>,
     pub maker_orders: Vec<MakerOrder>,
-    /// Top-level `owner`: taker'ın API key UUID'si (AsyncAPI REQUIRED).
+    /// Taker'ın API key UUID'si.
     pub owner: Option<String>,
-    /// Taker tarafının outcome'u; maker fill'leri için `maker_orders[].outcome`.
+    /// Taker outcome; maker fill'leri için `maker_orders[].outcome`.
     pub outcome: Option<String>,
     pub timestamp_ms: u64,
 }
@@ -127,14 +119,18 @@ pub enum PolymarketEvent {
         asset_id: String,
         best_bid: f64,
         best_ask: f64,
+        /// WS server ts (ms).
+        timestamp_ms: u64,
     },
     PriceChange {
         changes: Vec<PriceChangeLevel>,
+        timestamp_ms: u64,
     },
     BestBidAsk {
         asset_id: String,
         best_bid: f64,
         best_ask: f64,
+        timestamp_ms: u64,
     },
     Trade(TradePayload),
     Order(OrderPayload),
@@ -148,8 +144,7 @@ pub struct PriceChangeLevel {
     pub best_ask: Option<f64>,
 }
 
-/// Book/PriceChange/BestBidAsk → `book_tx` (idempotent, silent drop on full).
-/// Trade/Order/MarketResolved → `event_tx` (stateful, warn on full).
+/// Book/PriceChange/BestBidAsk → `book_tx` (silent drop); Trade/Order/Resolved → `event_tx` (warn).
 #[derive(Clone)]
 pub struct WsChannels {
     pub book_tx: mpsc::Sender<PolymarketEvent>,
@@ -372,6 +367,7 @@ fn map_book(v: &Value) -> Option<PolymarketEvent> {
         asset_id,
         best_bid,
         best_ask,
+        timestamp_ms: as_u64(v, "timestamp").unwrap_or(0),
     })
 }
 
@@ -387,7 +383,10 @@ fn map_price_change(v: &Value) -> Option<PolymarketEvent> {
             })
         })
         .collect();
-    Some(PolymarketEvent::PriceChange { changes })
+    Some(PolymarketEvent::PriceChange {
+        changes,
+        timestamp_ms: as_u64(v, "timestamp").unwrap_or(0),
+    })
 }
 
 fn map_best_bid_ask(v: &Value) -> Option<PolymarketEvent> {
@@ -395,6 +394,7 @@ fn map_best_bid_ask(v: &Value) -> Option<PolymarketEvent> {
         asset_id: as_str(v, "asset_id")?,
         best_bid: as_f64(v, "best_bid")?,
         best_ask: as_f64(v, "best_ask")?,
+        timestamp_ms: as_u64(v, "timestamp").unwrap_or(0),
     })
 }
 

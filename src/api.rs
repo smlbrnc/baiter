@@ -21,13 +21,12 @@ use crate::config::{BotConfig, Credentials, StrategyParams, BUILDER_CODE_ZERO};
 use crate::db::{self, BotUpdate, GlobalCredentials};
 use crate::error::AppError;
 use crate::polymarket::auth as polymarket_auth;
-use crate::polymarket::GammaClient;
 use crate::supervisor::{self, AppState};
 use crate::types::{RunMode, Strategy};
 
 /// Frontend yalnız `(private_key, signature_type, funder?)` gönderir; backend
 /// L1 EIP-712 ile `apiKey/secret/passphrase`'i türetir.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Deserialize)]
 struct CredentialsInput {
     private_key: String,
     signature_type: i32,
@@ -39,12 +38,22 @@ struct CredentialsInput {
     builder_code: Option<String>,
 }
 
+fn trim_opt(s: Option<String>) -> Option<String> {
+    s.and_then(|v| {
+        let t = v.trim();
+        (!t.is_empty()).then(|| t.to_string())
+    })
+}
+
+async fn resolve_credentials(
+    state: &AppState,
+    input: CredentialsInput,
+) -> Result<Credentials, AppError> {
+    input.into_credentials(state).await
+}
+
 impl CredentialsInput {
-    async fn into_credentials(
-        self,
-        http: &reqwest::Client,
-        clob_base_url: &str,
-    ) -> Result<Credentials, AppError> {
+    async fn into_credentials(self, state: &AppState) -> Result<Credentials, AppError> {
         let pk = self.private_key.trim();
         if pk.is_empty() {
             return Err(AppError::Config("private_key gerekli".into()));
@@ -55,20 +64,22 @@ impl CredentialsInput {
                 self.signature_type
             )));
         }
-        let funder = self.funder.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+        let funder = trim_opt(self.funder);
         if matches!(self.signature_type, 1 | 2) && funder.is_none() {
             return Err(AppError::Config(format!(
                 "signature_type={} için funder zorunlu",
                 self.signature_type
             )));
         }
-        let builder_code = self
-            .builder_code
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .unwrap_or_else(|| BUILDER_CODE_ZERO.to_string());
-        let derived =
-            polymarket_auth::derive_api_key(http, clob_base_url, pk, self.nonce).await?;
+        let builder_code =
+            trim_opt(self.builder_code).unwrap_or_else(|| BUILDER_CODE_ZERO.to_string());
+        let derived = polymarket_auth::derive_api_key(
+            &state.http,
+            &state.env.clob_base_url,
+            pk,
+            self.nonce,
+        )
+        .await?;
         Ok(Credentials {
             poly_address: derived.signer_address,
             poly_api_key: derived.api_key,
@@ -205,8 +216,7 @@ async fn create_bot(
     };
     let id = db::insert_bot(&state.pool, &cfg).await?;
     if let Some(input) = req.credentials {
-        let http = reqwest::Client::new();
-        let creds = input.into_credentials(&http, &state.env.clob_base_url).await?;
+        let creds = resolve_credentials(&state, input).await?;
         db::upsert_credentials(&state.pool, id, &creds).await?;
     }
     if req.auto_start {
@@ -263,8 +273,7 @@ async fn update_bot(
     };
     db::update_bot(&state.pool, id, &upd).await?;
     if let Some(input) = req.credentials {
-        let http = reqwest::Client::new();
-        let creds = input.into_credentials(&http, &state.env.clob_base_url).await?;
+        let creds = resolve_credentials(&state, input).await?;
         db::upsert_credentials(&state.pool, id, &creds).await?;
     }
     let updated = db::get_bot(&state.pool, id)
@@ -353,7 +362,7 @@ async fn bot_session(
     let Some(s) = db::sessions::latest_session_for_bot(&state.pool, id).await? else {
         return Ok(Json(Value::Null));
     };
-    let m = gamma_client(&state).get_market_by_slug(&s.slug).await?;
+    let m = state.gamma.get_market_by_slug(&s.slug).await?;
     Ok(Json(serde_json::json!({
         "slug":     s.slug,
         "start_ts": s.start_ts,
@@ -362,10 +371,6 @@ async fn bot_session(
         "title":    m.question,
         "image":    m.image,
     })))
-}
-
-fn gamma_client(state: &AppState) -> GammaClient {
-    GammaClient::new(reqwest::Client::new(), state.env.gamma_base_url.clone())
 }
 
 #[derive(Debug, Deserialize)]
@@ -427,7 +432,7 @@ async fn session_detail(
     let Some(d) = detail else {
         return Ok(Json(Value::Null));
     };
-    let market = gamma_client(&state).get_market_by_slug(&d.slug).await.ok();
+    let market = state.gamma.get_market_by_slug(&d.slug).await.ok();
     let now = crate::time::now_secs() as i64;
     let is_live = d.end_ts > now && d.state != "RESOLVED" && d.state != "CLOSED";
     Ok(Json(serde_json::json!({
@@ -515,16 +520,8 @@ struct SettingsCredentialsResp {
 async fn get_settings_credentials(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<SettingsCredentialsResp>, AppError> {
-    let resp = match db::get_global_credentials(&state.pool).await? {
-        Some(c) => SettingsCredentialsResp {
-            poly_address: c.poly_address,
-            signature_type: c.signature_type,
-            funder: c.funder,
-            builder_code: c.builder_code,
-            has_credentials: true,
-            updated_at_ms: c.updated_at_ms,
-        },
-        None => SettingsCredentialsResp {
+    let resp = db::get_global_credentials(&state.pool).await?.map_or_else(
+        || SettingsCredentialsResp {
             poly_address: String::new(),
             signature_type: 0,
             funder: None,
@@ -532,7 +529,15 @@ async fn get_settings_credentials(
             has_credentials: false,
             updated_at_ms: 0,
         },
-    };
+        |c| SettingsCredentialsResp {
+            poly_address: c.poly_address,
+            signature_type: c.signature_type,
+            funder: c.funder,
+            builder_code: c.builder_code,
+            has_credentials: true,
+            updated_at_ms: c.updated_at_ms,
+        },
+    );
     Ok(Json(resp))
 }
 
@@ -540,8 +545,7 @@ async fn put_settings_credentials(
     State(state): State<Arc<AppState>>,
     Json(req): Json<CredentialsInput>,
 ) -> Result<StatusCode, AppError> {
-    let http = reqwest::Client::new();
-    let creds = req.into_credentials(&http, &state.env.clob_base_url).await?;
+    let creds = resolve_credentials(&state, req).await?;
     db::upsert_global_credentials(
         &state.pool,
         &GlobalCredentials {

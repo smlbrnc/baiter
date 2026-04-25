@@ -57,15 +57,13 @@ pub struct MarketSession {
     pub min_price: f64,
     pub max_price: f64,
     pub cooldown_threshold: u64,
-    /// V2 protocol fee rate (raw, e.g. `0.04`); `MarketSession::new`'da `0.0`,
-    /// Live'da `prepare_window` `get_taker_fee` ile doldurur. DryRun'da 0
-    /// kalır — fill simülasyonu `DRYRUN_FEE_RATE` üzerinden ücret çıkartır.
+    /// V2 taker fee rate; Live'da `get_taker_fee` doldurur, DryRun'da `0.0`.
     pub fee_rate: f64,
     pub book_ready_logged: bool,
-    /// Polymarket `derive-api-key.apiKey` UUID; trade event `owner` /
-    /// `maker_orders[].owner` ile eşleşerek bizim fill'ler tespit edilir.
-    /// DryRun'da `None`.
+    /// `derive-api-key.apiKey` UUID; trade event `owner` ile eşleşerek bizim fill'ler ayırt edilir.
     pub owner_uuid: Option<String>,
+    /// BBA değişimine yol açan son book event'in WS `timestamp` (ms).
+    pub last_book_server_ts_ms: u64,
 }
 
 impl MarketSession {
@@ -96,6 +94,7 @@ impl MarketSession {
             fee_rate: 0.0,
             book_ready_logged: false,
             owner_uuid: None,
+            last_book_server_ts_ms: 0,
         }
     }
 
@@ -206,17 +205,25 @@ pub fn apply_live_fill(
     session.last_averaging_ms = now_ms();
 }
 
+/// Top-of-book yaz; UP/DOWN bid veya ask değiştiyse `true` (hot path tick guard).
 pub fn update_top_of_book(
     session: &mut MarketSession,
     asset_id: &str,
     best_bid: f64,
     best_ask: f64,
-) {
+) -> bool {
     if asset_id == session.up_token_id {
+        let changed = session.up_best_bid != best_bid || session.up_best_ask != best_ask;
         session.up_best_bid = best_bid;
         session.up_best_ask = best_ask;
+        changed
     } else if asset_id == session.down_token_id {
+        let changed = session.down_best_bid != best_bid || session.down_best_ask != best_ask;
         session.down_best_bid = best_bid;
         session.down_best_ask = best_ask;
+        changed
+    } else {
+        false
     }
 }
+

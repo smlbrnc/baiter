@@ -3,7 +3,7 @@ use std::str::FromStr;
 use alloy::primitives::{address, Address, FixedBytes, U256};
 use alloy::signers::local::PrivateKeySigner;
 use alloy::signers::Signer;
-use alloy::sol_types::{eip712_domain, SolStruct};
+use alloy::sol_types::{eip712_domain, Eip712Domain, SolStruct};
 use rand::RngExt;
 use serde_json::{json, Value};
 
@@ -36,17 +36,83 @@ alloy::sol! {
     }
 }
 
+/// Boot'ta bir kez kurulan imza materyali; her order için signer parse + domain inşası eler.
+pub struct SignerCache {
+    pub signer: PrivateKeySigner,
+    pub signer_addr: Address,
+    /// `signature_type=0`'da `signer_addr`; `1|2`'de `funder`.
+    pub maker_addr: Address,
+    pub signature_type: u8,
+    pub ctf_domain: Eip712Domain,
+    pub neg_risk_domain: Eip712Domain,
+    pub builder_bytes: FixedBytes<32>,
+}
+
+impl SignerCache {
+    /// `Credentials` + `chain_id`'den boot anında bir kez kur.
+    pub fn from_creds(creds: &Credentials, chain_id: u64) -> Result<Self, AppError> {
+        let signer: PrivateKeySigner = creds
+            .polygon_private_key
+            .trim_start_matches("0x")
+            .parse()
+            .map_err(|e| AppError::Auth(format!("private key parse: {e}")))?;
+        let signer_addr = signer.address();
+        let maker_addr = match creds.signature_type {
+            0 => signer_addr,
+            1 | 2 => {
+                let f = creds
+                    .funder
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .ok_or_else(|| AppError::Auth("funder zorunlu (sig_type 1|2)".into()))?;
+                Address::from_str(f).map_err(|e| AppError::Auth(format!("funder parse: {e}")))?
+            }
+            other => {
+                return Err(AppError::Auth(format!(
+                    "signature_type {other} desteklenmiyor (0|1|2)"
+                )))
+            }
+        };
+        let ctf_domain = eip712_domain! {
+            name: "Polymarket CTF Exchange",
+            version: "2",
+            chain_id: chain_id,
+            verifying_contract: CTF_EXCHANGE,
+        };
+        let neg_risk_domain = eip712_domain! {
+            name: "Polymarket CTF Exchange",
+            version: "2",
+            chain_id: chain_id,
+            verifying_contract: NEG_RISK_CTF_EXCHANGE,
+        };
+        let builder_bytes = parse_bytes32(&creds.builder_code)?;
+        Ok(Self {
+            signer,
+            signer_addr,
+            maker_addr,
+            signature_type: creds.signature_type as u8,
+            ctf_domain,
+            neg_risk_domain,
+            builder_bytes,
+        })
+    }
+
+    fn domain(&self, neg_risk: bool) -> &Eip712Domain {
+        if neg_risk {
+            &self.neg_risk_domain
+        } else {
+            &self.ctf_domain
+        }
+    }
+}
+
 pub struct BuildArgs<'a> {
-    pub creds: &'a Credentials,
+    pub cache: &'a SignerCache,
     pub token_id: &'a str,
     pub side: Side,
     pub size: f64,
     pub price: f64,
-    pub neg_risk: bool,
     pub tick_size: f64,
-    /// Builder code (bytes32 hex, `0x` + 64 hex chars). Attribution istemeyen
-    /// kullanıcı zero-hex girer; geçersiz format → `AppError::Auth`.
-    pub builder_code: &'a str,
 }
 
 fn rounding_config(tick_size: f64) -> (u32, u32, u32) {
@@ -58,14 +124,6 @@ fn rounding_config(tick_size: f64) -> (u32, u32, u32) {
         (1, 2, 3)
     } else {
         (2, 2, 4)
-    }
-}
-
-fn verifying_contract(neg_risk: bool) -> Address {
-    if neg_risk {
-        NEG_RISK_CTF_EXCHANGE
-    } else {
-        CTF_EXCHANGE
     }
 }
 
@@ -98,74 +156,39 @@ pub fn build_order(args: &BuildArgs<'_>) -> Result<Order, AppError> {
         Side::Sell => (size_units, usdc_units, 1u8),
     };
 
-    let signer_addr = signer_address(&args.creds.polygon_private_key)?;
-    let maker_addr = match args.creds.signature_type {
-        0 => signer_addr,
-        1 | 2 => {
-            let f = args
-                .creds
-                .funder
-                .as_deref()
-                .filter(|s| !s.is_empty())
-                .ok_or_else(|| AppError::Auth("funder zorunlu (sig_type 1|2)".into()))?;
-            Address::from_str(f).map_err(|e| AppError::Auth(format!("funder parse: {e}")))?
-        }
-        other => {
-            return Err(AppError::Auth(format!(
-                "signature_type {other} desteklenmiyor (0|1|2)"
-            )))
-        }
-    };
-
     let token_id = U256::from_str_radix(args.token_id, 10)
         .map_err(|e| AppError::Auth(format!("token_id parse: {e}")))?;
 
-    let builder = parse_bytes32(args.builder_code)?;
-
     Ok(Order {
         salt: order_salt(),
-        maker: maker_addr,
-        signer: signer_addr,
+        maker: args.cache.maker_addr,
+        signer: args.cache.signer_addr,
         tokenId: token_id,
         makerAmount: U256::from(maker_amount),
         takerAmount: U256::from(taker_amount),
         side: side_byte,
-        signatureType: args.creds.signature_type as u8,
+        signatureType: args.cache.signature_type,
         timestamp: U256::from(now_ms()),
         metadata: FixedBytes::<32>::ZERO,
-        builder,
+        builder: args.cache.builder_bytes,
     })
 }
 
 pub async fn sign_order(
     order: &Order,
-    creds: &Credentials,
-    chain_id: u64,
+    cache: &SignerCache,
     neg_risk: bool,
 ) -> Result<String, AppError> {
-    let signer: PrivateKeySigner = creds
-        .polygon_private_key
-        .trim_start_matches("0x")
-        .parse()
-        .map_err(|e| AppError::Auth(format!("private key parse: {e}")))?;
-
-    let domain = eip712_domain! {
-        name: "Polymarket CTF Exchange",
-        version: "2",
-        chain_id: chain_id,
-        verifying_contract: verifying_contract(neg_risk),
-    };
-
-    let hash = order.eip712_signing_hash(&domain);
-    let sig = signer
+    let hash = order.eip712_signing_hash(cache.domain(neg_risk));
+    let sig = cache
+        .signer
         .sign_hash(&hash)
         .await
         .map_err(|e| AppError::Auth(format!("sign: {e}")))?;
     Ok(format!("0x{}", hex::encode(sig.as_bytes())))
 }
 
-/// V2 wire body: imzalı 11 alan + `expiration` (GTD için unix-secs, aksi `0`)
-/// + `signature`. `nonce/feeRateBps/taker` body'den de çıktı.
+/// V2 wire body: 11 imzalı alan + `expiration` (GTD için unix-secs, aksi `0`) + `signature`.
 pub fn order_to_json(order: &Order, expiration_secs: u64, signature_hex: &str) -> Value {
     let side_str = if order.side == 0 { "BUY" } else { "SELL" };
     let salt: u64 = order
@@ -189,22 +212,13 @@ pub fn order_to_json(order: &Order, expiration_secs: u64, signature_hex: &str) -
     })
 }
 
-/// V2 GTD: protocol enforces a 60s security buffer. Effective lifetime N
-/// requires `expiration = now + 60 + N` (resmi `trading/orders/create.md`).
+/// V2 GTD: protocol +60s buffer; effective N için `expiration = now + 60 + N`.
 pub fn expiration_for(order_type: &str, timeout_secs: u64) -> u64 {
     if order_type.eq_ignore_ascii_case("GTD") {
         now_secs() + 60 + timeout_secs
     } else {
         0
     }
-}
-
-fn signer_address(private_key_hex: &str) -> Result<Address, AppError> {
-    let signer: PrivateKeySigner = private_key_hex
-        .trim_start_matches("0x")
-        .parse()
-        .map_err(|e| AppError::Auth(format!("private key parse: {e}")))?;
-    Ok(signer.address())
 }
 
 fn order_salt() -> U256 {
@@ -228,3 +242,4 @@ fn parse_bytes32(hex_str: &str) -> Result<FixedBytes<32>, AppError> {
         .map_err(|e| AppError::Auth(format!("bytes32 hex decode: {e}")))?;
     Ok(FixedBytes::<32>::from_slice(&bytes))
 }
+

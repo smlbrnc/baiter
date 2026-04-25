@@ -180,8 +180,7 @@ async fn persist_session_setup(
     Ok(session_id)
 }
 
-/// V2: `GET /clob-markets/{condition_id}` → taker fee rate. DryRun ayrı path
-/// kullanır (`DRYRUN_FEE_RATE`) → her zaman `0.0`.
+/// Live → `get_taker_fee`; DryRun → `0.0` (`DRYRUN_FEE_RATE` persist tarafında).
 async fn resolve_fee_rate(ctx: &Ctx, condition_id: &str, label: &str) -> Result<f64, AppError> {
     match &ctx.executor {
         Executor::Live(live) => {
@@ -274,9 +273,14 @@ async fn run_trading_loop(
                 tick::tick(ctx, &mut sess).await;
             }
             Some(ev) = book_rx.recv() => {
-                event::handle_event(&mut sess, &ctx.pool, ctx.cfg.run_mode, ev);
+                let mut bba_changed = event::handle_event(&mut sess, &ctx.pool, ctx.cfg.run_mode, ev);
                 while let Ok(more) = book_rx.try_recv() {
-                    event::handle_event(&mut sess, &ctx.pool, ctx.cfg.run_mode, more);
+                    if event::handle_event(&mut sess, &ctx.pool, ctx.cfg.run_mode, more) {
+                        bba_changed = true;
+                    }
+                }
+                if bba_changed {
+                    tick::tick(ctx, &mut sess).await;
                 }
             }
             _ = cadence.tick() => {

@@ -15,24 +15,38 @@ use crate::polymarket::{
 use crate::time::now_ms;
 use crate::types::{Outcome, RunMode, Side};
 
+/// BBA gerçekten değiştiyse `true`; değiştiğinde `last_book_server_ts_ms`'i WS ts ile damgalar.
 pub fn handle_event(
     sess: &mut MarketSession,
     pool: &SqlitePool,
     run_mode: RunMode,
     ev: PolymarketEvent,
-) {
+) -> bool {
     match ev {
-        PolymarketEvent::BestBidAsk { asset_id, best_bid, best_ask }
-        | PolymarketEvent::Book { asset_id, best_bid, best_ask } => {
-            update_top_of_book(sess, &asset_id, best_bid, best_ask);
+        PolymarketEvent::BestBidAsk { asset_id, best_bid, best_ask, timestamp_ms }
+        | PolymarketEvent::Book { asset_id, best_bid, best_ask, timestamp_ms } => {
+            let changed = update_top_of_book(sess, &asset_id, best_bid, best_ask);
+            if changed && timestamp_ms > 0 {
+                sess.last_book_server_ts_ms = timestamp_ms;
+            }
             after_book_update(sess, pool, run_mode);
+            changed
         }
-        PolymarketEvent::PriceChange { changes } => {
-            on_price_change(sess, pool, run_mode, &changes)
+        PolymarketEvent::PriceChange { changes, timestamp_ms } => {
+            on_price_change(sess, pool, run_mode, &changes, timestamp_ms)
         }
-        PolymarketEvent::Trade(t) => on_trade(sess, pool, &t),
-        PolymarketEvent::Order(o) => on_order(sess, &o),
-        PolymarketEvent::MarketResolved(r) => on_market_resolved(sess, pool, &r),
+        PolymarketEvent::Trade(t) => {
+            on_trade(sess, pool, &t);
+            false
+        }
+        PolymarketEvent::Order(o) => {
+            on_order(sess, &o);
+            false
+        }
+        PolymarketEvent::MarketResolved(r) => {
+            on_market_resolved(sess, pool, &r);
+            false
+        }
     }
 }
 
@@ -41,17 +55,23 @@ fn on_price_change(
     pool: &SqlitePool,
     run_mode: RunMode,
     changes: &[PriceChangeLevel],
-) {
-    let mut any_update = false;
+    timestamp_ms: u64,
+) -> bool {
+    let mut bba_changed = false;
     for ch in changes {
         if let (Some(bb), Some(ba)) = (ch.best_bid, ch.best_ask) {
-            update_top_of_book(sess, &ch.asset_id, bb, ba);
-            any_update = true;
+            if update_top_of_book(sess, &ch.asset_id, bb, ba) {
+                bba_changed = true;
+            }
         }
     }
-    if any_update {
+    if bba_changed {
+        if timestamp_ms > 0 {
+            sess.last_book_server_ts_ms = timestamp_ms;
+        }
         after_book_update(sess, pool, run_mode);
     }
+    bba_changed
 }
 
 fn after_book_update(sess: &mut MarketSession, pool: &SqlitePool, run_mode: RunMode) {
@@ -295,7 +315,7 @@ fn persist_trade(
     db::trades::persist_trade(pool, record, "user_ws upsert_trade");
 }
 
-/// Dust eşiği: erken prune kısmi fill attribution'ı bozar; min_order_size değil, gerçek dust.
+/// Erken prune kısmi fill attribution'ı bozar; bu eşik dust içindir, `min_order_size` değil.
 const FILL_DUST_THRESHOLD: f64 = 0.01;
 
 fn record_fill_and_prune_if_full(

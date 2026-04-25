@@ -13,7 +13,7 @@ use crate::time::now_secs;
 
 type HmacSha256 = Hmac<Sha256>;
 
-pub fn build_l2_signature(
+fn build_l2_signature(
     secret_b64: &str,
     timestamp: &str,
     method: &str,
@@ -38,10 +38,6 @@ pub fn build_l2_signature(
     let tag = mac.finalize().into_bytes();
 
     Ok(URL_SAFE.encode(tag))
-}
-
-pub fn body_to_string(value: &serde_json::Value) -> String {
-    value.to_string()
 }
 
 pub struct L2Headers {

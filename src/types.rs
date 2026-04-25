@@ -82,14 +82,6 @@ pub enum OrderType {
     Fak,
 }
 
-/// Bir emrin Polymarket likidite rolü — fee hesabı + strateji intent'i için.
-/// Maker fill'leri Polymarket'te 0 fee; taker'lar concave fee öder.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OrderRole {
-    Taker,
-    Maker,
-}
-
 impl OrderType {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -108,29 +100,6 @@ impl OrderType {
             "FOK" => Some(Self::Fok),
             "FAK" => Some(Self::Fak),
             _ => None,
-        }
-    }
-
-    /// FAK + FOK her zaman taker.
-    /// Resmi: <https://docs.polymarket.com/developers/CLOB/orders/order-types>.
-    pub fn is_always_taker(self) -> bool {
-        matches!(self, Self::Fak | Self::Fok)
-    }
-
-    /// `opposing_best`: BUY için karşı best_ask, SELL için karşı best_bid.
-    /// GTC/GTD marketable fiyatta taker, aksi halde maker (book boşsa maker).
-    pub fn role(self, side: Side, price: f64, opposing_best: f64) -> OrderRole {
-        if self.is_always_taker() {
-            return OrderRole::Taker;
-        }
-        let crosses = match side {
-            Side::Buy => opposing_best > 0.0 && price >= opposing_best,
-            Side::Sell => opposing_best > 0.0 && price <= opposing_best,
-        };
-        if crosses {
-            OrderRole::Taker
-        } else {
-            OrderRole::Maker
         }
     }
 }

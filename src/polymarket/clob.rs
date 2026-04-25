@@ -2,17 +2,20 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use reqwest::{Client, Method};
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
 use crate::config::Credentials;
 use crate::error::AppError;
-use crate::polymarket::auth::{body_to_string, make_l2_headers};
+use crate::polymarket::auth::make_l2_headers;
 use crate::time::now_secs;
 
-/// `/clob-markets/{condition_id}.fd` parse'ı — taker fee parametreleri.
-/// Resmi formül (`trading/fees.md`): `fee = size × rate × p × (1-p)`.
-/// Maker hiçbir markette ücret ödemez (`taker_only` daima true varsayılır).
+/// `POST /orders` resmi batch tavanı.
+pub const POST_ORDERS_MAX_PER_REQ: usize = 15;
+/// `DELETE /orders` resmi batch tavanı.
+pub const CANCEL_ORDERS_MAX_PER_REQ: usize = 3000;
+
+/// Taker fee parametreleri (`/clob-markets/{condition_id}.fd`).
 #[derive(Debug, Clone, Copy)]
 pub struct TakerFee {
     pub rate: f64,
@@ -60,8 +63,6 @@ impl ClobClient {
     }
 
     /// `GET /clob-markets/{condition_id}` → `fd.r` (rate) + `fd.to` (taker_only).
-    /// Diğer alanlar (`mts/mos/mbf/tbf/rfqe/oas`) parse edilmez — Gamma'dan zaten
-    /// gelen `tick_size`/`min_order_size` ile duplicate olur.
     pub async fn get_taker_fee(&self, condition_id: &str) -> Result<TakerFee, AppError> {
         let v = self
             .public_get_json(&format!("/clob-markets/{condition_id}"))
@@ -86,7 +87,7 @@ impl ClobClient {
     ) -> Result<Value, AppError> {
         let creds = self.creds()?;
         let ts = now_secs().to_string();
-        let body_str = body.as_ref().map(body_to_string).unwrap_or_default();
+        let body_str = body.as_ref().map(Value::to_string).unwrap_or_default();
         let headers = make_l2_headers(creds, &ts, method.as_str(), path, &body_str)?;
 
         let url = format!("{}{}", self.base, path);
@@ -124,27 +125,66 @@ impl ClobClient {
         })
     }
 
-    pub async fn post_order(
+    /// Batch `POST /orders` — max 15/req, üstüyse chunk'lar; giriş sırası korunur.
+    pub async fn post_orders(
         &self,
-        order: Value,
-        order_type: &str,
-        owner: &str,
-    ) -> Result<PostOrderResponse, AppError> {
-        let body = serde_json::json!({
-            "order": order,
-            "owner": owner,
-            "orderType": order_type,
-        });
-        let resp = self.auth_request(Method::POST, "/order", Some(body)).await?;
-        Ok(serde_json::from_value(resp)?)
+        items: Vec<PostOrderItem>,
+    ) -> Result<Vec<PostOrderResponse>, AppError> {
+        if items.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut out = Vec::with_capacity(items.len());
+        for chunk in items.chunks(POST_ORDERS_MAX_PER_REQ) {
+            let body = Value::Array(
+                chunk
+                    .iter()
+                    .map(|i| {
+                        serde_json::json!({
+                            "order": i.order,
+                            "owner": i.owner,
+                            "orderType": i.order_type,
+                        })
+                    })
+                    .collect(),
+            );
+            let resp = self.auth_request(Method::POST, "/orders", Some(body)).await?;
+            let parsed: Vec<PostOrderResponse> = serde_json::from_value(resp).map_err(|e| {
+                AppError::Clob(format!("POST /orders parse: {e}"))
+            })?;
+            out.extend(parsed);
+        }
+        Ok(out)
     }
 
-    pub async fn cancel_order(&self, order_id: &str) -> Result<CancelResponse, AppError> {
-        let body = serde_json::json!({"orderID": order_id});
-        let resp = self
-            .auth_request(Method::DELETE, "/order", Some(body))
-            .await?;
-        Ok(serde_json::from_value(resp)?)
+    /// Batch `DELETE /orders` — max 3000/req; `canceled` ve `not_canceled` map'lerini birleştirir.
+    pub async fn cancel_orders(&self, ids: &[String]) -> Result<CancelResponse, AppError> {
+        if ids.is_empty() {
+            return Ok(CancelResponse {
+                canceled: Vec::new(),
+                not_canceled: serde_json::json!({}),
+            });
+        }
+        let mut canceled = Vec::with_capacity(ids.len());
+        let mut not_canceled_merged = serde_json::Map::new();
+        for chunk in ids.chunks(CANCEL_ORDERS_MAX_PER_REQ) {
+            let body = Value::Array(chunk.iter().map(|s| Value::String(s.clone())).collect());
+            let resp = self
+                .auth_request(Method::DELETE, "/orders", Some(body))
+                .await?;
+            let parsed: CancelResponse = serde_json::from_value(resp).map_err(|e| {
+                AppError::Clob(format!("DELETE /orders parse: {e}"))
+            })?;
+            canceled.extend(parsed.canceled);
+            if let Some(map) = parsed.not_canceled.as_object() {
+                for (k, v) in map {
+                    not_canceled_merged.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        Ok(CancelResponse {
+            canceled,
+            not_canceled: Value::Object(not_canceled_merged),
+        })
     }
 
     pub async fn cancel_all(&self) -> Result<CancelResponse, AppError> {
@@ -206,6 +246,14 @@ pub struct PostOrderResponse {
     pub status: PostOrderStatus,
     #[serde(default, rename = "errorMsg")]
     pub error_msg: String,
+}
+
+/// `POST /orders` body item.
+#[derive(Debug, Clone, Serialize)]
+pub struct PostOrderItem {
+    pub order: Value,
+    pub owner: String,
+    pub order_type: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]

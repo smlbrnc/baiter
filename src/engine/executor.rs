@@ -1,4 +1,4 @@
-//! Emir yürütücü — DryRun Simulator veya Live CLOB.
+//! Emir yürütücü — DryRun Simulator veya Live CLOB (tek-batch HTTP).
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -9,9 +9,9 @@ use crate::config::Credentials;
 use crate::error::AppError;
 use crate::ipc;
 use crate::polymarket::order::{
-    build_order, expiration_for, order_to_json, sign_order, BuildArgs,
+    build_order, expiration_for, order_to_json, sign_order, BuildArgs, SignerCache,
 };
-use crate::polymarket::{CancelResponse, ClobClient};
+use crate::polymarket::{CancelResponse, ClobClient, PostOrderItem};
 use crate::strategy::{Decision, OpenOrder, PlannedOrder};
 use crate::time::now_ms;
 use crate::types::{Outcome, Side};
@@ -21,127 +21,150 @@ use super::{ExecutedOrder, MarketSession};
 /// DryRun fee oranı (%0.02).
 pub const DRYRUN_FEE_RATE: f64 = 0.0002;
 
-#[async_trait::async_trait]
-pub trait OrderSink: Send + Sync {
-    async fn place(
-        &self,
-        session: &mut MarketSession,
-        planned: &PlannedOrder,
-    ) -> Result<ExecutedOrder, AppError>;
-
-    async fn cancel(
-        &self,
-        session: &mut MarketSession,
-        order_id: &str,
-    ) -> Result<CancelResponse, AppError>;
-}
-
 pub enum Executor {
     DryRun(Simulator),
     Live(Box<LiveExecutor>),
 }
 
-/// Live CLOB yürütücü — EIP-712 imza + POST /order.
+/// Live CLOB yürütücü; `SignerCache` boot'ta bir kez kurulur.
 pub struct LiveExecutor {
     pub client: Arc<ClobClient>,
-    pub creds: Credentials,
-    pub chain_id: u64,
+    pub owner: String,
     pub gtd_timeout_secs: u64,
-    /// Builder code (bytes32 hex). Boot anında validate edilmiş; her order'a gömülür.
-    pub builder_code: String,
-}
-
-#[async_trait::async_trait]
-impl OrderSink for Executor {
-    async fn place(
-        &self,
-        session: &mut MarketSession,
-        planned: &PlannedOrder,
-    ) -> Result<ExecutedOrder, AppError> {
-        match self {
-            Self::DryRun(sim) => sim.place(session, planned).await,
-            Self::Live(live) => live.place(session, planned).await,
-        }
-    }
-
-    async fn cancel(
-        &self,
-        session: &mut MarketSession,
-        order_id: &str,
-    ) -> Result<CancelResponse, AppError> {
-        match self {
-            Self::DryRun(sim) => sim.cancel(session, order_id).await,
-            Self::Live(live) => live.client.cancel_order(order_id).await,
-        }
-    }
-}
-
-#[async_trait::async_trait]
-impl OrderSink for Simulator {
-    async fn place(
-        &self,
-        session: &mut MarketSession,
-        planned: &PlannedOrder,
-    ) -> Result<ExecutedOrder, AppError> {
-        Ok(self.fill(session, planned))
-    }
-
-    async fn cancel(
-        &self,
-        _session: &mut MarketSession,
-        order_id: &str,
-    ) -> Result<CancelResponse, AppError> {
-        Ok(CancelResponse {
-            canceled: vec![order_id.to_string()],
-            not_canceled: serde_json::json!({}),
-        })
-    }
+    pub signer: Arc<SignerCache>,
 }
 
 impl LiveExecutor {
-    /// PlannedOrder → EIP-712 → POST /order. GTD için `now + timeout`, diğerleri `0`.
-    pub async fn place(
+    /// Boot anında bir kez çağrılır; başarısızsa fatal.
+    pub fn new(
+        client: Arc<ClobClient>,
+        creds: &Credentials,
+        chain_id: u64,
+        gtd_timeout_secs: u64,
+    ) -> Result<Self, AppError> {
+        let signer = Arc::new(SignerCache::from_creds(creds, chain_id)?);
+        Ok(Self {
+            client,
+            owner: creds.poly_api_key.clone(),
+            gtd_timeout_secs,
+            signer,
+        })
+    }
+
+    /// Tek `PlannedOrder`'ı imzala (cache'lenmiş signer + EIP-712 domain).
+    async fn build_signed_body(
         &self,
-        session: &mut MarketSession,
         planned: &PlannedOrder,
-    ) -> Result<ExecutedOrder, AppError> {
+        tick_size: f64,
+        neg_risk: bool,
+    ) -> Result<serde_json::Value, AppError> {
         let exp = expiration_for(planned.order_type.as_str(), self.gtd_timeout_secs);
         let order = build_order(&BuildArgs {
-            creds: &self.creds,
+            cache: &self.signer,
             token_id: &planned.token_id,
             side: planned.side,
             size: planned.size,
             price: planned.price,
-            neg_risk: session.neg_risk,
-            tick_size: session.tick_size,
-            builder_code: &self.builder_code,
+            tick_size,
         })?;
-        let sig = sign_order(&order, &self.creds, self.chain_id, session.neg_risk).await?;
-        let body = order_to_json(&order, exp, &sig);
-        let owner = self.creds.poly_api_key.clone();
-        let resp = self
-            .client
-            .post_order(body, planned.order_type.as_str(), &owner)
-            .await?;
-        if !resp.success {
-            return Err(AppError::Clob(format!(
-                "POST /order rejected: status={} error={}",
-                resp.status.as_str(),
-                resp.error_msg
-            )));
+        let sig = sign_order(&order, &self.signer, neg_risk).await?;
+        Ok(order_to_json(&order, exp, &sig))
+    }
+
+    /// İmzala + tek `POST /orders`; reject olanları atla, kalanları `open_orders`'a ekle.
+    pub async fn place_many(
+        &self,
+        session: &mut MarketSession,
+        planned: &[PlannedOrder],
+    ) -> Result<Vec<ExecutedOrder>, AppError> {
+        if planned.is_empty() {
+            return Ok(Vec::new());
         }
-        // Partial fill miktarı yalnız User WS `trade MATCHED`'den toplanır; REST `size_matched` push edilmez.
-        let filled = resp.status.is_filled();
+        let mut items = Vec::with_capacity(planned.len());
+        for p in planned {
+            let body = self
+                .build_signed_body(p, session.tick_size, session.neg_risk)
+                .await?;
+            items.push(PostOrderItem {
+                order: body,
+                owner: self.owner.clone(),
+                order_type: p.order_type.as_str().to_string(),
+            });
+        }
+        let resps = self.client.post_orders(items).await?;
+        let label = session.bot_id.to_string();
+        let mut placed = Vec::with_capacity(planned.len());
+        for (p, resp) in planned.iter().zip(resps.into_iter()) {
+            if !resp.success {
+                ipc::log_line(
+                    &label,
+                    format!(
+                        "❌ POST /orders rejected status={} error={} reason={}",
+                        resp.status.as_str(),
+                        resp.error_msg,
+                        p.reason
+                    ),
+                );
+                tracing::warn!(
+                    bot_id = session.bot_id,
+                    status = resp.status.as_str(),
+                    error = %resp.error_msg,
+                    reason = %p.reason,
+                    "order rejected in batch"
+                );
+                continue;
+            }
+            let filled = resp.status.is_filled();
+            session
+                .open_orders
+                .push(open_order_from_planned(resp.order_id.clone(), p));
+            placed.push(ExecutedOrder {
+                order_id: resp.order_id,
+                planned: p.clone(),
+                filled,
+                fill_price: p.price,
+                fill_size: p.size,
+            });
+        }
+        Ok(placed)
+    }
+
+    /// Tek `DELETE /orders` + lokal prune (terminal red'ler dahil; non-terminal'ler canlı tutulur).
+    pub async fn cancel_many(
+        &self,
+        session: &mut MarketSession,
+        ids: &[String],
+    ) -> Result<CancelResponse, AppError> {
+        let label = session.bot_id.to_string();
+        let resp = self.client.cancel_orders(ids).await?;
+        let mut truly_canceled: HashSet<String> = HashSet::new();
+        let mut terminal_reject: HashSet<String> = HashSet::new();
+        for c in &resp.canceled {
+            truly_canceled.insert(c.clone());
+        }
+        if let Some(map) = resp.not_canceled.as_object() {
+            for (nc_id, reason) in map {
+                let reason_s = reason
+                    .as_str()
+                    .map(str::to_string)
+                    .unwrap_or_else(|| reason.to_string());
+                let terminal = is_terminal_not_canceled(&reason_s);
+                ipc::log_line(
+                    &label,
+                    format!(
+                        "⚠️ cancel rejected id={nc_id} reason={reason_s}{}",
+                        if terminal { " [terminal → pruning]" } else { "" }
+                    ),
+                );
+                if terminal {
+                    terminal_reject.insert(nc_id.clone());
+                }
+            }
+        }
         session
             .open_orders
-            .push(open_order_from_planned(resp.order_id.clone(), planned));
-        Ok(ExecutedOrder {
-            order_id: resp.order_id,
-            planned: planned.clone(),
-            filled,
-            fill_price: planned.price,
-            fill_size: planned.size,
-        })
+            .retain(|o| !truly_canceled.contains(&o.id) && !terminal_reject.contains(&o.id));
+        Ok(resp)
     }
 }
 
@@ -261,53 +284,67 @@ fn within_price_bounds(session: &MarketSession, planned: &PlannedOrder) -> bool 
     true
 }
 
-/// Decision sonucu batch'i yürüt.
-pub async fn execute<S: OrderSink + ?Sized>(
+/// Decision'ı yürüt; `CancelAndPlace` sırası: önce cancel, sonra place.
+pub async fn execute(
     session: &mut MarketSession,
-    exec: &S,
+    executor: &Executor,
     decision: Decision,
 ) -> Result<ExecuteOutput, AppError> {
     let mut out = ExecuteOutput::default();
     match decision {
         Decision::NoOp => {}
-        Decision::PlaceOrders(orders) => place_batch(session, exec, orders, &mut out).await?,
-        Decision::CancelOrders(ids) => cancel_batch(session, exec, &ids, &mut out).await?,
+        Decision::PlaceOrders(orders) => {
+            place_batch(session, executor, orders, &mut out).await?
+        }
+        Decision::CancelOrders(ids) => {
+            cancel_batch(session, executor, &ids, &mut out).await?
+        }
         Decision::CancelAndPlace { cancels, places } => {
-            // Sıra: önce cancel, sonra place — yeni hedge aynı tick'te kitapta olsun.
             if !cancels.is_empty() {
-                cancel_batch(session, exec, &cancels, &mut out).await?;
+                cancel_batch(session, executor, &cancels, &mut out).await?;
             }
             if !places.is_empty() {
-                place_batch(session, exec, places, &mut out).await?;
+                place_batch(session, executor, places, &mut out).await?;
             }
         }
     }
     Ok(out)
 }
 
-async fn place_batch<S: OrderSink + ?Sized>(
+async fn place_batch(
     session: &mut MarketSession,
-    exec: &S,
+    executor: &Executor,
     orders: Vec<PlannedOrder>,
     out: &mut ExecuteOutput,
 ) -> Result<(), AppError> {
-    for o in orders {
-        if !within_price_bounds(session, &o) {
-            continue;
+    let filtered: Vec<PlannedOrder> = orders
+        .into_iter()
+        .filter(|o| within_price_bounds(session, o))
+        .collect();
+    if filtered.is_empty() {
+        return Ok(());
+    }
+    match executor {
+        Executor::DryRun(sim) => {
+            for o in &filtered {
+                let executed = sim.fill(session, o);
+                out.placed.push(executed);
+            }
         }
-        let executed = exec.place(session, &o).await?;
-        out.placed.push(executed);
+        Executor::Live(live) => {
+            let executed = live.place_many(session, &filtered).await?;
+            out.placed.extend(executed);
+        }
     }
     Ok(())
 }
 
-/// Order'ın book'tan kesin düştüğünü gösteren `not_canceled` reason substring'leri.
-/// Lokal `open_orders` state'inden prune edilmezse hedge replace mantığı sonsuz cancel-spam loop'una düşer.
+/// Order'ın kesin düştüğünü belirten `not_canceled` reason substring'leri (prune trigger).
 const TERMINAL_NOT_CANCELED_REASONS: &[&str] = &[
-    "order can't be found",        // already canceled or matched
-    "matched orders can't",        // fully matched after we read the book
-    "order not found",             // alternate phrasing
-    "order is already canceled",   // explicit cancel race
+    "order can't be found",
+    "matched orders can't",
+    "order not found",
+    "order is already canceled",
 ];
 
 fn is_terminal_not_canceled(reason: &str) -> bool {
@@ -316,45 +353,29 @@ fn is_terminal_not_canceled(reason: &str) -> bool {
         .any(|s| reason.contains(s))
 }
 
-async fn cancel_batch<S: OrderSink + ?Sized>(
+async fn cancel_batch(
     session: &mut MarketSession,
-    exec: &S,
+    executor: &Executor,
     ids: &[String],
     out: &mut ExecuteOutput,
 ) -> Result<(), AppError> {
-    let label = session.bot_id.to_string();
-    // Sadece truly-canceled veya terminal-rejected id'leri prune et; "being matched"
-    // gibi non-terminal red'lerde order hâlâ canlı, sonraki fill event için saklı tutulur.
-    let mut truly_canceled: HashSet<String> = HashSet::new();
-    let mut terminal_reject: HashSet<String> = HashSet::new();
-    for id in ids {
-        let resp = exec.cancel(session, id).await?;
-        for c in &resp.canceled {
-            truly_canceled.insert(c.clone());
-        }
-        if let Some(map) = resp.not_canceled.as_object() {
-            for (nc_id, reason) in map {
-                let reason_s = reason
-                    .as_str()
-                    .map(str::to_string)
-                    .unwrap_or_else(|| reason.to_string());
-                let terminal = is_terminal_not_canceled(&reason_s);
-                ipc::log_line(
-                    &label,
-                    format!(
-                        "⚠️ cancel rejected id={nc_id} reason={reason_s}{}",
-                        if terminal { " [terminal → pruning]" } else { "" }
-                    ),
-                );
-                if terminal {
-                    terminal_reject.insert(nc_id.clone());
-                }
-            }
-        }
-        out.canceled.push(resp);
+    if ids.is_empty() {
+        return Ok(());
     }
-    session
-        .open_orders
-        .retain(|o| !truly_canceled.contains(&o.id) && !terminal_reject.contains(&o.id));
+    match executor {
+        Executor::DryRun(_) => {
+            let id_set: HashSet<&String> = ids.iter().collect();
+            session.open_orders.retain(|o| !id_set.contains(&o.id));
+            out.canceled.push(CancelResponse {
+                canceled: ids.to_vec(),
+                not_canceled: serde_json::json!({}),
+            });
+        }
+        Executor::Live(live) => {
+            let resp = live.cancel_many(session, ids).await?;
+            out.canceled.push(resp);
+        }
+    }
     Ok(())
 }
+
