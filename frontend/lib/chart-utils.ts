@@ -76,7 +76,7 @@ export const SECTION_LABEL_CLASS =
   "font-sans text-[10px] font-normal leading-snug tracking-wider text-muted-foreground uppercase";
 
 /**
- * `BinanceSignalPanel` + `AvgSumChart` yan yana — kart gövdesi ve padding aynı.
+ * `BinanceSignalPanel` + `PositionsChart` yan yana — kart gövdesi ve padding aynı.
  * Grid `items-stretch` ile satır yüksekliği eşitlenir; grafik alanı `flex-1` ile dolar.
  */
 export const SIGNAL_PAIR_CARD_CLASS =

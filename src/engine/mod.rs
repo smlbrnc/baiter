@@ -2,7 +2,7 @@
 
 use crate::config::BotConfig;
 use crate::ipc::{self, FrontendEvent};
-use crate::strategy::alis::{AlisEngine, AlisState};
+use crate::strategy::alis::AlisEngine;
 use crate::strategy::aras::ArasEngine;
 use crate::strategy::elis::ElisEngine;
 use crate::strategy::metrics::{MarketPnL, StrategyMetrics};
@@ -13,9 +13,7 @@ use crate::types::{Outcome, Side};
 pub mod executor;
 pub mod passive;
 
-pub use executor::{
-    execute, ExecuteOutput, Executor, LiveExecutor, Simulator, DRYRUN_FEE_RATE,
-};
+pub use executor::{execute, ExecuteOutput, Executor, LiveExecutor, Simulator, DRYRUN_FEE_RATE};
 pub use passive::simulate_passive_fills;
 
 /// Yürütülen emir sonucu — fill olmamışsa `fill_price/size` planned değerlerini taşır.
@@ -114,7 +112,6 @@ impl MarketSession {
         effective_score: f64,
         signal_ready: bool,
     ) -> Decision {
-        let zone = self.current_zone(now_ms_v / 1000);
         let ctx = StrategyContext {
             metrics: &self.metrics,
             up_token_id: &self.up_token_id,
@@ -126,7 +123,7 @@ impl MarketSession {
             api_min_order_size: self.api_min_order_size,
             order_usdc: cfg.order_usdc,
             effective_score,
-            zone,
+            zone: self.current_zone(now_ms_v / 1000),
             now_ms: now_ms_v,
             last_averaging_ms: self.last_averaging_ms,
             tick_size: self.tick_size,
@@ -154,28 +151,11 @@ impl MarketSession {
             }
         };
         self.state = next_state;
-        if let Some(method) = detect_alis_lock_transition(&prev_state, &next_state) {
+        if let Some(method) = prev_state.lock_transition_label(&next_state) {
             emit_profit_locked(self, method, now_ms_v);
         }
         decision
     }
-}
-
-/// Alis lock pasiftir; method etiketi `prev`'e göre türetilir.
-/// `OpenPlaced → Locked` = simetrik fill, `PositionOpen → Locked` = hedge fill.
-fn detect_alis_lock_transition(
-    prev: &StrategyState,
-    next: &StrategyState,
-) -> Option<&'static str> {
-    let StrategyState::Alis(prev_alis) = prev else { return None };
-    let StrategyState::Alis(next_alis) = next else { return None };
-    if *next_alis != AlisState::Locked || *prev_alis == AlisState::Locked {
-        return None;
-    }
-    Some(match prev_alis {
-        AlisState::OpenPlaced { .. } => "symmetric_fill",
-        _ => "passive_hedge_fill",
-    })
 }
 
 fn emit_profit_locked(session: &MarketSession, method: &str, ts_ms: u64) {

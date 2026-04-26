@@ -34,7 +34,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::common::{Decision, OpenOrder, PlannedOrder, StrategyContext};
+use super::common::{requote_threshold, Decision, OpenOrder, PlannedOrder, StrategyContext};
 use crate::time::MarketZone;
 use crate::types::{Outcome, OrderType, Side};
 
@@ -130,9 +130,9 @@ impl AlisEngine {
 
 // ---------- Helpers ----------
 
-/// `PositionOpen.dominant_dir`'i metrics'e göre re-derive eder. Plan §2
-/// "etiketler değil, gerçeklik komuta verir": hedge fill dominantı flip
-/// ettirebilir; aksi halde requote/reconcile/profit-lock yanlış karar verir.
+/// `PositionOpen.dominant_dir`'i metrics'e göre re-derive eder ("etiketler
+/// değil, gerçeklik komuta verir"): hedge fill dominantı flip ettirebilir,
+/// aksi halde requote/reconcile/profit-lock yanlış karar verir.
 fn sync_dominant(state: AlisState, ctx: &StrategyContext<'_>) -> AlisState {
     let AlisState::PositionOpen {
         dominant_dir,
@@ -182,15 +182,6 @@ fn update_score(state: AlisState, score: f64) -> AlisState {
     } else {
         state
     }
-}
-
-fn clamp_price(p: f64, min: f64, max: f64) -> f64 {
-    p.clamp(min, max)
-}
-
-/// Tick yarısı kadar fark "değişmedi" sayılır (re-quote spam'i engeller).
-fn requote_threshold(tick_size: f64) -> f64 {
-    (tick_size / 2.0).max(1e-6)
 }
 
 fn stop_trade(ctx: &StrategyContext<'_>) -> (AlisState, Decision) {
@@ -271,9 +262,9 @@ fn collect_alis_open_ids(ctx: &StrategyContext<'_>) -> Vec<String> {
 
 // ---------- Re-quote (Kural A) ----------
 
-/// Açık opener/hedge için hedef fiyat hesaplar; `o.price`'tan farkı
-/// `tick_size/2`'yi aşan ilk emri atomic `CancelAndPlace` ile değiştirir.
-/// Opener (dominant): sadece daha ucuza. Hedge (opp): her iki yönde.
+/// Açık opener/hedge için hedef fiyat hesaplar; `o.price`'tan farkı eps'i
+/// aşan ilk emri atomic `CancelAndPlace` ile değiştirir. Opener: sadece daha
+/// ucuza. Hedge: her iki yönde.
 fn requote_open_pair(state: AlisState, ctx: &StrategyContext<'_>) -> Option<Decision> {
     let eps = requote_threshold(ctx.tick_size);
     for o in ctx.open_orders.iter() {
@@ -299,7 +290,7 @@ fn requote_open_pair(state: AlisState, ctx: &StrategyContext<'_>) -> Option<Deci
             outcome: o.outcome,
             token_id: ctx.token_id(o.outcome).to_string(),
             side: Side::Buy,
-            price: clamp_price(target, ctx.min_price, ctx.max_price),
+            price: target.clamp(ctx.min_price, ctx.max_price),
             size: remaining,
             order_type: OrderType::Gtc,
             reason: o.reason.clone(),
@@ -416,11 +407,7 @@ fn reconcile_parity(state: AlisState, ctx: &StrategyContext<'_>) -> Option<Decis
     if avg_d <= 0.0 {
         return None;
     }
-    let target_price = clamp_price(
-        ctx.avg_threshold - avg_d,
-        ctx.min_price,
-        ctx.max_price,
-    );
+    let target_price = (ctx.avg_threshold - avg_d).clamp(ctx.min_price, ctx.max_price);
     let new_hedge = PlannedOrder {
         outcome: opp,
         token_id: ctx.token_id(opp).to_string(),
@@ -452,21 +439,11 @@ fn place_open_pair(ctx: &StrategyContext<'_>) -> (AlisState, Decision) {
     }
 
     let open_delta = ctx.strategy_params.open_delta_or_default();
-    let intent_price = clamp_price(
-        intent_ask + open_delta,
-        ctx.min_price,
-        ctx.max_price,
-    );
-    // Hedge'i planlanan limit (`intent_price`) değil beklenen fill (`intent_ask`)
-    // üzerinden hesapla: cross olan BUY emiri `best_ask`'ten dolar, dolayısıyla
-    // gerçek `avg_d == intent_ask`. Aksi halde requote_open_pair ilk tick'te
-    // hedge'i `safe = avg_threshold - intent_ask`'e taşımak için boşa cancel/place
-    // yapar.
-    let pair_price = clamp_price(
-        ctx.avg_threshold - intent_ask,
-        ctx.min_price,
-        ctx.max_price,
-    );
+    let intent_price = (intent_ask + open_delta).clamp(ctx.min_price, ctx.max_price);
+    // Hedge'i planlanan limit yerine beklenen fill (`intent_ask`) üzerinden
+    // hesapla: cross olan BUY `best_ask`'ten dolar → gerçek `avg_d ==
+    // intent_ask`. Aksi halde requote ilk tick'te boşa cancel/place yapar.
+    let pair_price = (ctx.avg_threshold - intent_ask).clamp(ctx.min_price, ctx.max_price);
     if intent_price <= 0.0 || pair_price <= 0.0 {
         return (AlisState::Pending, Decision::NoOp);
     }
@@ -507,9 +484,9 @@ fn place_open_pair(ctx: &StrategyContext<'_>) -> (AlisState, Decision) {
 
 // ---------- Avg-down ----------
 //
-// Dominant tarafta bekleyen alis GTC (lock haricinde) varsa iptal et ve AYNI
-// toplam remaining size ile `best_bid_dom` fiyatından `alis:avgdown:dom`
-// olarak yeniden koy. Bekleyen yoksa NoOp (budget zaten harcanmış).
+// Dominant tarafta bekleyen `alis:*` GTC varsa iptal et ve aynı toplam
+// remaining size ile `best_bid_dom`'dan `alis:avgdown:dom` olarak yeniden
+// koy. Bekleyen yoksa NoOp (budget harcanmış).
 
 fn try_avg_down(state: AlisState, ctx: &StrategyContext<'_>) -> (AlisState, Decision) {
     let AlisState::PositionOpen {
@@ -567,7 +544,7 @@ fn try_avg_down(state: AlisState, ctx: &StrategyContext<'_>) -> (AlisState, Deci
         return (state, Decision::NoOp);
     }
 
-    let new_price = clamp_price(best_bid_dom, ctx.min_price, ctx.max_price);
+    let new_price = best_bid_dom.clamp(ctx.min_price, ctx.max_price);
     let eps = requote_threshold(ctx.tick_size);
 
     if pending.len() == 1
@@ -629,10 +606,7 @@ fn try_pyramid(
     }
     let score_avg = score_sum / (score_samples as f64);
 
-    // Pyramid yönü = anlık trend kazananı (opener'dan miras dom değil).
-    // UP trend: score_avg > 5 AND up_bid > 0.5 → pyramid UP
-    // DOWN trend: score_avg < 5 AND down_bid > 0.5 → pyramid DOWN
-    // Ne UP ne DOWN trend net değilse NoOp.
+    // Pyramid yönü = anlık trend (opener'dan miras dom değil).
     let trend_dir = if score_avg > 5.0 && ctx.up_best_bid > 0.5 {
         Outcome::Up
     } else if score_avg < 5.0 && ctx.down_best_bid > 0.5 {
@@ -672,7 +646,7 @@ fn try_pyramid(
         _ => return (state, Decision::NoOp),
     };
     let pyramid_usdc = ctx.strategy_params.pyramid_usdc_or(ctx.order_usdc);
-    let price = clamp_price(best_ask_trend + delta, ctx.min_price, ctx.max_price);
+    let price = (best_ask_trend + delta).clamp(ctx.min_price, ctx.max_price);
     if price <= 0.0 {
         return (state, Decision::NoOp);
     }

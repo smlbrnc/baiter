@@ -1,8 +1,7 @@
 //! Strateji metrikleri — `StrategyMetrics` + `MarketPnL`.
 //!
-//! Adlandırma sözleşmesi: tüm pozisyon/VWAP alanları `_up`/`_down` (Polymarket
-//! "Yes/No" wire dilinden bağımsız strateji dili). `last_filled_*` her MATCHED
-//! fill'de güncellenir (BUY/SELL fark etmez).
+//! Adlandırma: tüm pozisyon/VWAP alanları `_up`/`_down` (wire'daki Yes/No'dan
+//! bağımsız strateji dili). `last_filled_*` her MATCHED fill'de güncellenir.
 
 use serde::{Deserialize, Serialize};
 
@@ -27,9 +26,9 @@ pub struct StrategyMetrics {
 }
 
 impl StrategyMetrics {
-    /// MATCHED fill event'ini absorbla. `side=Sell` → pozisyondan çıkış:
-    /// `*_filled` azalır (0'a clamp), VWAP **değişmez** (kalan pozisyonun
-    /// ortalama maliyeti korunur). `size` her zaman pozitif.
+    /// MATCHED fill'i absorbla. `Sell` → pozisyondan çıkış: `*_filled` azalır
+    /// (0'a clamp), VWAP **değişmez** (kalan pozisyonun ortalama maliyeti
+    /// korunur). `size` her zaman pozitif.
     pub fn ingest_fill(
         &mut self,
         outcome: Outcome,
@@ -79,22 +78,40 @@ impl StrategyMetrics {
         self.up_filled - self.down_filled
     }
 
-    /// `avg_up + avg_down` — profit-lock check için. Stored field değil
-    /// (gereksiz invariant); her okumada toplam.
+    /// `cost_basis / pair_count` (Elis "pair_cost"). Tek-taraflı/boş pozisyonda
+    /// `f64::INFINITY`. Balanced pair'de `avg_sum` ile özdeş, dengesizde > avg_sum.
+    pub fn pair_cost(&self) -> f64 {
+        let pc = self.pair_count();
+        if pc <= 0.0 {
+            f64::INFINITY
+        } else {
+            self.cost_basis() / pc
+        }
+    }
+
+    /// `|up − down| / min(up, down)`. Tek-taraflı pozisyonda `f64::INFINITY`.
+    pub fn balance_ratio(&self) -> f64 {
+        let pc = self.pair_count();
+        if pc <= 0.0 {
+            f64::INFINITY
+        } else {
+            self.imbalance().abs() / pc
+        }
+    }
+
+    /// `avg_up + avg_down` — Alis profit-lock kontrolü için.
     pub fn avg_sum(&self) -> f64 {
         self.avg_up + self.avg_down
     }
 
-    /// Pozisyonun cost basis'i (notional, fee hariç).
+    /// Cost basis (notional, fee hariç).
     pub fn cost_basis(&self) -> f64 {
         self.avg_up * self.up_filled + self.avg_down * self.down_filled
     }
 
-    /// Profit-lock garantisi: her iki tarafta da fill olmalı (pair > 0)
-    /// **ve** `avg_up + avg_down ≤ avg_threshold`. `avg_threshold` config'den
-    /// (`StrategyParams::avg_threshold()`, default 0.98) gelir. Sınır durumda
-    /// (eşit) lock geçerli sayılır — Alis hedge formülü hedef avg = threshold −
-    /// best_ask_opp olduğundan tam eşit denk gelebiliyor.
+    /// Pasif profit-lock: her iki tarafta da fill var **ve** `avg_sum ≤
+    /// avg_threshold` (default `1 − profit_lock_pct = 0.98`). Eşitlik geçerli —
+    /// Alis hedge formülü tam eşit denk gelebiliyor.
     pub fn profit_locked(&self, avg_threshold: f64) -> bool {
         self.pair_count() > 0.0 && self.avg_sum() <= avg_threshold
     }

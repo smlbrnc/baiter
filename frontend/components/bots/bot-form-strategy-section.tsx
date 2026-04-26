@@ -17,6 +17,7 @@ type Props = {
 export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const params: StrategyParams = form.strategy_params ?? {};
   const isAlis = form.strategy === "alis";
+  const isElis = form.strategy === "elis";
 
   const patch = (next: Partial<StrategyParams>) => {
     setForm({
@@ -41,6 +42,12 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const pyramidFakDelta =
     params.pyramid_fak_delta ?? STRATEGY_PARAMS_DEFAULTS.pyramid_fak_delta;
   const pyramidUsdc = params.pyramid_usdc ?? null;
+  const baseShares =
+    params.base_shares ?? STRATEGY_PARAMS_DEFAULTS.base_shares;
+  const balanceLock =
+    params.balance_lock ?? STRATEGY_PARAMS_DEFAULTS.balance_lock;
+  const balanceUrgent =
+    params.balance_urgent ?? STRATEGY_PARAMS_DEFAULTS.balance_urgent;
 
   return (
     <div className="space-y-3">
@@ -100,7 +107,7 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field
             label="Profit-lock oranı"
-            tooltip="Hedge hedef fiyatı için kullanılan eşik. avg_threshold = 1 − pct (örn. 0.02 → 0.98); hedge emir fiyatı = avg_threshold − avg_filled_side olarak türetilir. Düşük tutmak hedge'i avg'ye yakın, yüksek tutmak ise daha karlı (ama daha az dolgun) konuma yerleştirir. Default: 0.02."
+            tooltip="Tüm stratejiler için canonical profit eşiği: avg_threshold = 1 − pct (örn. 0.02 → 0.98). Alis hedge fiyatını avg_threshold − avg_filled_side olarak türetir. Elis lock testini pair_cost ≤ avg_threshold ile yapar ve aynı eşiği Extreme regime FAK projeksiyonunda kullanır. Düşük tutmak daha hızlı/yakın lock, yüksek tutmak daha karlı (ama daha az dolgun) lock anlamına gelir."
             hint="0.00 – 0.50 (default 0.02 → avg_threshold 0.98)."
           >
             <Input
@@ -195,6 +202,74 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                   value={pyramidFakDelta}
                   onChange={(e) =>
                     patch({ pyramid_fak_delta: Number(e.target.value) })
+                  }
+                />
+              </Field>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {isElis && (
+        <div className="space-y-3">
+          <div>
+            <SectionLabel icon={Sliders} title="Elis parametreleri" />
+            <p className="text-muted-foreground mt-1 text-sm">
+              Pair-trading taban share ve dengesizlik eşikleri.{" "}
+              <span className="font-mono">order_usdc</span> Elis sizing&apos;inde
+              kullanılmaz; emir boyutu doğrudan share sayısıyla hesaplanır.
+            </p>
+          </div>
+
+          <div className="bg-muted/25 space-y-4 rounded-md border border-border/40 p-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Field
+                label="Base shares"
+                tooltip="Ladder weight'lerinin uygulandığı taban share. Her ladder seviyesi `base_shares × side_w(score) × pct` olarak boyutlandırılır. Tight regime 4 seviye (40/30/20/10), Medium 3 (50/30/20), Wide 2 (70/30); Extreme tek deep maker + opsiyonel FAK. Hedge-urgent'ta eksik tarafa 2× boost uygulanır."
+                hint="Min 1 share (default 25)."
+              >
+                <Input
+                  type="number"
+                  step="1"
+                  min="1"
+                  value={baseShares}
+                  onChange={(e) =>
+                    patch({ base_shares: Number(e.target.value) })
+                  }
+                />
+              </Field>
+              <Field
+                label="Balance lock eşiği"
+                tooltip="Lock için max kabul edilen balance ratio = |up_filled − down_filled| / min(up, down). Bu eşiğin altında ve pair_cost ≤ avg_threshold iken Elis Locked state'ine geçer ve tüm açık `elis:*` emirlerini iptal eder. Düşük tutmak daha simetrik pozisyon ister."
+                hint="0.00 – 0.50 (default 0.10 = ≤%10 dengesizlik)."
+              >
+                <Input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  max="0.50"
+                  value={balanceLock}
+                  onChange={(e) =>
+                    patch({ balance_lock: Number(e.target.value) })
+                  }
+                />
+              </Field>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Field
+                label="Hedge-urgent eşiği"
+                tooltip="Balance ratio bu değeri aştığında Elis hedge-urgent moduna girer: dominant taraftaki tüm `elis:*` emirler cancel'lanır, eksik tarafa 2× weight'li ladder döşenir (Extreme regime'de FAK projeksiyonu lock eşiğinin altında kalıyorsa FAK da eklenir). Yüksek tutmak hedge'i geciktirir, düşük tutmak emir trafiğini artırır."
+                hint="0.05 – 1.00 (default 0.30 = >%30 dengesizlik tetikler)."
+              >
+                <Input
+                  type="number"
+                  step="0.05"
+                  min="0.05"
+                  max="1"
+                  value={balanceUrgent}
+                  onChange={(e) =>
+                    patch({ balance_urgent: Number(e.target.value) })
                   }
                 />
               </Field>

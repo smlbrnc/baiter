@@ -120,6 +120,15 @@ pub struct StrategyParams {
     pub pyramid_fak_delta: Option<f64>,
     #[serde(default)]
     pub pyramid_usdc: Option<f64>,
+    /// Elis: ladder taban share'i (`base × weight × pct`). Default `25.0`.
+    #[serde(default)]
+    pub base_shares: Option<f64>,
+    /// Elis: lock için max `balance_ratio` (`|up−down|/min`). Default `0.10`.
+    #[serde(default)]
+    pub balance_lock: Option<f64>,
+    /// Elis: hedge-urgent eşiği (`balance_ratio` üst sınırı). Default `0.30`.
+    #[serde(default)]
+    pub balance_urgent: Option<f64>,
 }
 
 impl StrategyParams {
@@ -155,5 +164,17 @@ impl StrategyParams {
 
     pub fn pyramid_usdc_or(&self, fallback: f64) -> f64 {
         self.pyramid_usdc.unwrap_or(fallback).max(0.0)
+    }
+
+    pub fn base_shares_or_default(&self) -> f64 {
+        self.base_shares.unwrap_or(25.0).max(0.0)
+    }
+
+    pub fn balance_lock_or_default(&self) -> f64 {
+        self.balance_lock.unwrap_or(0.10).max(0.0)
+    }
+
+    pub fn balance_urgent_or_default(&self) -> f64 {
+        self.balance_urgent.unwrap_or(0.30).max(0.0)
     }
 }

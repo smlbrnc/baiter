@@ -41,4 +41,25 @@ impl StrategyState {
             Self::Aras(_) => "Aras",
         }
     }
+
+    /// `self → next` profit-lock'a giriyorsa `Some(label)`; etiket `ProfitLocked`
+    /// event'ine `lock_method` olarak gider.
+    pub fn lock_transition_label(&self, next: &Self) -> Option<&'static str> {
+        match (self, next) {
+            (Self::Alis(prev), Self::Alis(AlisState::Locked))
+                if !matches!(prev, AlisState::Locked) =>
+            {
+                Some(match prev {
+                    AlisState::OpenPlaced { .. } => "symmetric_fill",
+                    _ => "passive_hedge_fill",
+                })
+            }
+            (Self::Elis(prev), Self::Elis(ElisState::Locked))
+                if !matches!(prev, ElisState::Locked) =>
+            {
+                Some("pair_lock")
+            }
+            _ => None,
+        }
+    }
 }

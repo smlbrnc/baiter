@@ -49,6 +49,24 @@ export interface StrategyParams {
    * Alis: pyramid emir başına USDC. `null` → opener `order_usdc` ile aynı.
    */
   pyramid_usdc?: number | null;
+  /**
+   * Elis: ladder weight'lerinin uygulandığı taban share. Her ladder seviyesi
+   * `base_shares × side_w × pct` olarak boyutlandırılır. `order_usdc`'den
+   * bağımsızdır — Elis emir boyutunu doğrudan share sayısıyla yönetir.
+   * Default 25.
+   */
+  base_shares?: number | null;
+  /**
+   * Elis: lock için kabul edilen maksimum balance ratio
+   * (`|up_filled − down_filled| / min(up, down)`). Default 0.10 (≤%10).
+   */
+  balance_lock?: number | null;
+  /**
+   * Elis: hedge-urgent moduna geçişin tetiklendiği balance ratio eşiği.
+   * Bu eşiği aşan dengesizlikte dominant taraf cancel'lanır, eksik tarafa
+   * 2× weight'li ladder döşenir. Default 0.30 (>%30).
+   */
+  balance_urgent?: number | null;
 }
 
 export interface BotRow {
@@ -268,8 +286,10 @@ export type FrontendEvent =
     }
   | {
       /**
-       * Alis profit-lock tetiklendi (`PositionOpen → Locked`).
-       * `lock_method`: `"taker_fak"` | `"passive_hedge_fill"` | `"symmetric_fill"`.
+       * Profit-lock tetiklendi (strateji `Locked` state'ine geçti).
+       * `lock_method` etiketi:
+       *   - Alis: `"taker_fak"` | `"passive_hedge_fill"` | `"symmetric_fill"`
+       *   - Elis: `"pair_lock"` (`pair_cost ≤ avg_threshold && balance ≤ balance_lock`)
        */
       kind: "ProfitLocked";
       bot_id: number;
@@ -359,4 +379,7 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   open_delta: 0.01,
   pyramid_agg_delta: 0.015,
   pyramid_fak_delta: 0.025,
+  base_shares: 25,
+  balance_lock: 0.1,
+  balance_urgent: 0.3,
 } as const;

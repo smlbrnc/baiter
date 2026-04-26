@@ -18,7 +18,8 @@ export const STRATEGY_OPTIONS: {
   {
     id: "elis",
     label: "Elis",
-    description: "İskelet — strateji kuralları henüz tanımlanmadı.",
+    description:
+      "BAITER çift-yön pair trading: spread regime ladder (Tight/Medium/Wide/Extreme), score'a göre UP/DOWN weight; pair_cost ≤ eşik & balance ≤ %10 olunca lock.",
   },
   {
     id: "aras",

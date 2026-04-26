@@ -14,7 +14,7 @@ import {
 import { PnLWidget } from "@/components/bots/pnl-widget";
 import { TradesTable } from "@/components/bots/trades-table";
 import { PriceChart } from "@/components/charts/price-chart";
-import { AvgSumChart } from "@/components/charts/avg-sum-chart";
+import { PositionsChart } from "@/components/charts/positions-chart";
 import { BinanceSignalPanel } from "@/components/charts/binance-signal-panel";
 import { SpreadSignalChart } from "@/components/charts/spread-signal-chart";
 import { BotSettingsCards } from "@/components/bots/bot-settings-cards";
@@ -270,7 +270,7 @@ export default function MarketDetailPage() {
           data={ticks}
           strategyParams={bot?.strategy_params ?? null}
         />
-        <AvgSumChart data={pnlHistory} session={sessionRange} />
+        <PositionsChart data={pnlHistory} session={sessionRange} />
       </div>
 
       <TradesTable botId={botId} slug={slug} isLive={isLive} />

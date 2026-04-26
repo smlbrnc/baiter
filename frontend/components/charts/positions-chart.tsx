@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import { Ratio } from "lucide-react";
+import { Layers } from "lucide-react";
 import {
   CartesianGrid,
   Line,
@@ -42,23 +42,37 @@ interface Props {
 
 interface Row {
   t: number;
-  avg_up: number;
-  avg_down: number;
+  up: number;
+  down: number;
+  /** `avg_up + avg_down`; her iki taraf da boşsa `null` (çizgi kesilsin). */
+  avg_sum: number | null;
 }
 
 const chartConfig = {
-  avg_up: { label: "avg_up", color: "oklch(0.58 0.17 155)" },
-  avg_down: { label: "avg_down", color: "oklch(0.58 0.2 25)" },
+  up: { label: "up_filled", color: "oklch(0.58 0.17 155)" },
+  down: { label: "down_filled", color: "oklch(0.58 0.2 25)" },
+  avg_sum: { label: "avg_sum", color: "oklch(0.82 0.16 95)" },
 } satisfies ChartConfig;
 
+/**
+ * `PnLSnapshot` zaman serisini saniye granülerliğine indirger;
+ * `up_filled`/`down_filled` her trade fill'inde artar (kümülatif share),
+ * dolayısıyla seri doğal olarak monoton non-decreasing step fonksiyonudur.
+ * `avg_sum = avg_up + avg_down` (VWAP toplamı) ayrı sağ-eksen üzerinde gösterilir.
+ */
 function toRows(snaps: PnLSnapshot[]): Row[] {
   const out: Row[] = [];
   for (const p of snaps) {
     const t = Math.floor(p.ts_ms / 1000);
+    const au = p.avg_up ?? null;
+    const ad = p.avg_down ?? null;
+    const avg_sum =
+      au !== null || ad !== null ? (au ?? 0) + (ad ?? 0) : null;
     const row: Row = {
       t,
-      avg_up: p.avg_up ?? 0,
-      avg_down: p.avg_down ?? 0,
+      up: p.up_filled,
+      down: p.down_filled,
+      avg_sum,
     };
     if (out.length && out[out.length - 1].t === t) {
       out[out.length - 1] = row;
@@ -69,8 +83,11 @@ function toRows(snaps: PnLSnapshot[]): Row[] {
   return out;
 }
 
-/** `avg_up` / `avg_down` (YES/NO VWAP) zaman serisi — `AVG SUM = avg_up + avg_down` tooltip'te. */
-export function AvgSumChart({ data, session }: Props) {
+/**
+ * UP/DOWN pozisyon (filled shares) zaman serisi — her trade fill'inde
+ * adımlanır. Tooltip'te `pairs = min(up, down)` türevi de gösterilir.
+ */
+export function PositionsChart({ data, session }: Props) {
   const rows = useMemo(() => toRows(data), [data]);
   const ticks = useMemo(
     () => (session ? timeTicks(session) : []),
@@ -84,14 +101,14 @@ export function AvgSumChart({ data, session }: Props) {
     <Card className={cn(SIGNAL_PAIR_CARD_CLASS, "min-w-0")}>
       <CardHeader className={SIGNAL_PAIR_HEADER_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
-          <Ratio
+          <Layers
             className="text-muted-foreground size-3 shrink-0"
             aria-hidden
           />
           <CardTitle
             className={cn(SECTION_LABEL_CLASS, "normal-case tracking-[0.12em]")}
           >
-            AVG SUM
+            POSITIONS
           </CardTitle>
         </div>
       </CardHeader>
@@ -117,10 +134,21 @@ export function AvgSumChart({ data, session }: Props) {
               {...CHART_TIME_X_AXIS_LAYOUT}
             />
             <YAxis
-              tickFormatter={(v) => Number(v).toFixed(3)}
+              yAxisId="shares"
+              tickFormatter={(v) => formatShares(Number(v))}
               tickLine={false}
               axisLine={false}
               width={40}
+              domain={[0, "auto"]}
+              allowDecimals={false}
+            />
+            <YAxis
+              yAxisId="price"
+              orientation="right"
+              tickFormatter={(v) => Number(v).toFixed(3)}
+              tickLine={false}
+              axisLine={false}
+              width={42}
               domain={[0, "auto"]}
             />
             <ChartTooltip
@@ -128,7 +156,7 @@ export function AvgSumChart({ data, session }: Props) {
                 if (!active || !payload?.length) return null;
                 const row = payload[0]?.payload as Row | undefined;
                 if (!row) return null;
-                const sum = row.avg_up + row.avg_down;
+                const pairs = Math.min(row.up, row.down);
                 return (
                   <div
                     className={cn(
@@ -138,46 +166,68 @@ export function AvgSumChart({ data, session }: Props) {
                     <div className="font-medium">{fmtTooltipTime(row.t)}</div>
                     <div className="flex justify-between gap-4 leading-none">
                       <span className="text-emerald-700/80 dark:text-emerald-400/90">
-                        avg_up
+                        up_filled
                       </span>
                       <span className="font-mono font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">
-                        {row.avg_up.toFixed(4)}
+                        {fmtShares(row.up)}
                       </span>
                     </div>
                     <div className="flex justify-between gap-4 leading-none">
                       <span className="text-rose-700/80 dark:text-rose-400/90">
-                        avg_down
+                        down_filled
                       </span>
                       <span className="font-mono font-semibold tabular-nums text-rose-600 dark:text-rose-400">
-                        {row.avg_down.toFixed(4)}
+                        {fmtShares(row.down)}
                       </span>
                     </div>
                     <div className="border-border/50 flex justify-between gap-4 border-t pt-1 leading-none">
                       <span className="text-violet-700/80 dark:text-violet-400/90">
-                        avg_sum
+                        pairs
                       </span>
                       <span className="font-mono font-semibold tabular-nums text-violet-600 dark:text-violet-400">
-                        {sum.toFixed(4)}
+                        {fmtShares(pairs)}
                       </span>
                     </div>
+                    {row.avg_sum !== null && (
+                      <div className="flex justify-between gap-4 leading-none">
+                        <span className="text-amber-600/80 dark:text-amber-300/90">
+                          avg_sum
+                        </span>
+                        <span className="font-mono font-semibold tabular-nums text-amber-600 dark:text-amber-300">
+                          {row.avg_sum.toFixed(4)}
+                        </span>
+                      </div>
+                    )}
                   </div>
                 );
               }}
             />
             <Line
-              type="monotone"
-              dataKey="avg_up"
-              stroke="var(--color-avg_up)"
+              yAxisId="shares"
+              type="stepAfter"
+              dataKey="up"
+              stroke="var(--color-up)"
               strokeWidth={2}
               dot={false}
               isAnimationActive={false}
             />
             <Line
-              type="monotone"
-              dataKey="avg_down"
-              stroke="var(--color-avg_down)"
+              yAxisId="shares"
+              type="stepAfter"
+              dataKey="down"
+              stroke="var(--color-down)"
               strokeWidth={2}
               dot={false}
+              isAnimationActive={false}
+            />
+            <Line
+              yAxisId="price"
+              type="monotone"
+              dataKey="avg_sum"
+              stroke="var(--color-avg_sum)"
+              strokeWidth={2}
+              dot={false}
+              connectNulls={false}
               isAnimationActive={false}
             />
           </LineChart>
@@ -185,4 +235,17 @@ export function AvgSumChart({ data, session }: Props) {
       </CardContent>
     </Card>
   );
+}
+
+/** Y-ekseni etiketi: tam sayıya yakın değerleri integer, kesirlileri 2-haneli göster. */
+function formatShares(v: number): string {
+  if (!Number.isFinite(v)) return "0";
+  return Number.isInteger(v) ? v.toString() : v.toFixed(2);
+}
+
+/** Tooltip değerleri: ≥ 1 share için 2 hane, çok küçükse 4 hane (parça fill için). */
+function fmtShares(v: number): string {
+  if (!Number.isFinite(v)) return "0";
+  if (v === 0) return "0";
+  return v >= 1 ? v.toFixed(2) : v.toFixed(4);
 }

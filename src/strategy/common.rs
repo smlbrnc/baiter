@@ -1,9 +1,9 @@
-//! Strateji <-> engine arasındaki ortak veri tipleri.
+//! Strateji ↔ engine ortak tipleri.
 //!
-//! `Decision` her stratejinin `decide()` çıktısı; `PlannedOrder` ve `OpenOrder`
-//! place/cancel akışında kullanılır. `StrategyContext` ise tüm stratejilerin
-//! tick başına okuduğu paylaşımlı snapshot — yeni strateji eklerken context'e
-//! sadece o stratejinin ihtiyacı olan alan eklenir, mevcutlar bozulmaz.
+//! `Decision` her stratejinin `decide()` çıktısı; `PlannedOrder`/`OpenOrder`
+//! place-cancel akışında kullanılır. `StrategyContext` tick başına paylaşılan
+//! salt-okunur snapshot — yeni strateji eklerken alan **eklenir**, mevcutlar
+//! kararlı public API gibi davranır.
 
 use crate::config::StrategyParams;
 use crate::strategy::metrics::StrategyMetrics;
@@ -58,9 +58,7 @@ impl OpenOrder {
     }
 }
 
-/// Stratejilerin tick başına okuduğu salt-okunur snapshot.
-/// Yeni strateji bu yapıya yeni alan **eklemekte** serbesttir; mevcut alanlar
-/// kararlı public API gibi davranır (tüm stratejiler okuyabilmeli).
+/// Tick başına okunan salt-okunur snapshot — bkz. modül başı.
 pub struct StrategyContext<'a> {
     pub metrics: &'a StrategyMetrics,
     pub up_token_id: &'a str,
@@ -106,4 +104,9 @@ impl StrategyContext<'_> {
             Outcome::Down => self.down_best_ask,
         }
     }
+}
+
+/// Re-quote eps: tick yarısı kadar fark "değişmedi" sayılır (spam guard).
+pub fn requote_threshold(tick_size: f64) -> f64 {
+    (tick_size / 2.0).max(1e-6)
 }
