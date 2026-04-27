@@ -4,7 +4,7 @@ use crate::config::BotConfig;
 use crate::ipc::{self, FrontendEvent};
 use crate::strategy::alis::{AlisEngine, AlisState};
 use crate::strategy::aras::ArasEngine;
-use crate::strategy::elis::ElisEngine;
+use crate::strategy::elis::{ElisEngine, ElisState};
 use crate::strategy::metrics::{MarketPnL, StrategyMetrics};
 use crate::strategy::{Decision, OpenOrder, PlannedOrder, StrategyContext, StrategyState};
 use crate::time::{now_ms, zone_pct, MarketZone};
@@ -157,6 +157,9 @@ impl MarketSession {
         if let Some(method) = detect_alis_lock_transition(&prev_state, &next_state) {
             emit_profit_locked(self, method, now_ms_v);
         }
+        if detect_elis_lock_transition(&prev_state, &next_state) {
+            emit_profit_locked(self, "elis_avg", now_ms_v);
+        }
         decision
     }
 }
@@ -176,6 +179,22 @@ fn detect_alis_lock_transition(
         AlisState::OpenPlaced { .. } => "symmetric_fill",
         _ => "passive_hedge_fill",
     })
+}
+
+/// Elis lock latch (`profit_locked()` ilk kez true olduğu tick).
+/// `Pending` → henüz Active'e geçmemiş, lock olamaz; `Active` içinde
+/// `locked: false → true` geçişi rapor edilir (idempotent: aynı tick yine
+/// false dönerse emit etmez).
+fn detect_elis_lock_transition(prev: &StrategyState, next: &StrategyState) -> bool {
+    let prev_locked = matches!(
+        prev,
+        StrategyState::Elis(ElisState::Active { locked: true, .. })
+    );
+    let next_locked = matches!(
+        next,
+        StrategyState::Elis(ElisState::Active { locked: true, .. })
+    );
+    !prev_locked && next_locked
 }
 
 fn emit_profit_locked(session: &MarketSession, method: &str, ts_ms: u64) {

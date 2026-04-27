@@ -17,6 +17,7 @@ type Props = {
 export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const params: StrategyParams = form.strategy_params ?? {};
   const isAlis = form.strategy === "alis";
+  const isElis = form.strategy === "elis";
 
   const patch = (next: Partial<StrategyParams>) => {
     setForm({
@@ -101,7 +102,11 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
           <Field
             label="Profit-lock oranı"
             tooltip="Hedge hedef fiyatı için kullanılan eşik. avg_threshold = 1 − pct (örn. 0.02 → 0.98); hedge emir fiyatı = avg_threshold − avg_filled_side olarak türetilir. Düşük tutmak hedge'i avg'ye yakın, yüksek tutmak ise daha karlı (ama daha az dolgun) konuma yerleştirir. Default: 0.02."
-            hint="0.00 – 0.50 (default 0.02 → avg_threshold 0.98)."
+            hint={
+              isElis
+                ? "0.00 – 0.50 (default 0.02 → avg_threshold 0.98). Elis önerisi: 0.025 → 0.975 (doküman §8)."
+                : "0.00 – 0.50 (default 0.02 → avg_threshold 0.98)."
+            }
           >
             <Input
               type="number"
