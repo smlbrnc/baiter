@@ -18,7 +18,8 @@ export const STRATEGY_OPTIONS: {
   {
     id: "elis",
     label: "Elis",
-    description: "İskelet — strateji kuralları henüz tanımlanmadı.",
+    description:
+      "UP/DOWN maker bid ile spread arbitrajı; envanter dengesi, profit-lock, momentum (composite skor) ve StopTrade’de sadece hedge.",
   },
   {
     id: "aras",

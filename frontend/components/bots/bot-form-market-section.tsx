@@ -205,9 +205,19 @@ export function BotFormMarketSection({
                       ? "Bu strateji henüz desteklenmiyor (backend reddeder)."
                       : undefined
                   }
-                  onClick={() =>
-                    disabled ? undefined : setForm({ ...form, strategy: id })
-                  }
+                  onClick={() => {
+                    if (disabled) return;
+                    setForm((f) => {
+                      const next = { ...f, strategy: id };
+                      if (id === "elis") {
+                        const p = f.strategy_params ?? {};
+                        if (p.profit_lock_pct == null) {
+                          next.strategy_params = { ...p, profit_lock_pct: 0.025 };
+                        }
+                      }
+                      return next;
+                    });
+                  }}
                   className={cn(
                     "flex min-h-9 flex-1 flex-col justify-center gap-0.5 px-2 py-2.5 text-left transition-colors sm:px-3 sm:py-2",
                     "rounded-none focus-visible:ring-ring/50 focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-background focus-visible:outline-none",

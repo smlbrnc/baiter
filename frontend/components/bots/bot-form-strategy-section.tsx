@@ -48,7 +48,9 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
       <div>
         <SectionLabel icon={Sliders} title="Strateji parametreleri" />
         <p className="text-muted-foreground mt-1 text-sm">
-          RTDS Chainlink sinyali ve strateji ince ayarları.
+          {isElis
+            ? "Elis maker bid ile spread arbitrajı. Aşağıdaki RTDS ve ağırlıklar composite skoru besler; Elis bunu yalnızca momentum (ani hareket) filtresi için kullanır. Profit-lock kar kilidi eşiğidir."
+            : "RTDS Chainlink sinyali ve strateji ince ayarları."}
         </p>
       </div>
 
@@ -101,7 +103,11 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field
             label="Profit-lock oranı"
-            tooltip="Hedge hedef fiyatı için kullanılan eşik. avg_threshold = 1 − pct (örn. 0.02 → 0.98); hedge emir fiyatı = avg_threshold − avg_filled_side olarak türetilir. Düşük tutmak hedge'i avg'ye yakın, yüksek tutmak ise daha karlı (ama daha az dolgun) konuma yerleştirir. Default: 0.02."
+            tooltip={
+              isElis
+                ? "Elis: avg_up + avg_down ≤ avg_threshold olduğunda kilit modu; avg_threshold = 1 − pct. Doküman önerisi ~0.975 için pct ≈ 0.025. Alis hedge formülünden farklı olarak Elis VWAP + envanter mantığıyla çalışır."
+                : "Hedge hedef fiyatı için kullanılan eşik. avg_threshold = 1 − pct (örn. 0.02 → 0.98); hedge emir fiyatı = avg_threshold − avg_filled_side olarak türetilir. Düşük tutmak hedge'i avg'ye yakın, yüksek tutmak ise daha karlı (ama daha az dolgun) konuma yerleştirir. Default: 0.02."
+            }
             hint={
               isElis
                 ? "0.00 – 0.50 (default 0.02 → avg_threshold 0.98). Elis önerisi: 0.025 → 0.975 (doküman §8)."
@@ -121,6 +127,26 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
           </Field>
         </div>
       </div>
+
+      {isElis && (
+        <div className="space-y-2 rounded-md border border-border/40 bg-muted/10 px-3 py-2.5 text-xs leading-relaxed text-muted-foreground">
+          <p className="font-medium text-foreground">Elis — kısa özet</p>
+          <ul className="list-disc space-y-1 pl-4">
+            <li>
+              Giriş: UP ve DOWN best bid toplamı 0.985 altında (sabit eşik);
+              çift tarafta maker bid.
+            </li>
+            <li>
+              Envanter: dengesizlikte ağır taraf iptal, hafif taraf hedge bid;
+              pencere sonu fazında yeni çift taraf yok, yalnızca denge hedge.
+            </li>
+            <li>
+              RTDS kapalıysa composite skor nötre yakın kalır; momentum filtresi
+              gevşer — kapalı RTDS ile davranışı göz önünde bulundur.
+            </li>
+          </ul>
+        </div>
+      )}
 
       {isAlis && (
         <div className="space-y-3">
