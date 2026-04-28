@@ -217,13 +217,19 @@ fn balanced(ctx: &StrategyContext<'_>) -> Decision {
         match target {
             Some(planned) => {
                 let eps = requote_threshold(ctx.tick_size);
-                if existing.len() == 1
-                    && (existing[0].price - planned.price).abs() < eps
-                {
-                    continue;
-                }
-                for o in &existing {
-                    cancels.push(o.id.clone());
+                if existing.len() == 1 {
+                    let ep = existing[0].price;
+                    // Mevcut fiyat hedefe yakınsa (±eps) veya hedefin ÜZERİNDEYSE
+                    // (bid düştü, emir passive fill için iyi konumda), dokunma.
+                    // Yalnızca fiyat hedefin ALTINA düştüyse (bid yükseldi) requote.
+                    if ep >= planned.price - eps {
+                        continue;
+                    }
+                    cancels.push(existing[0].id.clone());
+                } else {
+                    for o in &existing {
+                        cancels.push(o.id.clone());
+                    }
                 }
                 places.push(planned);
             }
