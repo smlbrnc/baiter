@@ -155,19 +155,80 @@ impl ClobClient {
     }
 
     /// Tek V2 `POST /order` çağrısı. Hot-path = bir HTTP round-trip.
-    /// Tüm parametreler borrow; çağıran tarafında allocation yok.
+    ///
+    /// 4xx yanıtları (örn. "not enough balance") hard `Err` değil, `success=false`
+    /// `PostOrderResponse` olarak döner; `place_many` bunu `continue` ile atlar.
+    /// 5xx veya ağ hataları hâlâ `Err` olarak propagate edilir.
     pub async fn post_order(
         &self,
         order: &Value,
         owner: &str,
         order_type: &str,
     ) -> Result<PostOrderResponse, AppError> {
-        let body = PostOrderBody {
-            order,
-            owner,
-            order_type,
-        };
-        self.auth_request("POST", "/order", Some(&body)).await
+        let creds = self.creds()?;
+        let ts = now_secs().to_string();
+        let body = PostOrderBody { order, owner, order_type };
+        let body_bytes = serde_json::to_vec(&body)
+            .map_err(|e| AppError::Clob(format!("post_order serialize: {e}")))?;
+        let body_str = std::str::from_utf8(&body_bytes)
+            .map_err(|e| AppError::Clob(format!("post_order utf-8: {e}")))?;
+        let headers = make_l2_headers(creds, ts, "POST", "/order", body_str)?;
+        let url = format!("{}/order", self.base);
+        let resp = headers
+            .apply(
+                self.http
+                    .post(&url)
+                    .header("Content-Type", "application/json")
+                    .body(body_bytes),
+            )
+            .send()
+            .await?;
+        let status = resp.status();
+        let text = resp.text().await?;
+
+        if status.is_success() {
+            return serde_json::from_str::<PostOrderResponse>(&text).map_err(|e| {
+                AppError::Clob(format!("POST /order → parse: {e} (body={text})"))
+            });
+        }
+
+        // 4xx = rejected order (balance, price bounds, vb.) → soft rejection.
+        // 5xx = sunucu hatası → hard error.
+        if status.is_client_error() {
+            let error_msg = serde_json::from_str::<Value>(&text)
+                .ok()
+                .and_then(|v| {
+                    v.get("error")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| text.clone());
+            tracing::warn!(
+                status = status.as_u16(),
+                error = %error_msg,
+                "post_order rejected (soft)"
+            );
+            return Ok(PostOrderResponse {
+                success: false,
+                order_id: String::new(),
+                status: PostOrderStatus::Unmatched,
+                error_msg,
+            });
+        }
+
+        // 5xx veya diğer beklenmedik kodlar → hard error.
+        tracing::warn!(
+            method = "POST",
+            path = "/order",
+            status = status.as_u16(),
+            body = %text,
+            "clob non-2xx"
+        );
+        Err(AppError::Clob(format!(
+            "POST /order → HTTP {}: {}",
+            status.as_u16(),
+            text
+        )))
     }
 
     /// Tekil `DELETE /order` veya batch `DELETE /orders` (>1).
