@@ -33,8 +33,12 @@ use super::common::{Decision, OpenOrder, PlannedOrder, StrategyContext};
 use crate::time::MarketZone;
 use crate::types::{Outcome, OrderType, Side};
 
-/// §3 — `yes_bid + no_bid` bu eşiğin altında ise pair girişi açıktır.
-const ENTRY_THRESHOLD: f64 = 0.995;
+/// §3 — `yes_bid + no_bid` bu eşiğin altında ise yeni pair girişi açıktır.
+const ENTRY_THRESHOLD: f64 = 0.990;
+/// §3 — Hysteresis: spread bu eşiği aşarsa mevcut emirler iptal edilir.
+/// ENTRY ile EXIT arasında ([0.990, 1.000)) kalan spreadlerde mevcut emirlere
+/// dokunulmaz — 1-2 saniyelik spread kapanmaları emirleri öldürmesin.
+const EXIT_THRESHOLD: f64 = 1.000;
 /// §11 — `avg_up + avg_down` bu eşiği aşarsa hard stop.
 const HARD_STOP_AVG: f64 = 1.01;
 /// §9 MODE1 — `|imb|` bu sınırın altında ise iki taraf da pair quoting.
@@ -108,8 +112,13 @@ fn compute_decision(ctx: &StrategyContext<'_>, prev_score: f64, locked: bool) ->
     }
 
     let spread = ctx.up_best_bid + ctx.down_best_bid;
-    if spread >= ENTRY_THRESHOLD {
+    if spread >= EXIT_THRESHOLD {
+        // Spread açıkça kârsız — tüm Elis emirlerini iptal et.
         return cancel_only(ctx);
+    }
+    if spread >= ENTRY_THRESHOLD {
+        // Hysteresis bölgesi: yeni pair girişi yok, mevcut emirlere dokunma.
+        return Decision::NoOp;
     }
 
     if abs_imb < BALANCED_IMB {
