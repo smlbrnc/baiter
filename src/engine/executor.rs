@@ -3,6 +3,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
+use futures_util::stream::{FuturesOrdered, StreamExt};
 use uuid::Uuid;
 
 use crate::config::Credentials;
@@ -11,7 +12,7 @@ use crate::ipc;
 use crate::polymarket::order::{
     build_order, expiration_for, order_to_json, sign_order, BuildArgs, SignerCache,
 };
-use crate::polymarket::{CancelResponse, ClobClient, PostOrderItem};
+use crate::polymarket::{CancelResponse, ClobClient};
 use crate::strategy::{Decision, OpenOrder, PlannedOrder};
 use crate::time::now_ms;
 use crate::types::{Outcome, Side};
@@ -68,10 +69,12 @@ impl LiveExecutor {
             tick_size,
         })?;
         let sig = sign_order(&order, &self.signer, neg_risk).await?;
-        Ok(order_to_json(&order, exp, &sig))
+        Ok(order_to_json(&self.signer, &order, exp, &sig))
     }
 
-    /// İmzala + tek `POST /orders`; reject olanları atla, kalanları `open_orders`'a ekle.
+    /// İmza + `POST /order` `FuturesOrdered` üzerinden eş zamanlı; sonuçlar
+    /// planned[] sırasında toplanır. Tek planned'da tek future = tek HTTP,
+    /// poll overhead'i nano-saniye seviyesi.
     pub async fn place_many(
         &self,
         session: &mut MarketSession,
@@ -80,24 +83,28 @@ impl LiveExecutor {
         if planned.is_empty() {
             return Ok(Vec::new());
         }
-        let mut items = Vec::with_capacity(planned.len());
-        for p in planned {
-            let body = self
-                .build_signed_body(p, session.tick_size, session.neg_risk)
-                .await?;
-            items.push(PostOrderItem {
-                order: body,
-                owner: self.owner.clone(),
-                order_type: p.order_type.as_str().to_string(),
-            });
+        let tick_size = session.tick_size;
+        let neg_risk = session.neg_risk;
+        let owner = self.owner.as_str();
+        let mut futs: FuturesOrdered<_> = planned
+            .iter()
+            .map(|p| async move {
+                let body = self.build_signed_body(p, tick_size, neg_risk).await?;
+                self.client
+                    .post_order(&body, owner, p.order_type.as_str())
+                    .await
+            })
+            .collect();
+        let mut resps = Vec::with_capacity(planned.len());
+        while let Some(r) = futs.next().await {
+            resps.push(r?);
         }
-        let resps = self.client.post_orders(items).await?;
-        let label = session.bot_id.to_string();
+        let label = session.bot_label.as_ref();
         let mut placed = Vec::with_capacity(planned.len());
         for (p, resp) in planned.iter().zip(resps.into_iter()) {
             if !resp.success {
                 ipc::log_line(
-                    &label,
+                    label,
                     format!(
                         "❌ POST /orders rejected status={} error={} reason={}",
                         resp.status.as_str(),
@@ -135,7 +142,7 @@ impl LiveExecutor {
         session: &mut MarketSession,
         ids: &[String],
     ) -> Result<CancelResponse, AppError> {
-        let label = session.bot_id.to_string();
+        let label = session.bot_label.as_ref();
         let resp = self.client.cancel_orders(ids).await?;
         let mut truly_canceled: HashSet<String> = HashSet::new();
         let mut terminal_reject: HashSet<String> = HashSet::new();
@@ -150,7 +157,7 @@ impl LiveExecutor {
                     .unwrap_or_else(|| reason.to_string());
                 let terminal = is_terminal_not_canceled(&reason_s);
                 ipc::log_line(
-                    &label,
+                    label,
                     format!(
                         "⚠️ cancel rejected id={nc_id} reason={reason_s}{}",
                         if terminal { " [terminal → pruning]" } else { "" }

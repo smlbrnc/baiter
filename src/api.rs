@@ -17,7 +17,7 @@ use serde_json::Value;
 use tokio_stream::wrappers::BroadcastStream;
 use tower_http::cors::{Any, CorsLayer};
 
-use crate::config::{BotConfig, Credentials, StrategyParams, BUILDER_CODE_ZERO};
+use crate::config::{BotConfig, Credentials, StrategyParams};
 use crate::db::{self, BotUpdate, GlobalCredentials};
 use crate::error::AppError;
 use crate::polymarket::auth as polymarket_auth;
@@ -25,7 +25,8 @@ use crate::supervisor::{self, AppState};
 use crate::types::{RunMode, Strategy};
 
 /// Frontend yalnız `(private_key, signature_type, funder?)` gönderir; backend
-/// L1 EIP-712 ile `apiKey/secret/passphrase`'i türetir.
+/// L1 EIP-712 ile `apiKey/secret/passphrase`'i türetir. `builder_code` per-bot
+/// değil — `config::BUILDER_CODE_HEX` sabitinden okunur.
 #[derive(Debug, Deserialize)]
 struct CredentialsInput {
     private_key: String,
@@ -34,8 +35,6 @@ struct CredentialsInput {
     funder: Option<String>,
     #[serde(default)]
     nonce: u64,
-    #[serde(default)]
-    builder_code: Option<String>,
 }
 
 fn trim_opt(s: Option<String>) -> Option<String> {
@@ -71,8 +70,6 @@ impl CredentialsInput {
                 self.signature_type
             )));
         }
-        let builder_code =
-            trim_opt(self.builder_code).unwrap_or_else(|| BUILDER_CODE_ZERO.to_string());
         let derived = polymarket_auth::derive_api_key(
             &state.http,
             &state.env.clob_base_url,
@@ -88,7 +85,6 @@ impl CredentialsInput {
             polygon_private_key: pk.to_string(),
             signature_type: self.signature_type,
             funder,
-            builder_code,
         })
     }
 }
@@ -512,7 +508,6 @@ struct SettingsCredentialsResp {
     poly_address: String,
     signature_type: i32,
     funder: Option<String>,
-    builder_code: String,
     has_credentials: bool,
     updated_at_ms: i64,
 }
@@ -525,7 +520,6 @@ async fn get_settings_credentials(
             poly_address: String::new(),
             signature_type: 0,
             funder: None,
-            builder_code: String::new(),
             has_credentials: false,
             updated_at_ms: 0,
         },
@@ -533,7 +527,6 @@ async fn get_settings_credentials(
             poly_address: c.poly_address,
             signature_type: c.signature_type,
             funder: c.funder,
-            builder_code: c.builder_code,
             has_credentials: true,
             updated_at_ms: c.updated_at_ms,
         },
@@ -556,7 +549,6 @@ async fn put_settings_credentials(
             polygon_private_key: creds.polygon_private_key,
             signature_type: creds.signature_type,
             funder: creds.funder,
-            builder_code: creds.builder_code,
             updated_at_ms: 0,
         },
     )

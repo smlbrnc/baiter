@@ -21,6 +21,7 @@ use super::tasks;
 /// Paylaşılan bot bağlamı.
 pub struct Ctx {
     pub bot_id: i64,
+    pub bot_label: Arc<str>,
     pub cfg: BotConfig,
     pub env_: RuntimeEnv,
     pub pool: SqlitePool,
@@ -89,9 +90,12 @@ pub async fn load(bot_id: i64) -> Result<(Ctx, SlugInfo, Signal, Signal), AppErr
 
     let (sigterm, sigint) = register_signals()?;
 
+    let bot_label: Arc<str> = Arc::from(bot_id.to_string().into_boxed_str());
+
     Ok((
         Ctx {
             bot_id,
+            bot_label,
             cfg,
             env_,
             pool,

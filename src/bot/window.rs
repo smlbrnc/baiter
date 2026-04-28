@@ -93,7 +93,7 @@ async fn prepare_window(
         market_session_id: session_id,
         fee_rate,
         owner_uuid,
-        ..MarketSession::new(ctx.bot_id, slug.to_slug(), &ctx.cfg)
+        ..MarketSession::new(ctx.bot_id, ctx.bot_label.clone(), slug.to_slug(), &ctx.cfg)
     })
 }
 
@@ -284,7 +284,6 @@ async fn run_trading_loop(
                 }
             }
             _ = cadence.tick() => {
-                tick::tick(ctx, &mut sess).await;
                 let sig = observed_snapshot(ctx, &sess).await;
                 zone::emit_frontend_snapshot(ctx, &sess, &sig);
                 persist::snapshot_pnl(&ctx.pool, &sess);

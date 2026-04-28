@@ -30,7 +30,7 @@ impl RuntimeEnv {
             bot_binary: env_or("BOT_BINARY", default_bot_binary()),
             heartbeat_dir: env_or("HEARTBEAT_DIR", "./data/heartbeat"),
             gamma_base_url: env_or("GAMMA_BASE_URL", "https://gamma-api.polymarket.com"),
-            clob_base_url: env_or("CLOB_BASE_URL", "https://clob-v2.polymarket.com"),
+            clob_base_url: env_or("CLOB_BASE_URL", "https://clob.polymarket.com"),
             clob_ws_base: env_or(
                 "CLOB_WS_BASE",
                 "wss://ws-subscriptions-clob.polymarket.com/ws",
@@ -77,12 +77,13 @@ pub struct Credentials {
     pub polygon_private_key: String,
     pub signature_type: i32,
     pub funder: Option<String>,
-    pub builder_code: String,
 }
 
-/// Attribution istemeyen kullanıcı için default — DB migration'ın varsayılanı.
-pub const BUILDER_CODE_ZERO: &str =
-    "0x0000000000000000000000000000000000000000000000000000000000000000";
+/// Tüm botlar için tek standart V2 builder code (bytes32 hex). Per-credential
+/// override yok — order JSON `builder` alanına `SignerCache` üzerinden injekte
+/// edilir.
+pub const BUILDER_CODE_HEX: &str =
+    "0xa5ff679c20c755da3ebdb8a1a4066823b402053c199ceae78e31f01695f48f5a";
 
 /// `bots` tablosundan yüklenen tek bir bot konfigürasyonu.
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -36,6 +36,10 @@ alloy::sol! {
     }
 }
 
+/// Statik metadata = `bytes32(0)` hex prefiks'li yazımı; her order'da alloc'sız kullanılır.
+const METADATA_HEX: &str =
+    "0x0000000000000000000000000000000000000000000000000000000000000000";
+
 /// Boot'ta bir kez kurulan imza materyali; her order için signer parse + domain inşası eler.
 pub struct SignerCache {
     pub signer: PrivateKeySigner,
@@ -46,6 +50,10 @@ pub struct SignerCache {
     pub ctf_domain: Eip712Domain,
     pub neg_risk_domain: Eip712Domain,
     pub builder_bytes: FixedBytes<32>,
+    /// `0x...` lower-case hex; her order JSON'unda allocation kaybeder.
+    pub maker_addr_hex: String,
+    pub signer_addr_hex: String,
+    pub builder_hex: String,
 }
 
 impl SignerCache {
@@ -85,7 +93,10 @@ impl SignerCache {
             chain_id: chain_id,
             verifying_contract: NEG_RISK_CTF_EXCHANGE,
         };
-        let builder_bytes = parse_bytes32(&creds.builder_code)?;
+        let builder_bytes = parse_bytes32(crate::config::BUILDER_CODE_HEX)?;
+        let maker_addr_hex = format!("{maker_addr:#x}");
+        let signer_addr_hex = format!("{signer_addr:#x}");
+        let builder_hex = format!("0x{}", hex::encode(builder_bytes));
         Ok(Self {
             signer,
             signer_addr,
@@ -94,6 +105,9 @@ impl SignerCache {
             ctf_domain,
             neg_risk_domain,
             builder_bytes,
+            maker_addr_hex,
+            signer_addr_hex,
+            builder_hex,
         })
     }
 
@@ -115,20 +129,24 @@ pub struct BuildArgs<'a> {
     pub tick_size: f64,
 }
 
-fn rounding_config(tick_size: f64) -> (u32, u32, u32) {
+fn rounding_config(tick_size: f64) -> Result<(u32, u32, u32), AppError> {
     if (tick_size - 0.0001).abs() < 1e-9 {
-        (4, 2, 6)
+        Ok((4, 2, 6))
     } else if (tick_size - 0.001).abs() < 1e-9 {
-        (3, 2, 5)
+        Ok((3, 2, 5))
+    } else if (tick_size - 0.01).abs() < 1e-9 {
+        Ok((2, 2, 4))
     } else if (tick_size - 0.1).abs() < 1e-9 {
-        (1, 2, 3)
+        Ok((1, 2, 3))
     } else {
-        (2, 2, 4)
+        Err(AppError::Clob(format!(
+            "unsupported tick_size {tick_size} (allowed: 0.0001, 0.001, 0.01, 0.1)"
+        )))
     }
 }
 
 pub fn build_order(args: &BuildArgs<'_>) -> Result<Order, AppError> {
-    let (price_dec, size_dec, amount_dec) = rounding_config(args.tick_size);
+    let (price_dec, size_dec, amount_dec) = rounding_config(args.tick_size)?;
     let size_factor = 10u128.pow(size_dec);
     let price_factor = 10u128.pow(price_dec);
     let amount_to_token = 10u128.pow(TOKEN_DECIMALS - amount_dec);
@@ -189,7 +207,16 @@ pub async fn sign_order(
 }
 
 /// V2 wire body: 11 imzalı alan + `expiration` (GTD için unix-secs, aksi `0`) + `signature`.
-pub fn order_to_json(order: &Order, expiration_secs: u64, signature_hex: &str) -> Value {
+///
+/// `cache` üzerinden `maker`/`signer`/`builder` hex'leri ve sabit `metadata`
+/// alanı doğrudan referansla kullanılır; her order'da yeniden allocate
+/// edilmez.
+pub fn order_to_json(
+    cache: &SignerCache,
+    order: &Order,
+    expiration_secs: u64,
+    signature_hex: &str,
+) -> Value {
     let side_str = if order.side == 0 { "BUY" } else { "SELL" };
     let salt: u64 = order
         .salt
@@ -197,8 +224,8 @@ pub fn order_to_json(order: &Order, expiration_secs: u64, signature_hex: &str) -
         .expect("salt fits in u64 by construction (order_salt)");
     json!({
         "salt": salt,
-        "maker": format!("{:#x}", order.maker),
-        "signer": format!("{:#x}", order.signer),
+        "maker": &cache.maker_addr_hex,
+        "signer": &cache.signer_addr_hex,
         "tokenId": order.tokenId.to_string(),
         "makerAmount": order.makerAmount.to_string(),
         "takerAmount": order.takerAmount.to_string(),
@@ -206,8 +233,8 @@ pub fn order_to_json(order: &Order, expiration_secs: u64, signature_hex: &str) -
         "signatureType": order.signatureType,
         "expiration": expiration_secs.to_string(),
         "timestamp": order.timestamp.to_string(),
-        "metadata": format!("0x{}", hex::encode(order.metadata)),
-        "builder":  format!("0x{}", hex::encode(order.builder)),
+        "metadata": METADATA_HEX,
+        "builder":  &cache.builder_hex,
         "signature": signature_hex,
     })
 }

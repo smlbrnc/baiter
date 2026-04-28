@@ -1,3 +1,10 @@
+//! Polymarket L1 (EIP-712) ve L2 (HMAC) auth yardımcıları.
+//!
+//! L2 imza kuralı: `HMAC_SHA256(secret_b64_url, ts || METHOD || path || body)`
+//! base64-url encoded. `method` çağıranlar `"POST"`, `"DELETE"`, `"GET"`
+//! gibi büyük-harf-statik literaller verir; runtime'da `to_uppercase`
+//! allocation'ı yapılmaz.
+
 use alloy::primitives::U256;
 use alloy::signers::local::PrivateKeySigner;
 use alloy::signers::Signer;
@@ -13,6 +20,8 @@ use crate::time::now_secs;
 
 type HmacSha256 = Hmac<Sha256>;
 
+/// HMAC-SHA256(secret_b64, ts || method || path || body) → base64-url.
+/// `method` upper-case ASCII varsayılır (caller `&'static str` literal verir).
 fn build_l2_signature(
     secret_b64: &str,
     timestamp: &str,
@@ -24,53 +33,51 @@ fn build_l2_signature(
         .decode(secret_b64)
         .map_err(|e| AppError::Auth(format!("secret base64 decode: {e}")))?;
 
-    let message = format!(
-        "{}{}{}{}",
-        timestamp,
-        method.to_uppercase(),
-        request_path,
-        body,
-    );
-
     let mut mac = HmacSha256::new_from_slice(&secret)
         .map_err(|e| AppError::Auth(format!("hmac init: {e}")))?;
-    mac.update(message.as_bytes());
+    mac.update(timestamp.as_bytes());
+    mac.update(method.as_bytes());
+    mac.update(request_path.as_bytes());
+    mac.update(body.as_bytes());
     let tag = mac.finalize().into_bytes();
 
     Ok(URL_SAFE.encode(tag))
 }
 
-pub struct L2Headers {
-    address: String,
-    api_key: String,
-    passphrase: String,
-    timestamp: String,
-    signature: String,
+/// L2 başlık seti — `address`, `api_key`, `passphrase` `Credentials`'tan
+/// borrow edilir; sadece `timestamp` ve `signature` request başına yenilenir.
+pub struct L2Headers<'a> {
+    pub address: &'a str,
+    pub api_key: &'a str,
+    pub passphrase: &'a str,
+    pub timestamp: String,
+    pub signature: String,
 }
 
-impl L2Headers {
+impl<'a> L2Headers<'a> {
     pub fn apply(self, req: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         req.header("POLY_ADDRESS", self.address)
             .header("POLY_API_KEY", self.api_key)
             .header("POLY_PASSPHRASE", self.passphrase)
-            .header("POLY_TIMESTAMP", self.timestamp)
-            .header("POLY_SIGNATURE", self.signature)
+            .header("POLY_TIMESTAMP", &self.timestamp)
+            .header("POLY_SIGNATURE", &self.signature)
     }
 }
 
-pub fn make_l2_headers(
-    creds: &crate::config::Credentials,
-    timestamp: &str,
-    method: &str,
+/// L2 başlıklarını üret. `method` upper-case literal (`"POST"`, `"DELETE"`, `"GET"`).
+pub fn make_l2_headers<'a>(
+    creds: &'a crate::config::Credentials,
+    timestamp: String,
+    method: &'static str,
     path: &str,
     body: &str,
-) -> Result<L2Headers, AppError> {
-    let signature = build_l2_signature(&creds.poly_secret, timestamp, method, path, body)?;
+) -> Result<L2Headers<'a>, AppError> {
+    let signature = build_l2_signature(&creds.poly_secret, &timestamp, method, path, body)?;
     Ok(L2Headers {
-        address: creds.poly_address.clone(),
-        api_key: creds.poly_api_key.clone(),
-        passphrase: creds.poly_passphrase.clone(),
-        timestamp: timestamp.to_string(),
+        address: &creds.poly_address,
+        api_key: &creds.poly_api_key,
+        passphrase: &creds.poly_passphrase,
+        timestamp,
         signature,
     })
 }
@@ -159,7 +166,7 @@ pub async fn derive_api_key(
 
     let status = resp.status();
     if !status.is_success() {
-        let body = resp.text().await.unwrap_or_default();
+        let body = resp.text().await?;
         return Err(AppError::Clob(format!("derive-api-key {status}: {body}")));
     }
 

@@ -7,7 +7,7 @@ pub mod gamma;
 pub mod order;
 pub mod ws;
 
-pub use clob::{shared_http_client, CancelResponse, ClobClient, PostOrderItem};
+pub use clob::{shared_http_client, CancelResponse, ClobClient};
 pub use fees::{fee_for_role, FeeParams};
 pub use gamma::{GammaClient, GammaMarket};
 pub use ws::{

@@ -1,7 +1,20 @@
+//! Polymarket CLOB V2 REST istemcisi (POST /order, DELETE /order|/orders,
+//! /cancel-all, /clob-markets, /heartbeats).
+//!
+//! Hot-path tasarımı:
+//! * `auth_request` body'yi tek seferde `Vec<u8>` olarak üretir; HMAC
+//!   imzası bu byte slice'ından `&str` üzerinden alınır (alloc yok),
+//!   HTTP gövdesine de aynı bytes gönderilir.
+//! * `method` parametresi `&'static str` literal (`"POST"`, `"DELETE"`,
+//!   …); runtime'da `to_uppercase` allocation'ı yapılmaz.
+//! * Response gövdesi doğrudan `serde_json::from_str::<T>` ile hedef
+//!   tipe parse edilir; ara `Value` adımı yok.
+
 use std::sync::Arc;
 use std::time::Duration;
 
-use reqwest::{Client, Method};
+use reqwest::Client;
+use serde::de::{DeserializeOwned, IgnoredAny};
 use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
@@ -10,10 +23,8 @@ use crate::error::AppError;
 use crate::polymarket::auth::make_l2_headers;
 use crate::time::now_secs;
 
-/// `POST /orders` resmi batch tavanı.
-pub const POST_ORDERS_MAX_PER_REQ: usize = 15;
 /// `DELETE /orders` resmi batch tavanı.
-pub const CANCEL_ORDERS_MAX_PER_REQ: usize = 3000;
+const CANCEL_ORDERS_MAX_PER_REQ: usize = 3000;
 
 /// Taker fee parametreleri (`/clob-markets/{condition_id}.fd`).
 #[derive(Debug, Clone, Copy)]
@@ -44,7 +55,7 @@ impl ClobClient {
     pub fn new(http: Client, base: String, creds: Option<Credentials>) -> Self {
         Self {
             http,
-            base,
+            base: base.trim_end_matches('/').to_string(),
             creds: creds.map(Arc::new),
         }
     }
@@ -55,17 +66,19 @@ impl ClobClient {
             .ok_or_else(|| AppError::Auth("credentials eksik (dry run? env?)".to_string()))
     }
 
-    /// CLOB V2 public GET — auth gerektirmez.
-    async fn public_get_json(&self, path: &str) -> Result<Value, AppError> {
+    /// Public CLOB GET — auth gerektirmez. Yalnızca `get_taker_fee` tarafından kullanılır.
+    async fn public_get_typed<T: DeserializeOwned>(&self, path: &str) -> Result<T, AppError> {
         let url = format!("{}{}", self.base, path);
         let resp = self.http.get(&url).send().await?.error_for_status()?;
-        Ok(resp.json::<Value>().await?)
+        let text = resp.text().await?;
+        serde_json::from_str::<T>(&text)
+            .map_err(|e| AppError::Clob(format!("GET {path} → parse: {e} (body={text})")))
     }
 
     /// `GET /clob-markets/{condition_id}` → `fd.r` (rate) + `fd.to` (taker_only).
     pub async fn get_taker_fee(&self, condition_id: &str) -> Result<TakerFee, AppError> {
-        let v = self
-            .public_get_json(&format!("/clob-markets/{condition_id}"))
+        let v: Value = self
+            .public_get_typed(&format!("/clob-markets/{condition_id}"))
             .await?;
         let fd = v
             .get("fd")
@@ -79,31 +92,45 @@ impl ClobClient {
         Ok(TakerFee { rate, taker_only })
     }
 
-    async fn auth_request(
+    /// HMAC + body single-serialization L2 request. `T = IgnoredAny` ise gövde yok sayılır.
+    async fn auth_request<B: Serialize, T: DeserializeOwned>(
         &self,
-        method: Method,
+        method: &'static str,
         path: &str,
-        body: Option<Value>,
-    ) -> Result<Value, AppError> {
+        body: Option<&B>,
+    ) -> Result<T, AppError> {
         let creds = self.creds()?;
         let ts = now_secs().to_string();
-        let body_str = body.as_ref().map(Value::to_string).unwrap_or_default();
-        let headers = make_l2_headers(creds, &ts, method.as_str(), path, &body_str)?;
+
+        let body_bytes = match body {
+            Some(b) => serde_json::to_vec(b)
+                .map_err(|e| AppError::Clob(format!("body serialize: {e}")))?,
+            None => Vec::new(),
+        };
+        let body_str = std::str::from_utf8(&body_bytes)
+            .map_err(|e| AppError::Clob(format!("body utf-8: {e}")))?;
+        let headers = make_l2_headers(creds, ts, method, path, body_str)?;
 
         let url = format!("{}{}", self.base, path);
+        let req_method = match method {
+            "POST" => reqwest::Method::POST,
+            "GET" => reqwest::Method::GET,
+            "DELETE" => reqwest::Method::DELETE,
+            _ => unreachable!("auth_request method literali destekli olmalı: {method}"),
+        };
         let mut req = self
             .http
-            .request(method.clone(), &url)
+            .request(req_method, &url)
             .header("Content-Type", "application/json");
-        if !body_str.is_empty() {
-            req = req.body(body_str);
+        if !body_bytes.is_empty() {
+            req = req.body(body_bytes);
         }
         let resp = headers.apply(req).send().await?;
         let status = resp.status();
-        let text = resp.text().await.unwrap_or_default();
+        let text = resp.text().await?;
         if !status.is_success() {
             tracing::warn!(
-                method = method.as_str(),
+                method,
                 path,
                 status = status.as_u16(),
                 body = %text,
@@ -118,62 +145,46 @@ impl ClobClient {
             )));
         }
         if text.is_empty() {
-            return Ok(Value::Null);
+            return serde_json::from_str::<T>("null").map_err(|e| {
+                AppError::Clob(format!("{method} {path} → empty body parse: {e}"))
+            });
         }
-        serde_json::from_str(&text).map_err(|e| {
-            AppError::Clob(format!("{} {} → parse: {} (body={})", method, path, e, text))
+        serde_json::from_str::<T>(&text).map_err(|e| {
+            AppError::Clob(format!("{method} {path} → parse: {e} (body={text})"))
         })
     }
 
-    /// Batch `POST /orders` — max 15/req, üstüyse chunk'lar; giriş sırası korunur.
-    pub async fn post_orders(
+    /// Tek V2 `POST /order` çağrısı. Hot-path = bir HTTP round-trip.
+    /// Tüm parametreler borrow; çağıran tarafında allocation yok.
+    pub async fn post_order(
         &self,
-        items: Vec<PostOrderItem>,
-    ) -> Result<Vec<PostOrderResponse>, AppError> {
-        if items.is_empty() {
-            return Ok(Vec::new());
-        }
-        let mut out = Vec::with_capacity(items.len());
-        for chunk in items.chunks(POST_ORDERS_MAX_PER_REQ) {
-            let body = Value::Array(
-                chunk
-                    .iter()
-                    .map(|i| {
-                        serde_json::json!({
-                            "order": i.order,
-                            "owner": i.owner,
-                            "orderType": i.order_type,
-                        })
-                    })
-                    .collect(),
-            );
-            let resp = self.auth_request(Method::POST, "/orders", Some(body)).await?;
-            let parsed: Vec<PostOrderResponse> = serde_json::from_value(resp).map_err(|e| {
-                AppError::Clob(format!("POST /orders parse: {e}"))
-            })?;
-            out.extend(parsed);
-        }
-        Ok(out)
+        order: &Value,
+        owner: &str,
+        order_type: &str,
+    ) -> Result<PostOrderResponse, AppError> {
+        let body = PostOrderBody {
+            order,
+            owner,
+            order_type,
+        };
+        self.auth_request("POST", "/order", Some(&body)).await
     }
 
-    /// Batch `DELETE /orders` — max 3000/req; `canceled` ve `not_canceled` map'lerini birleştirir.
+    /// Tekil `DELETE /order` veya batch `DELETE /orders` (>1).
     pub async fn cancel_orders(&self, ids: &[String]) -> Result<CancelResponse, AppError> {
         if ids.is_empty() {
-            return Ok(CancelResponse {
-                canceled: Vec::new(),
-                not_canceled: serde_json::json!({}),
-            });
+            return Ok(CancelResponse::default());
+        }
+        if ids.len() == 1 {
+            let body = CancelOneBody { order_id: &ids[0] };
+            return self.auth_request("DELETE", "/order", Some(&body)).await;
         }
         let mut canceled = Vec::with_capacity(ids.len());
         let mut not_canceled_merged = serde_json::Map::new();
         for chunk in ids.chunks(CANCEL_ORDERS_MAX_PER_REQ) {
-            let body = Value::Array(chunk.iter().map(|s| Value::String(s.clone())).collect());
-            let resp = self
-                .auth_request(Method::DELETE, "/orders", Some(body))
+            let parsed: CancelResponse = self
+                .auth_request("DELETE", "/orders", Some(&chunk))
                 .await?;
-            let parsed: CancelResponse = serde_json::from_value(resp).map_err(|e| {
-                AppError::Clob(format!("DELETE /orders parse: {e}"))
-            })?;
             canceled.extend(parsed.canceled);
             if let Some(map) = parsed.not_canceled.as_object() {
                 for (k, v) in map {
@@ -188,16 +199,29 @@ impl ClobClient {
     }
 
     pub async fn cancel_all(&self) -> Result<CancelResponse, AppError> {
-        let resp = self
-            .auth_request(Method::DELETE, "/cancel-all", None)
-            .await?;
-        Ok(serde_json::from_value(resp)?)
+        self.auth_request::<(), CancelResponse>("DELETE", "/cancel-all", None)
+            .await
     }
 
     pub async fn heartbeat_once(&self) -> Result<(), AppError> {
-        self.auth_request(Method::POST, "/heartbeats", None).await?;
+        self.auth_request::<(), IgnoredAny>("POST", "/heartbeats", None)
+            .await?;
         Ok(())
     }
+}
+
+#[derive(Serialize)]
+struct PostOrderBody<'a> {
+    order: &'a Value,
+    owner: &'a str,
+    #[serde(rename = "orderType")]
+    order_type: &'a str,
+}
+
+#[derive(Serialize)]
+struct CancelOneBody<'a> {
+    #[serde(rename = "orderID")]
+    order_id: &'a str,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -248,18 +272,19 @@ pub struct PostOrderResponse {
     pub error_msg: String,
 }
 
-/// `POST /orders` body item.
-#[derive(Debug, Clone, Serialize)]
-pub struct PostOrderItem {
-    pub order: Value,
-    pub owner: String,
-    pub order_type: String,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct CancelResponse {
     #[serde(default)]
     pub canceled: Vec<String>,
     #[serde(default)]
     pub not_canceled: Value,
+}
+
+impl Default for CancelResponse {
+    fn default() -> Self {
+        Self {
+            canceled: Vec::new(),
+            not_canceled: Value::Object(serde_json::Map::new()),
+        }
+    }
 }

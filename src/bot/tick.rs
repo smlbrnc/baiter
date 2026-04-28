@@ -18,6 +18,14 @@ fn delta_from_composite(composite: f64) -> f64 {
     (composite - NEUTRAL_COMPOSITE) / NEUTRAL_COMPOSITE
 }
 
+fn cancel_ids_for_log(decision: &Decision) -> &[String] {
+    match decision {
+        Decision::CancelOrders(ids) => ids.as_slice(),
+        Decision::CancelAndPlace { cancels, .. } => cancels.as_slice(),
+        Decision::NoOp | Decision::PlaceOrders(_) => &[],
+    }
+}
+
 /// Composite signal → decide → execute; başarılı execute sonrası `hot_path_latency` log.
 pub async fn tick(ctx: &Ctx, sess: &mut MarketSession) {
     let recv_at = std::time::Instant::now();
@@ -25,18 +33,18 @@ pub async fn tick(ctx: &Ctx, sess: &mut MarketSession) {
     let (composite, signal_ready) = decision_composite(ctx, sess).await;
     let decision = sess.tick(&ctx.cfg, now_ms(), composite, signal_ready);
     let bot_id = ctx.bot_id;
-    let label = bot_id.to_string();
+    let label = ctx.bot_label.as_ref();
 
     if matches!(decision, Decision::NoOp) {
         return;
     }
 
-    let decision_for_log = decision.clone();
+    let cancel_ids: Vec<String> = cancel_ids_for_log(&decision).to_vec();
     let out = match execute(sess, &ctx.executor, decision).await {
         Ok(out) => out,
         Err(e) => {
             tracing::error!(bot_id, error = %e, "execute failed in tick");
-            ipc::log_line(&label, format!("❌ execute failed: {e}"));
+            ipc::log_line(label, format!("❌ execute failed: {e}"));
             return;
         }
     };
@@ -72,11 +80,9 @@ pub async fn tick(ctx: &Ctx, sess: &mut MarketSession) {
         }
     }
 
-    tokio::spawn(async move {
-        log_cancel(&decision_for_log, &out.canceled, &label);
-        log_placements(&out, composite, &label);
-        emit_order_events(bot_id, &out);
-    });
+    log_cancel(&cancel_ids, &out.canceled, label);
+    log_placements(&out, composite, label);
+    emit_order_events(bot_id, &out);
 }
 
 fn emit_order_events(bot_id: i64, out: &ExecuteOutput) {
@@ -105,12 +111,7 @@ fn emit_order_events(bot_id: i64, out: &ExecuteOutput) {
     }
 }
 
-fn log_cancel(decision: &Decision, canceled: &[CancelResponse], label: &str) {
-    let cancel_ids: &[String] = match decision {
-        Decision::CancelOrders(ids) => ids,
-        Decision::CancelAndPlace { cancels, .. } => cancels,
-        Decision::NoOp | Decision::PlaceOrders(_) => return,
-    };
+fn log_cancel(cancel_ids: &[String], canceled: &[CancelResponse], label: &str) {
     if cancel_ids.is_empty() {
         return;
     }

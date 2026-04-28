@@ -1,5 +1,7 @@
 //! MarketSession + decision loop + DryRun simulator.
 
+use std::sync::Arc;
+
 use crate::config::BotConfig;
 use crate::ipc::{self, FrontendEvent};
 use crate::strategy::alis::{AlisEngine, AlisState};
@@ -32,6 +34,7 @@ pub struct ExecutedOrder {
 #[derive(Debug)]
 pub struct MarketSession {
     pub bot_id: i64,
+    pub bot_label: Arc<str>,
     pub slug: String,
     pub market_session_id: i64,
     pub condition_id: String,
@@ -67,9 +70,10 @@ pub struct MarketSession {
 }
 
 impl MarketSession {
-    pub fn new(bot_id: i64, slug: String, cfg: &BotConfig) -> Self {
+    pub fn new(bot_id: i64, bot_label: Arc<str>, slug: String, cfg: &BotConfig) -> Self {
         Self {
             bot_id,
+            bot_label,
             slug,
             market_session_id: 0,
             condition_id: String::new(),
