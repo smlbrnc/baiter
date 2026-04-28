@@ -568,8 +568,19 @@ impl RawEvent {
 
 impl BookFrame {
     fn into_event(self) -> Option<PolymarketEvent> {
-        let best_bid = self.bids.first()?.price;
-        let best_ask = self.asks.first()?.price;
+        // Polymarket book frame bids'i ascending (en kötü bid önce), asks'i
+        // descending (en kötü ask önce) gönderir. .first() yanlış (uç) seviyeyi
+        // döndürür; sıralama bağımsız MAX/MIN ile gerçek best bid/ask alınır.
+        let best_bid = self
+            .bids
+            .iter()
+            .map(|b| b.price)
+            .reduce(f64::max)?;
+        let best_ask = self
+            .asks
+            .iter()
+            .map(|a| a.price)
+            .reduce(f64::min)?;
         Some(PolymarketEvent::Book {
             asset_id: self.asset_id,
             best_bid,
