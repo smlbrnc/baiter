@@ -203,10 +203,10 @@ impl ClobClient {
                         .map(str::to_string)
                 })
                 .unwrap_or_else(|| text.clone());
-            tracing::warn!(
+            tracing::debug!(
                 status = status.as_u16(),
                 error = %error_msg,
-                "post_order rejected (soft)"
+                "post_order 4xx (soft)"
             );
             return Ok(PostOrderResponse {
                 success: false,

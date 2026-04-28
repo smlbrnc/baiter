@@ -103,22 +103,30 @@ impl LiveExecutor {
         let mut placed = Vec::with_capacity(planned.len());
         for (p, resp) in planned.iter().zip(resps.into_iter()) {
             if !resp.success {
-                ipc::log_line(
-                    label,
-                    format!(
-                        "❌ POST /orders rejected status={} error={} reason={}",
-                        resp.status.as_str(),
-                        resp.error_msg,
-                        p.reason
-                    ),
-                );
-                tracing::warn!(
-                    bot_id = session.bot_id,
-                    status = resp.status.as_str(),
-                    error = %resp.error_msg,
-                    reason = %p.reason,
-                    "order rejected in batch"
-                );
+                if resp.error_msg.contains("not enough balance") {
+                    ipc::log_line(label, "⚠️ bakiye yetersiz".to_string());
+                    tracing::debug!(
+                        bot_id = session.bot_id,
+                        error = %resp.error_msg,
+                        "order rejected: insufficient balance"
+                    );
+                } else {
+                    ipc::log_line(
+                        label,
+                        format!(
+                            "❌ order rejected status={} error={}",
+                            resp.status.as_str(),
+                            resp.error_msg,
+                        ),
+                    );
+                    tracing::warn!(
+                        bot_id = session.bot_id,
+                        status = resp.status.as_str(),
+                        error = %resp.error_msg,
+                        reason = %p.reason,
+                        "order rejected in batch"
+                    );
+                }
                 continue;
             }
             let filled = resp.status.is_filled();
