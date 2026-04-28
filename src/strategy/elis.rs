@@ -41,9 +41,9 @@ const HARD_STOP_AVG: f64 = 1.01;
 const BALANCED_IMB: f64 = 3.0;
 /// §15 — composite skorun nötrden (`5.0`) mutlak sapması bu eşiği aşarsa
 /// momentum dondurma.
-const MOMENTUM_ABS: f64 = 0.5;
+const MOMENTUM_ABS: f64 = 1.0;
 /// §15 — tick-to-tick skor sıçraması bu eşiği aşarsa momentum dondurma.
-const MOMENTUM_DELTA: f64 = 0.5;
+const MOMENTUM_DELTA: f64 = 1.0;
 /// Composite skorun nötr orta noktası.
 const NEUTRAL_SCORE: f64 = 5.0;
 
@@ -584,7 +584,7 @@ mod tests {
         m.avg_up = 0.45;
         let p = StrategyParams::default();
         let orders = [open("u1", Outcome::Up, 0.45, 22.0, "elis:bid:up")];
-        // last_score 5.0 → effective_score 5.7: |Δ| = 0.7 > 0.5 → momentum.
+        // last_score 5.0 → effective_score 6.2: |Δ| = 1.2 > MOMENTUM_DELTA(1.0) → momentum.
         // Hedge hedef = 0.52 - 0.01 = 0.51 (down outcome'da hiç emir yok).
         let c = ctx(
             &m,
@@ -594,7 +594,7 @@ mod tests {
             0.46,
             0.49,
             0.52,
-            5.7,
+            6.2,
             MarketZone::DeepTrade,
         );
         let prev_state = ElisState::Active {
