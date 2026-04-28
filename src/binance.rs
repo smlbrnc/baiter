@@ -1,4 +1,4 @@
-//! Binance USD-M Futures aggTrade sinyal katmanı (§14): sliding-window CVD +
+//! Binance Spot aggTrade sinyal katmanı (§14): sliding-window CVD +
 //! Hawkes BSI + OFI → `signal_score` ∈ [0, 10]. Warmup ve bağlantı koptuğunda
 //! nötr `5.0`.
 
@@ -77,8 +77,10 @@ pub struct SignalComputer {
     window_ms: u64,
     window_trades: VecDeque<TradeEntry>,
     cvd: f64,
-    buy_count: u64,
-    sell_count: u64,
+    /// Penceredeki BUY işlem hacmi (lot); hacim-ağırlıklı OFI için.
+    buy_vol: f64,
+    /// Penceredeki SELL işlem hacmi (lot); hacim-ağırlıklı OFI için.
+    sell_vol: f64,
     bsi: f64,
     last_ts_ms: Option<u64>,
     ofi_history: VecDeque<f64>,
@@ -90,8 +92,8 @@ impl SignalComputer {
             window_ms: cvd_window_secs(interval) * 1000,
             window_trades: VecDeque::new(),
             cvd: 0.0,
-            buy_count: 0,
-            sell_count: 0,
+            buy_vol: 0.0,
+            sell_vol: 0.0,
             bsi: 0.0,
             last_ts_ms: None,
             ofi_history: VecDeque::with_capacity(MAX_STATS),
@@ -104,9 +106,9 @@ impl SignalComputer {
         self.window_trades.push_back(TradeEntry { ts_ms, delta, is_buy });
         self.cvd += delta;
         if is_buy {
-            self.buy_count += 1;
+            self.buy_vol += qty;
         } else {
-            self.sell_count += 1;
+            self.sell_vol += qty;
         }
 
         let cutoff = ts_ms.saturating_sub(self.window_ms);
@@ -116,10 +118,11 @@ impl SignalComputer {
             }
             let entry = self.window_trades.pop_front().unwrap();
             self.cvd -= entry.delta;
+            let evicted_qty = entry.delta.abs();
             if entry.is_buy {
-                self.buy_count = self.buy_count.saturating_sub(1);
+                self.buy_vol = (self.buy_vol - evicted_qty).max(0.0);
             } else {
-                self.sell_count = self.sell_count.saturating_sub(1);
+                self.sell_vol = (self.sell_vol - evicted_qty).max(0.0);
             }
         }
 
@@ -139,10 +142,12 @@ impl SignalComputer {
         }
     }
 
+    /// Hacim-ağırlıklı OFI: `(buy_vol - sell_vol) / (buy_vol + sell_vol)` ∈ [-1, +1].
+    /// Balina işlemlerini küçük retail emirlerden ayırt eder.
     fn current_ofi(&self) -> f64 {
-        let total = (self.buy_count + self.sell_count) as f64;
+        let total = self.buy_vol + self.sell_vol;
         if total > 0.0 {
-            (self.buy_count as f64 - self.sell_count as f64) / total
+            (self.buy_vol - self.sell_vol) / total
         } else {
             0.0
         }
@@ -151,13 +156,21 @@ impl SignalComputer {
     pub fn snapshot(&self) -> (f64, f64, f64, f64, bool) {
         let ofi = self.current_ofi();
         let warmup = self.ofi_history.len() < WARMUP_TRADES;
-        let signal_score = if warmup { NEUTRAL } else { ofi_to_score(ofi) };
+        let signal_score = if warmup {
+            NEUTRAL
+        } else {
+            // OFI (hacim-ağırlıklı anlık oran) + CVD (pencere birikimli yön)
+            // 60/40 harmanlama: OFI daha anlık, CVD daha trende duyarlı.
+            let ofi_score = ofi_to_score(ofi);
+            let cvd_score = cvd_ratio_to_score(self.cvd, self.buy_vol, self.sell_vol);
+            (0.6 * ofi_score + 0.4 * cvd_score).clamp(0.0, 10.0)
+        };
         (self.cvd, self.bsi, ofi, signal_score, warmup)
     }
 }
 
 /// OFI (`[−1, +1]`) → `[0, 10]` skoru (5.0 = nötr). Piecewise-linear, absolute
-/// kalibrasyon; BTC/ETH futures dağılımına göre (|ofi|≈0.30 güçlü, ≈0.50 ekstrem).
+/// kalibrasyon; BTC/ETH spot dağılımına göre (|ofi|≈0.30 güçlü, ≈0.50 ekstrem).
 #[inline]
 pub fn ofi_to_score(ofi: f64) -> f64 {
     let d = ofi.abs().min(1.0);
@@ -176,6 +189,17 @@ pub fn ofi_to_score(ofi: f64) -> f64 {
     (5.0 + sgn * score_delta).clamp(0.0, 10.0)
 }
 
+/// CVD oranı (`cvd / total_vol`) → `[0, 10]` skoru.
+/// `cvd_ratio ∈ [-1, +1]`; aynı piecewise eğri OFI ile tutarlı kalibrasyon sağlar.
+#[inline]
+pub fn cvd_ratio_to_score(cvd: f64, buy_vol: f64, sell_vol: f64) -> f64 {
+    let total = buy_vol + sell_vol;
+    if total <= 0.0 {
+        return 5.0;
+    }
+    ofi_to_score(cvd / total)
+}
+
 /// 60 sn frame yoksa WS ölü sayılır (BTC/ETH'de saniyede onlarca trade akar).
 const FRAME_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -188,7 +212,7 @@ pub async fn run_binance_signal(
     state: SharedSignalState,
     bot_id: i64,
 ) {
-    let url = format!("wss://fstream.binance.com/ws/{symbol}@aggTrade");
+    let url = format!("wss://stream.binance.com:9443/ws/{symbol}@aggTrade");
     let label = bot_id.to_string();
     let mut backoff = 1u64;
     loop {

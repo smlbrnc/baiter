@@ -639,18 +639,12 @@ fn try_pyramid(
         return (state, Decision::NoOp);
     };
 
-    if score_samples == 0 {
-        return (state, Decision::NoOp);
-    }
-    let score_avg = score_sum / (score_samples as f64);
-
-    // Pyramid yönü = anlık trend kazananı (opener'dan miras dom değil).
-    // UP trend: score_avg > 5 AND up_bid > 0.5 → pyramid UP
-    // DOWN trend: score_avg < 5 AND down_bid > 0.5 → pyramid DOWN
-    // Ne UP ne DOWN trend net değilse NoOp.
-    let trend_dir = if score_avg > 5.0 && ctx.up_best_bid > 0.5 {
+    // Pyramid yönü = anlık effective_score ile belirlenir.
+    // score_avg (birikimli ortalama) bağlantı kopuşlarında 5.0'a dilue olduğundan
+    // yön tespiti için kullanılmaz; effective_score her tick'te güncel sinyali yansıtır.
+    let trend_dir = if ctx.effective_score > 5.0 && ctx.up_best_bid > 0.5 {
         Outcome::Up
-    } else if score_avg < 5.0 && ctx.down_best_bid > 0.5 {
+    } else if ctx.effective_score < 5.0 && ctx.down_best_bid > 0.5 {
         Outcome::Down
     } else {
         return (state, Decision::NoOp);
@@ -661,14 +655,6 @@ fn try_pyramid(
         .saturating_sub(ctx.last_averaging_ms)
         < ctx.cooldown_threshold
     {
-        return (state, Decision::NoOp);
-    }
-
-    let score_ok = match trend_dir {
-        Outcome::Up => ctx.effective_score > 5.0,
-        Outcome::Down => ctx.effective_score < 5.0,
-    };
-    if !score_ok {
         return (state, Decision::NoOp);
     }
 
