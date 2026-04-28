@@ -74,11 +74,8 @@ fn on_price_change(
     bba_changed
 }
 
-fn after_book_update(sess: &mut MarketSession, pool: &SqlitePool, run_mode: RunMode) {
+fn after_book_update(sess: &mut MarketSession, _pool: &SqlitePool, _run_mode: RunMode) {
     maybe_log_book_ready(sess);
-    if run_mode == RunMode::Dryrun {
-        run_passive_fills_dryrun(sess, pool);
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -423,7 +420,7 @@ fn maybe_log_book_ready(sess: &mut MarketSession) {
     }
 }
 
-fn run_passive_fills_dryrun(sess: &mut MarketSession, pool: &SqlitePool) {
+pub fn run_passive_fills_dryrun(sess: &mut MarketSession, pool: &SqlitePool) {
     let bot_id = sess.bot_id;
     for ex in simulate_passive_fills(sess) {
         let p = &ex.planned;

@@ -230,13 +230,23 @@ fn balanced(ctx: &StrategyContext<'_>) -> Decision {
     materialize(cancels, places)
 }
 
-/// Outcome için `best_bid`'ten maker normal pair bid.
+/// Outcome için maker normal pair bid.
+///
+/// Adaptif fiyatlama: henüz hiç pair fill yoksa (`pair_count == 0`)
+/// `best_bid - tick_size` ile konservatif başlar (avg_sum'u düşük tutar);
+/// en az bir pair fill oluştuktan sonra `best_bid`'e döner.
 fn build_normal_bid(ctx: &StrategyContext<'_>, outcome: Outcome) -> Option<PlannedOrder> {
     let bb = ctx.best_bid(outcome);
     if bb <= 0.0 {
         return None;
     }
-    let price = bb.clamp(ctx.min_price, ctx.max_price);
+    let target = if ctx.metrics.pair_count() == 0.0 {
+        // İlk fill'i ucuza almaya çalış; avg_sum'u düşük başlatır.
+        (bb - ctx.tick_size).max(ctx.min_price)
+    } else {
+        bb
+    };
+    let price = target.clamp(ctx.min_price, ctx.max_price);
     let size = ctx.order_usdc / price;
     if size <= 0.0 || size * price < ctx.api_min_order_size {
         return None;
@@ -362,6 +372,7 @@ mod tests {
 
     #[test]
     fn balanced_places_both_sides_when_spread_open() {
+        // pair_count == 0 → adaptif fiyat: best_bid - tick_size (0.45-0.01=0.44, 0.50-0.01=0.49)
         let m = StrategyMetrics::default();
         let p = StrategyParams::default();
         let c = ctx(
@@ -383,9 +394,42 @@ mod tests {
                 let up = orders.iter().find(|o| o.outcome == Outcome::Up).unwrap();
                 let dn = orders.iter().find(|o| o.outcome == Outcome::Down).unwrap();
                 assert_eq!(up.reason, "elis:bid:up");
-                assert!((up.price - 0.45).abs() < 1e-9);
+                assert!((up.price - 0.44).abs() < 1e-9);
                 assert_eq!(dn.reason, "elis:bid:down");
-                assert!((dn.price - 0.50).abs() < 1e-9);
+                assert!((dn.price - 0.49).abs() < 1e-9);
+            }
+            other => panic!("beklenen PlaceOrders, gelen {:?}", other),
+        }
+    }
+
+    #[test]
+    fn balanced_uses_best_bid_after_first_pair_fill() {
+        // pair_count > 0 ve avg_sum = 0.99 (> avg_threshold=0.98, < hard_stop=1.01)
+        // → profit_locked değil → balanced mod → normal fiyat: best_bid
+        let mut m = StrategyMetrics::default();
+        m.up_filled = 5.0;
+        m.avg_up = 0.50;
+        m.down_filled = 5.0;
+        m.avg_down = 0.49;
+        let p = StrategyParams::default();
+        let c = ctx(
+            &m,
+            &p,
+            &[],
+            0.45,
+            0.46,
+            0.50,
+            0.51,
+            5.0,
+            MarketZone::DeepTrade,
+        );
+        let (_, d) = ElisEngine::decide(ElisState::Pending, &c);
+        match d {
+            Decision::PlaceOrders(orders) => {
+                let up = orders.iter().find(|o| o.outcome == Outcome::Up).unwrap();
+                let dn = orders.iter().find(|o| o.outcome == Outcome::Down).unwrap();
+                assert!((up.price - 0.45).abs() < 1e-9, "pair fill sonrası up best_bid beklendi");
+                assert!((dn.price - 0.50).abs() < 1e-9, "pair fill sonrası down best_bid beklendi");
             }
             other => panic!("beklenen PlaceOrders, gelen {:?}", other),
         }
@@ -592,11 +636,13 @@ mod tests {
 
     #[test]
     fn balanced_existing_at_target_is_noop() {
+        // pair_count == 0 → adaptif hedef: best_bid - tick (0.44, 0.49).
+        // Mevcut emirler hedefte → NoOp.
         let m = StrategyMetrics::default();
         let p = StrategyParams::default();
         let orders = [
-            open("u1", Outcome::Up, 0.45, 22.0, "elis:bid:up"),
-            open("d1", Outcome::Down, 0.50, 20.0, "elis:bid:down"),
+            open("u1", Outcome::Up, 0.44, 22.0, "elis:bid:up"),
+            open("d1", Outcome::Down, 0.49, 20.0, "elis:bid:down"),
         ];
         let c = ctx(
             &m,

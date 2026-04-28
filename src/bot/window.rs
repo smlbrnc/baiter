@@ -284,6 +284,9 @@ async fn run_trading_loop(
                 }
             }
             _ = cadence.tick() => {
+                if ctx.cfg.run_mode == crate::types::RunMode::Dryrun {
+                    event::run_passive_fills_dryrun(&mut sess, &ctx.pool);
+                }
                 let sig = observed_snapshot(ctx, &sess).await;
                 zone::emit_frontend_snapshot(ctx, &sess, &sig);
                 persist::snapshot_pnl(&ctx.pool, &sess);
