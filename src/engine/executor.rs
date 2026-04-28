@@ -300,6 +300,10 @@ fn within_price_bounds(session: &MarketSession, planned: &PlannedOrder) -> bool 
 }
 
 /// Decision'ı yürüt; `CancelAndPlace` sırası: önce cancel, sonra place.
+///
+/// `CancelAndPlace` güvenlik kuralı: iptal edilmek istenen emir zaten
+/// MATCHED/terminal ise placement atlanır. Bu, hedge emirinin fill
+/// sonrası re-quote tick'inde çift pozisyon açılmasını önler.
 pub async fn execute(
     session: &mut MarketSession,
     executor: &Executor,
@@ -315,10 +319,22 @@ pub async fn execute(
             cancel_batch(session, executor, &ids, &mut out).await?
         }
         Decision::CancelAndPlace { cancels, places } => {
-            if !cancels.is_empty() {
+            let has_terminal_cancel = if !cancels.is_empty() {
                 cancel_batch(session, executor, &cancels, &mut out).await?;
-            }
-            if !places.is_empty() {
+                out.canceled.iter().any(|r| {
+                    r.not_canceled
+                        .as_object()
+                        .map(|m| {
+                            m.values().any(|v| {
+                                is_terminal_not_canceled(v.as_str().unwrap_or(""))
+                            })
+                        })
+                        .unwrap_or(false)
+                })
+            } else {
+                false
+            };
+            if !has_terminal_cancel && !places.is_empty() {
                 place_batch(session, executor, places, &mut out).await?;
             }
         }
