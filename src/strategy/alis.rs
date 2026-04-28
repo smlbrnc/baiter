@@ -249,7 +249,17 @@ fn profit_lock_check(
     let m = ctx.metrics;
 
     if m.profit_locked(ctx.avg_threshold) {
-        let cancels = collect_alis_open_ids(ctx);
+        // PositionOpen'da dominant taraf emirlerini iptal et; hedge (opp)
+        // emri canlı bırak — pair size'ı eşitleme fırsatı kalsın.
+        let cancels = if let AlisState::PositionOpen { dominant_dir, .. } = state {
+            ctx.open_orders
+                .iter()
+                .filter(|o| o.reason.starts_with("alis:") && o.outcome == dominant_dir)
+                .map(|o| o.id.clone())
+                .collect()
+        } else {
+            collect_alis_open_ids(ctx)
+        };
         let decision = if cancels.is_empty() {
             Decision::NoOp
         } else {
