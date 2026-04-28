@@ -405,10 +405,11 @@ async fn bot_sessions(
                 "cost_basis":    s.cost_basis,
                 "up_filled":     s.up_filled,
                 "down_filled":   s.down_filled,
-                "realized_pnl":  s.realized_pnl,
-                "pnl_if_up":     s.pnl_if_up,
-                "pnl_if_down":   s.pnl_if_down,
-                "is_live":       is_live,
+                "realized_pnl":    s.realized_pnl,
+                "pnl_if_up":       s.pnl_if_up,
+                "pnl_if_down":     s.pnl_if_down,
+                "winning_outcome": s.winning_outcome,
+                "is_live":         is_live,
             })
         })
         .collect();

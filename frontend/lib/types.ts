@@ -98,6 +98,7 @@ export interface SessionListItem {
   realized_pnl: number | null;
   pnl_if_up: number | null;
   pnl_if_down: number | null;
+  winning_outcome: string | null;
   is_live: boolean;
 }
 

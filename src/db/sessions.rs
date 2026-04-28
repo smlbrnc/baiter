@@ -30,6 +30,7 @@ pub struct SessionListItem {
     pub realized_pnl: Option<f64>,
     pub pnl_if_up: Option<f64>,
     pub pnl_if_down: Option<f64>,
+    pub winning_outcome: Option<String>,
 }
 
 /// `api::session_detail` için: pozisyon agregatları + window meta.
@@ -159,7 +160,7 @@ pub async fn list_sessions_for_bot(
     // CTE: önce sayfa, sonra JOIN — büyük botlarda lineer patlama olmasın.
     let sql = format!(
         "WITH paged AS ( \
-             SELECT id, slug, start_ts, end_ts, state, realized_pnl \
+             SELECT id, slug, start_ts, end_ts, state, realized_pnl, condition_id \
              FROM market_sessions \
              WHERE bot_id = ? \
              ORDER BY start_ts DESC \
@@ -169,9 +170,11 @@ pub async fn list_sessions_for_bot(
                 COALESCE(p.cost_basis,  0.0) AS cost_basis,  \
                 COALESCE(p.up_filled,   0.0) AS up_filled,   \
                 COALESCE(p.down_filled, 0.0) AS down_filled, \
-                p.pnl_if_up, p.pnl_if_down \
+                p.pnl_if_up, p.pnl_if_down, \
+                mr.winning_outcome \
          FROM paged s \
          {LATEST_PNL_JOIN} \
+         LEFT JOIN market_resolved mr ON mr.market = s.condition_id \
          ORDER BY s.start_ts DESC"
     );
     let rows = sqlx::query(&sql)
@@ -193,6 +196,7 @@ pub async fn list_sessions_for_bot(
             realized_pnl: r.get("realized_pnl"),
             pnl_if_up: r.get("pnl_if_up"),
             pnl_if_down: r.get("pnl_if_down"),
+            winning_outcome: r.try_get("winning_outcome").ok().flatten(),
         })
         .collect())
 }

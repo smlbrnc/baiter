@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
-import { ArrowRight, ChevronLeft, ChevronRight } from "lucide-react";
+import { ArrowRight, ChevronLeft, ChevronRight, TrendingUp, TrendingDown } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -161,6 +161,9 @@ export function SessionsTable({ botId }: { botId: number }) {
                   <PnlValue value={s.pnl_if_down} />
                 </Stat>
                 <Stat label="Realized" width="w-24">
+                  {s.winning_outcome && (
+                    <WinnerBadge outcome={s.winning_outcome} />
+                  )}
                   <PnlValue value={s.realized_pnl} bold />
                 </Stat>
                 <ArrowRight className="text-muted-foreground group-hover:text-foreground h-4 w-4 shrink-0" />
@@ -252,6 +255,30 @@ function PnlValue({ value, bold }: { value: number | null; bold?: boolean }) {
       )}
     >
       {value.toFixed(4)}
+    </span>
+  );
+}
+
+function WinnerBadge({ outcome }: { outcome: string }) {
+  const isUp = outcome.toLowerCase() === "up";
+  const isDown = outcome.toLowerCase() === "down";
+  return (
+    <span
+      className={cn(
+        "flex items-center gap-0.5 font-mono text-[10px] font-semibold uppercase tracking-wider",
+        isUp
+          ? "text-emerald-500"
+          : isDown
+            ? "text-destructive"
+            : "text-muted-foreground",
+      )}
+    >
+      {isUp ? (
+        <TrendingUp className="h-3 w-3" />
+      ) : isDown ? (
+        <TrendingDown className="h-3 w-3" />
+      ) : null}
+      {outcome}
     </span>
   );
 }
