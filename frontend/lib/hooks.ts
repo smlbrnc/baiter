@@ -276,24 +276,16 @@ export function useHistoryStream<T extends { ts_ms: number }>(opts: {
         reload(lastTsRef.current);
       }
     });
-    // SSE aktifken tab gizlenip açıldığında gap-fill (periyodik poll yok).
-    const onVisibility = () => {
-      if (!document.hidden && lastTsRef.current > 0) {
-        reload(lastTsRef.current);
-      }
-    };
-    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       offMsg();
       offConn();
-      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [isLive, shouldAppend, reload]);
 
   useEffect(() => {
-    // SSE aktifken (`shouldAppend` set) periyodik poll gereksiz; sadece SSE olmayan
-    // stream'ler için (örn. trades) bu branch çalışır.
-    if (!isLive || !pollMs || shouldAppend) return;
+    // SSE (shouldAppend) ile polling aynı anda çalışabilir; ts_ms dedup zaten
+    // duplicate satırları filtreler. SSE kesintisinde polling gap-fill sağlar.
+    if (!isLive || !pollMs) return;
     let t: ReturnType<typeof setInterval> | null = null;
 
     const stop = () => {
@@ -325,7 +317,7 @@ export function useHistoryStream<T extends { ts_ms: number }>(opts: {
       stop();
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [isLive, pollMs, shouldAppend, reload]);
+  }, [isLive, pollMs, reload]);
 
   return items;
 }

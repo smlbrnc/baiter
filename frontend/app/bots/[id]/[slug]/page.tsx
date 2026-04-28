@@ -318,14 +318,14 @@ export default function MarketDetailPage() {
     fetchInitial: fetchTicks,
     shouldAppend: appendTick,
     isLive,
-    pollMs: 3000,
+    pollMs: 1000,
     maxItems: 800,
   });
   const pnlHistory = useHistoryStream<PnLSnapshot>({
     fetchInitial: fetchPnl,
     shouldAppend: appendPnl,
     isLive,
-    pollMs: 3000,
+    pollMs: 2000,
     maxItems: 500,
   });
 
