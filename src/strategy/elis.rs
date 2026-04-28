@@ -34,7 +34,7 @@ use crate::time::MarketZone;
 use crate::types::{Outcome, OrderType, Side};
 
 /// §3 — `yes_bid + no_bid` bu eşiğin altında ise pair girişi açıktır.
-const ENTRY_THRESHOLD: f64 = 0.985;
+const ENTRY_THRESHOLD: f64 = 0.995;
 /// §11 — `avg_up + avg_down` bu eşiği aşarsa hard stop.
 const HARD_STOP_AVG: f64 = 1.01;
 /// §9 MODE1 — `|imb|` bu sınırın altında ise iki taraf da pair quoting.
