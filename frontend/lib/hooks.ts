@@ -108,29 +108,88 @@ export function useEventStream(
   return { connected };
 }
 
-/** Bot listesini yükler; interval ile yeniler. */
+/**
+ * Bot listesini yükler; interval + visibility-aware polling ile yeniler.
+ * - AbortController: eski istek uçuşta iken yeni istek başlarsa öncekini iptal eder.
+ * - Visibility: sekme arka planda iken polling durur; ön plana gelince gap-fill tetiklenir.
+ * - patch / remove: optimistic güncellemeler için anlık lokal state mutasyonu.
+ */
 export function useBots(pollMs = 2000): {
   bots: BotRow[];
   reload: () => void;
+  patch: (id: number, partial: Partial<BotRow>) => void;
+  remove: (id: number) => void;
 } {
   const [bots, setBots] = useState<BotRow[]>([]);
+  const loadRef = useRef<(() => void) | null>(null);
 
-  const reload = () => {
-    api
-      .listBots()
-      .then((b) => {
-        setBots(b);
-      })
-      .catch(() => {});
-  };
+  const patch = useCallback((id: number, partial: Partial<BotRow>) => {
+    setBots((prev) =>
+      prev.map((b) => (b.id === id ? { ...b, ...partial } : b)),
+    );
+  }, []);
+
+  const remove = useCallback((id: number) => {
+    setBots((prev) => prev.filter((b) => b.id !== id));
+  }, []);
+
+  const reload = useCallback(() => {
+    loadRef.current?.();
+  }, []);
 
   useEffect(() => {
-    reload();
-    const id = setInterval(reload, pollMs);
-    return () => clearInterval(id);
+    let timer: ReturnType<typeof setInterval> | null = null;
+    let ctrl: AbortController | null = null;
+
+    const load = async () => {
+      if (document.hidden) return;
+      ctrl?.abort();
+      ctrl = new AbortController();
+      const { signal } = ctrl;
+      try {
+        const b = await api.listBots(signal);
+        if (!signal.aborted) setBots(b);
+      } catch (e) {
+        if (e instanceof Error && e.name === "AbortError") return;
+      }
+    };
+
+    loadRef.current = () => void load();
+
+    const startTimer = () => {
+      if (timer !== null) return;
+      timer = setInterval(() => void load(), pollMs);
+    };
+    const stopTimer = () => {
+      if (timer !== null) {
+        clearInterval(timer);
+        timer = null;
+      }
+    };
+
+    const onVisibility = () => {
+      if (document.hidden) {
+        stopTimer();
+        ctrl?.abort();
+      } else {
+        void load();
+        startTimer();
+      }
+    };
+
+    void load();
+    document.addEventListener("visibilitychange", onVisibility);
+    if (!document.hidden) startTimer();
+
+    return () => {
+      stopTimer();
+      ctrl?.abort();
+      document.removeEventListener("visibilitychange", onVisibility);
+      loadRef.current = null;
+    };
   }, [pollMs]);
 
-  return { bots, reload };
+  return { bots, reload, patch, remove };
 }
 
 /**
@@ -271,35 +330,75 @@ export function useHistoryStream<T extends { ts_ms: number }>(opts: {
   return items;
 }
 
-/** Tek bir bot için detay + poll. `withPnl` false ise `/pnl` endpoint'i çağrılmaz. */
+/**
+ * Tek bir bot için detay + visibility-aware poll.
+ * - mutate: optimistic state güncellemesi için.
+ * - withPnl: false ise `/pnl` endpoint'i çağrılmaz.
+ */
 export function useBot(id: number | null, pollMs = 3000, withPnl = false) {
   const [bot, setBot] = useState<BotRow | null>(null);
   const [pnl, setPnl] = useState<PnLSnapshot | null>(null);
 
+  const mutate = useCallback((partial: Partial<BotRow>) => {
+    setBot((prev) => (prev ? { ...prev, ...partial } : prev));
+  }, []);
+
   useEffect(() => {
     if (id == null) return;
-    let cancelled = false;
-    const tick = async () => {
+
+    let timer: ReturnType<typeof setInterval> | null = null;
+    let ctrl: AbortController | null = null;
+
+    const load = async () => {
+      if (document.hidden) return;
+      ctrl?.abort();
+      ctrl = new AbortController();
+      const { signal } = ctrl;
       try {
         const [b, p] = await Promise.all([
-          api.getBot(id),
-          withPnl ? api.botPnl(id) : Promise.resolve(null),
+          api.getBot(id, signal),
+          withPnl ? api.botPnl(id, signal) : Promise.resolve(null),
         ]);
-        if (!cancelled) {
+        if (!signal.aborted) {
           setBot(b);
           if (withPnl) setPnl(p);
         }
-      } catch {
-        /* yut */
+      } catch (e) {
+        if (e instanceof Error && e.name === "AbortError") return;
       }
     };
-    tick();
-    const t = setInterval(tick, pollMs);
+
+    const startTimer = () => {
+      if (timer !== null) return;
+      timer = setInterval(() => void load(), pollMs);
+    };
+    const stopTimer = () => {
+      if (timer !== null) {
+        clearInterval(timer);
+        timer = null;
+      }
+    };
+
+    const onVisibility = () => {
+      if (document.hidden) {
+        stopTimer();
+        ctrl?.abort();
+      } else {
+        void load();
+        startTimer();
+      }
+    };
+
+    void load();
+    document.addEventListener("visibilitychange", onVisibility);
+    if (!document.hidden) startTimer();
+
     return () => {
-      cancelled = true;
-      clearInterval(t);
+      stopTimer();
+      ctrl?.abort();
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [id, pollMs, withPnl]);
 
-  return { bot, pnl };
+  return { bot, pnl, mutate };
 }

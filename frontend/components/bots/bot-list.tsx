@@ -1,8 +1,9 @@
 "use client";
 
+import { memo, useCallback, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
-import { CircleStop, Play, Trash2 } from "lucide-react";
+import { CircleStop, Loader2, Play, Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { CardDescription, CardTitle } from "@/components/ui/card";
@@ -12,7 +13,6 @@ import type { BotRow } from "@/lib/types";
 import { CARD_SHELL_CLASS, HEADER_RADIAL_GRADIENT } from "@/lib/ui-constants";
 import { cn } from "@/lib/utils";
 
-/** Compact badge size (matches BotForm header badge scale) */
 const listBadge = cn(
   "h-4 min-h-4 rounded-sm px-1.5 py-0 text-[10px] font-normal leading-none",
 );
@@ -76,13 +76,206 @@ function ModeBadge({ mode }: { mode: "live" | "dryrun" }) {
   );
 }
 
+/**
+ * Tek bir bot kartı — React.memo ile sarılır; yalnız ilgili prop'lar
+ * değiştiğinde yeniden render edilir (diğer botların aksiyon/state
+ * değişimlerinden etkilenmez).
+ */
+const BotCard = memo(function BotCard({
+  bot,
+  isPending,
+  onStart,
+  onStop,
+  onDelete,
+}: {
+  bot: BotRow;
+  isPending: boolean;
+  onStart: (bot: BotRow) => void;
+  onStop: (bot: BotRow) => void;
+  onDelete: (bot: BotRow) => void;
+}) {
+  return (
+    <article className={cn(CARD_SHELL_CLASS, "@container min-w-0")}>
+      <Link
+        href={`/bots/${bot.id}`}
+        className="from-muted/35 via-background to-background group relative block overflow-hidden border-b border-border/45 bg-gradient-to-br px-3 py-2.5 no-underline outline-none transition-colors hover:from-muted/45 hover:via-background sm:px-4 sm:py-3 focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-0"
+      >
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0 z-0 opacity-[0.35]"
+          style={{ backgroundImage: HEADER_RADIAL_GRADIENT }}
+        />
+        <div className="relative z-10 flex gap-3">
+          <div
+            className="relative size-9 shrink-0 overflow-hidden rounded-md sm:size-10"
+            aria-hidden
+          >
+            <Image
+              src={assetLogoForSlug(bot.slug_pattern)}
+              alt=""
+              fill
+              className="object-contain"
+              sizes="(max-width: 640px) 36px, 40px"
+            />
+          </div>
+          <div className="min-w-0 flex-1 space-y-1">
+            <span className="font-heading text-foreground group-hover:text-primary block truncate text-sm font-semibold tracking-tight transition-colors sm:text-base">
+              {bot.name}
+            </span>
+            <div className="flex flex-wrap items-center gap-1">
+              <Badge variant="outline" className={cn(listBadge, "uppercase")}>
+                {bot.strategy}
+              </Badge>
+              <ModeBadge mode={bot.run_mode} />
+              <StateBadge state={bot.state} />
+            </div>
+          </div>
+        </div>
+      </Link>
+
+      <div className="space-y-2 px-3 py-2.5 sm:px-4 sm:py-3">
+        <p className="text-muted-foreground text-center font-mono text-[11px] leading-snug break-words sm:text-xs">
+          {bot.slug_pattern}
+        </p>
+        <div className="bg-muted/20 space-y-2 rounded-md border border-border/40 p-2.5 shadow-xs sm:p-3">
+          <p className="text-muted-foreground text-[10px] font-medium tracking-wide uppercase">
+            Settings
+          </p>
+          <dl className="grid grid-cols-1 gap-2">
+            <div className="flex items-baseline justify-between gap-3 sm:block sm:space-y-0">
+              <dt className="text-muted-foreground text-[11px] sm:text-xs">
+                Order (USDC)
+              </dt>
+              <dd className="font-mono text-foreground text-right text-xs font-medium tabular-nums sm:text-left sm:text-sm">
+                ${bot.order_usdc.toFixed(2)}
+              </dd>
+            </div>
+          </dl>
+        </div>
+      </div>
+
+      <div className="border-border/45 flex items-center justify-between gap-2 border-t px-3 py-2 sm:px-4">
+        {bot.state === "RUNNING" ? (
+          <Button
+            size="sm"
+            variant="secondary"
+            title="Stop"
+            aria-label="Stop bot"
+            className="shadow-xs"
+            disabled={isPending}
+            onClick={() => onStop(bot)}
+          >
+            {isPending ? (
+              <Loader2 className="animate-spin" />
+            ) : (
+              <CircleStop />
+            )}
+            Stop
+          </Button>
+        ) : (
+          <Button
+            size="sm"
+            title="Start"
+            aria-label="Start bot"
+            className="shadow-xs"
+            disabled={isPending}
+            onClick={() => onStart(bot)}
+          >
+            {isPending ? (
+              <Loader2 className="animate-spin" />
+            ) : (
+              <Play />
+            )}
+            Start
+          </Button>
+        )}
+        <Button
+          size="icon-sm"
+          variant="destructive"
+          title="Delete"
+          aria-label="Delete bot"
+          className="shadow-xs"
+          disabled={isPending}
+          onClick={() => onDelete(bot)}
+        >
+          {isPending ? <Loader2 className="animate-spin" /> : <Trash2 />}
+        </Button>
+      </div>
+    </article>
+  );
+});
+
 export function BotList({
   bots,
   onChanged,
+  patch,
+  remove,
 }: {
   bots: BotRow[];
   onChanged: () => void;
+  patch: (id: number, partial: Partial<BotRow>) => void;
+  remove: (id: number) => void;
 }) {
+  const [pending, setPending] = useState<Record<number, boolean>>({});
+
+  const setPendingFor = (id: number, val: boolean) =>
+    setPending((p) => ({ ...p, [id]: val }));
+
+  const doStart = useCallback(
+    async (bot: BotRow) => {
+      if (pending[bot.id]) return;
+      const prevState = bot.state;
+      patch(bot.id, { state: "RUNNING" });
+      setPendingFor(bot.id, true);
+      try {
+        await api.startBot(bot.id);
+      } catch {
+        patch(bot.id, { state: prevState });
+      } finally {
+        setPendingFor(bot.id, false);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [patch, pending],
+  );
+
+  const doStop = useCallback(
+    async (bot: BotRow) => {
+      if (pending[bot.id]) return;
+      const prevState = bot.state;
+      patch(bot.id, { state: "STOPPED" });
+      setPendingFor(bot.id, true);
+      try {
+        await api.stopBot(bot.id);
+      } catch {
+        patch(bot.id, { state: prevState });
+      } finally {
+        setPendingFor(bot.id, false);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [patch, pending],
+  );
+
+  const doDelete = useCallback(
+    async (bot: BotRow) => {
+      if (pending[bot.id]) return;
+      if (!confirm(`Bot #${bot.id} silinsin mi?`)) return;
+      remove(bot.id);
+      setPendingFor(bot.id, true);
+      try {
+        await api.deleteBot(bot.id);
+        onChanged();
+      } catch {
+        onChanged(); // hata durumunda reload ile geri getir
+      } finally {
+        setPendingFor(bot.id, false);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [remove, onChanged, pending],
+  );
+
   if (bots.length === 0) {
     return (
       <div className={CARD_SHELL_CLASS}>
@@ -98,142 +291,17 @@ export function BotList({
     );
   }
 
-  const doStart = async (id: number) => {
-    try {
-      await api.startBot(id);
-      onChanged();
-    } catch {
-      /* yut */
-    }
-  };
-
-  const doStop = async (id: number) => {
-    try {
-      await api.stopBot(id);
-      onChanged();
-    } catch {
-      /* yut */
-    }
-  };
-
-  const doDelete = async (id: number) => {
-    if (!confirm(`Bot #${id} silinsin mi?`)) return;
-    try {
-      await api.deleteBot(id);
-      onChanged();
-    } catch {
-      /* yut */
-    }
-  };
-
   return (
     <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
       {bots.map((b) => (
-        <article
+        <BotCard
           key={b.id}
-          className={cn(CARD_SHELL_CLASS, "@container min-w-0")}
-        >
-          {/* Header strip — tüm alan detaya gider */}
-          <Link
-            href={`/bots/${b.id}`}
-            className="from-muted/35 via-background to-background group relative block overflow-hidden border-b border-border/45 bg-gradient-to-br px-3 py-2.5 no-underline outline-none transition-colors hover:from-muted/45 hover:via-background sm:px-4 sm:py-3 focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-0"
-          >
-            <div
-              aria-hidden
-              className="pointer-events-none absolute inset-0 z-0 opacity-[0.35]"
-              style={{ backgroundImage: HEADER_RADIAL_GRADIENT }}
-            />
-            <div className="relative z-10 flex gap-3">
-              <div
-                className="relative size-9 shrink-0 overflow-hidden rounded-md sm:size-10"
-                aria-hidden
-              >
-                <Image
-                  src={assetLogoForSlug(b.slug_pattern)}
-                  alt=""
-                  fill
-                  className="object-contain"
-                  sizes="(max-width: 640px) 36px, 40px"
-                />
-              </div>
-              <div className="min-w-0 flex-1 space-y-1">
-                <span className="font-heading text-foreground group-hover:text-primary block truncate text-sm font-semibold tracking-tight transition-colors sm:text-base">
-                  {b.name}
-                </span>
-                <div className="flex flex-wrap items-center gap-1">
-                  <Badge
-                    variant="outline"
-                    className={cn(listBadge, "uppercase")}
-                  >
-                    {b.strategy}
-                  </Badge>
-                  <ModeBadge mode={b.run_mode} />
-                  <StateBadge state={b.state} />
-                </div>
-              </div>
-            </div>
-          </Link>
-
-          {/* Body — slug centered above settings */}
-          <div className="space-y-2 px-3 py-2.5 sm:px-4 sm:py-3">
-            <p className="text-muted-foreground text-center font-mono text-[11px] leading-snug break-words sm:text-xs">
-              {b.slug_pattern}
-            </p>
-            <div className="bg-muted/20 space-y-2 rounded-md border border-border/40 p-2.5 shadow-xs sm:p-3">
-              <p className="text-muted-foreground text-[10px] font-medium tracking-wide uppercase">
-                Settings
-              </p>
-              <dl className="grid grid-cols-1 gap-2">
-                <div className="flex items-baseline justify-between gap-3 sm:block sm:space-y-0">
-                  <dt className="text-muted-foreground text-[11px] sm:text-xs">
-                    Order (USDC)
-                  </dt>
-                  <dd className="font-mono text-foreground text-right text-xs font-medium tabular-nums sm:text-left sm:text-sm">
-                    ${b.order_usdc.toFixed(2)}
-                  </dd>
-                </div>
-              </dl>
-            </div>
-          </div>
-
-          {/* Footer — start/stop left, delete right */}
-          <div className="border-border/45 flex items-center justify-between gap-2 border-t px-3 py-2 sm:px-4">
-            {b.state === "RUNNING" ? (
-              <Button
-                size="sm"
-                variant="secondary"
-                title="Stop"
-                aria-label="Stop bot"
-                className="shadow-xs"
-                onClick={() => doStop(b.id)}
-              >
-                <CircleStop />
-                Stop
-              </Button>
-            ) : (
-              <Button
-                size="sm"
-                title="Start"
-                aria-label="Start bot"
-                className="shadow-xs"
-                onClick={() => doStart(b.id)}
-              >
-                <Play />
-                Start
-              </Button>
-            )}
-            <Button
-              size="icon-sm"
-              variant="destructive"
-              title="Delete"
-              aria-label="Delete bot"
-              className="shadow-xs"
-              onClick={() => doDelete(b.id)}
-            >
-              <Trash2 />
-            </Button>
-          </div>
-        </article>
+          bot={b}
+          isPending={pending[b.id] ?? false}
+          onStart={doStart}
+          onStop={doStop}
+          onDelete={doDelete}
+        />
       ))}
     </div>
   );

@@ -33,7 +33,7 @@ function dashboardStatsLine(bots: BotRow[]): string {
 }
 
 export default function DashboardPage() {
-  const { bots, reload } = useBots();
+  const { bots, reload, patch, remove } = useBots();
   const statsLine = useMemo(() => dashboardStatsLine(bots), [bots]);
   return (
     <div className="space-y-5">
@@ -74,7 +74,7 @@ export default function DashboardPage() {
           </div>
         </div>
       </header>
-      <BotList bots={bots} onChanged={reload} />
+      <BotList bots={bots} onChanged={reload} patch={patch} remove={remove} />
     </div>
   );
 }

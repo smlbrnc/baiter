@@ -24,14 +24,11 @@ function fmtTs(ts: number): string {
 
 /**
  * Sayfa yüklendikten sonra `/api/bots/:id/sessions` listesini sayfa sayfa
- * (10'arlı) çeker; arka plan yenileme şu anki sayfayı tazeler. Bot
- * detay sayfasının ilk render'ı bu komponentin fetch'ini beklemez —
- * iskelet hemen görünür, veri sonradan dolar.
+ * (10'arlı) çeker; arka plan yenileme şu anki sayfayı tazeler.
+ * - AbortController: eski istek uçuşta iken yenisi başlarsa iptal eder.
+ * - Visibility: sekme arka planda iken polling durur; ön plana gelince gap-fill.
  */
 export function SessionsTable({ botId }: { botId: number }) {
-  // null sentinel = ilk fetch henüz tamamlanmadı (iskelet "Yükleniyor…").
-  // Sayfa değişiminde önceki sayfanın verisi yeni veri gelene kadar
-  // ekranda kalır — daha akıcı geçiş için reset etmiyoruz.
   const [items, setItems] = useState<SessionListItem[] | null>(null);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(0);
@@ -39,23 +36,57 @@ export function SessionsTable({ botId }: { botId: number }) {
 
   useEffect(() => {
     if (!Number.isFinite(botId)) return;
-    let cancelled = false;
+    let ctrl: AbortController | null = null;
+    let timer: ReturnType<typeof setInterval> | null = null;
+
     const reload = async () => {
+      if (document.hidden) return;
+      ctrl?.abort();
+      ctrl = new AbortController();
+      const { signal } = ctrl;
       try {
-        const res = await api.botSessions(botId, PAGE_SIZE, page * PAGE_SIZE);
-        if (cancelled) return;
+        const res = await api.botSessions(botId, PAGE_SIZE, page * PAGE_SIZE, signal);
+        if (signal.aborted) return;
         setItems(res.items);
         setTotal(res.total);
         setError(null);
       } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : "Hata");
+        if (e instanceof Error && e.name === "AbortError") return;
+        if (!signal.aborted) {
+          setError(e instanceof Error ? e.message : "Hata");
+        }
       }
     };
-    reload();
-    const t = setInterval(reload, POLL_MS);
+
+    const startTimer = () => {
+      if (timer !== null) return;
+      timer = setInterval(() => void reload(), POLL_MS);
+    };
+    const stopTimer = () => {
+      if (timer !== null) {
+        clearInterval(timer);
+        timer = null;
+      }
+    };
+
+    const onVisibility = () => {
+      if (document.hidden) {
+        stopTimer();
+        ctrl?.abort();
+      } else {
+        void reload();
+        startTimer();
+      }
+    };
+
+    void reload();
+    document.addEventListener("visibilitychange", onVisibility);
+    if (!document.hidden) startTimer();
+
     return () => {
-      cancelled = true;
-      clearInterval(t);
+      stopTimer();
+      ctrl?.abort();
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [botId, page]);
 

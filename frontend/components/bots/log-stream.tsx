@@ -20,36 +20,72 @@ import { api } from "@/lib/api";
 import type { LogRow } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-/** Kullanıcı alttan bu kadar px içindeyse yenilemede alta yapışık say. */
 const STICK_BOTTOM_THRESHOLD_PX = 64;
 
 export function LogStream({ botId }: { botId: number }) {
   const [logs, setLogs] = useState<LogRow[]>([]);
-  /**
-   * "Ekranı temizle" salt UI tarafıdır — bu id'den küçük/eşit logları
-   * gizleriz, yeni gelenler normal görünür. DB'ye dokunmuyoruz.
-   */
   const [clearCutoffId, setClearCutoffId] = useState<number | null>(null);
   const boxRef = useRef<HTMLDivElement>(null);
-  /** true: son yenilemede kullanıcı alta yakındı; false: yukarı kaydırmış. */
   const stickToBottomRef = useRef(true);
 
   useEffect(() => {
     stickToBottomRef.current = true;
-    let cancelled = false;
+    let ctrl: AbortController | null = null;
+    let timer: ReturnType<typeof setInterval> | null = null;
+
     const load = async () => {
+      if (document.hidden) return;
+      ctrl?.abort();
+      ctrl = new AbortController();
+      const { signal } = ctrl;
       try {
-        const rows = await api.botLogs(botId, 300);
-        if (!cancelled) setLogs(rows.reverse());
-      } catch {
-        /* yut */
+        const rows = await api.botLogs(botId, 300, signal);
+        if (signal.aborted) return;
+        const reversed = rows.reverse();
+        setLogs((prev) => {
+          // Skip re-render if data is unchanged (same tail log id).
+          if (
+            prev.length === reversed.length &&
+            prev[prev.length - 1]?.id === reversed[reversed.length - 1]?.id
+          ) {
+            return prev;
+          }
+          return reversed;
+        });
+      } catch (e) {
+        if (e instanceof Error && e.name === "AbortError") return;
       }
     };
-    load();
-    const t = setInterval(load, 2000);
+
+    const startTimer = () => {
+      if (timer !== null) return;
+      timer = setInterval(() => void load(), 2000);
+    };
+    const stopTimer = () => {
+      if (timer !== null) {
+        clearInterval(timer);
+        timer = null;
+      }
+    };
+
+    const onVisibility = () => {
+      if (document.hidden) {
+        stopTimer();
+        ctrl?.abort();
+      } else {
+        void load();
+        startTimer();
+      }
+    };
+
+    void load();
+    document.addEventListener("visibilitychange", onVisibility);
+    if (!document.hidden) startTimer();
+
     return () => {
-      cancelled = true;
-      clearInterval(t);
+      stopTimer();
+      ctrl?.abort();
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [botId]);
 

@@ -1,7 +1,15 @@
 "use client";
 
+import { useCallback, useState } from "react";
 import { useParams } from "next/navigation";
-import { CircleStop, LineChart, Play, ScrollText, Settings as SettingsIcon } from "lucide-react";
+import {
+  CircleStop,
+  LineChart,
+  Loader2,
+  Play,
+  ScrollText,
+  Settings as SettingsIcon,
+} from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -24,7 +32,36 @@ import { useBot } from "@/lib/hooks";
 export default function BotSummaryPage() {
   const { id } = useParams<{ id: string }>();
   const botId = Number(id);
-  const { bot } = useBot(Number.isFinite(botId) ? botId : null);
+  const { bot, mutate } = useBot(Number.isFinite(botId) ? botId : null);
+  const [pending, setPending] = useState(false);
+
+  const doStart = useCallback(async () => {
+    if (!bot || pending) return;
+    const prevState = bot.state;
+    mutate({ state: "RUNNING" });
+    setPending(true);
+    try {
+      await api.startBot(bot.id);
+    } catch {
+      mutate({ state: prevState });
+    } finally {
+      setPending(false);
+    }
+  }, [bot, pending, mutate]);
+
+  const doStop = useCallback(async () => {
+    if (!bot || pending) return;
+    const prevState = bot.state;
+    mutate({ state: "STOPPED" });
+    setPending(true);
+    try {
+      await api.stopBot(bot.id);
+    } catch {
+      mutate({ state: prevState });
+    } finally {
+      setPending(false);
+    }
+  }, [bot, pending, mutate]);
 
   if (!bot) {
     return (
@@ -74,30 +111,28 @@ export default function BotSummaryPage() {
               size="sm"
               variant="secondary"
               className="gap-1.5"
-              onClick={async () => {
-                try {
-                  await api.stopBot(bot.id);
-                } catch {
-                  /* yut */
-                }
-              }}
+              disabled={pending}
+              onClick={doStop}
             >
-              <CircleStop className="size-4" />
+              {pending ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <CircleStop className="size-4" />
+              )}
               Durdur
             </Button>
           ) : (
             <Button
               size="sm"
               className="gap-1.5"
-              onClick={async () => {
-                try {
-                  await api.startBot(bot.id);
-                } catch {
-                  /* yut */
-                }
-              }}
+              disabled={pending}
+              onClick={doStart}
             >
-              <Play className="size-4" />
+              {pending ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Play className="size-4" />
+              )}
               Başlat
             </Button>
           )
@@ -139,8 +174,6 @@ export default function BotSummaryPage() {
 
 /**
  * Underlined tab tetikleyici — line variant ile uyumlu, ikon + etiket.
- * Active state'te tab'in altında foreground renginde ince çubuk belirir
- * (TabsTrigger'in `after:` pseudo-element'i `data-active`'de açılır).
  */
 function TabTrigger({
   value,
@@ -161,4 +194,3 @@ function TabTrigger({
     </TabsTrigger>
   );
 }
-

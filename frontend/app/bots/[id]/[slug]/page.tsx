@@ -1,8 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import { useParams } from "next/navigation";
-import { CircleStop, Play } from "lucide-react";
+import { CircleStop, Loader2, Play } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -20,37 +26,242 @@ import { SpreadSignalChart } from "@/components/charts/spread-signal-chart";
 import { BotSettingsCards } from "@/components/bots/bot-settings-cards";
 import { api } from "@/lib/api";
 import { useBot, useHistoryStream } from "@/lib/hooks";
-import type { FrontendEvent, MarketTick, PnLSnapshot, SessionDetail } from "@/lib/types";
+import type {
+  BotRow,
+  FrontendEvent,
+  MarketTick,
+  PnLSnapshot,
+  SessionDetail,
+} from "@/lib/types";
+
+type SessionRange = { start: number; end: number };
+
+/**
+ * Header bileşeni: 1 saniyelik tickSec timer'ı yalnız bu bileşen içinde
+ * yaşar. Bu sayede timer tetiklendiğinde yalnız bu küçük bileşen yeniden
+ * render edilir; alttaki ağır chart/table bileşenleri etkilenmez.
+ */
+const MarketSessionHeader = memo(function MarketSessionHeader({
+  detail,
+  pnlHistory,
+  isLive,
+  bot,
+  pending,
+  onStart,
+  onStop,
+}: {
+  detail: SessionDetail;
+  pnlHistory: PnLSnapshot[];
+  isLive: boolean;
+  bot: BotRow | null;
+  pending: boolean;
+  onStart: () => void;
+  onStop: () => void;
+}) {
+  const [tickSec, setTickSec] = useState(() => Math.floor(Date.now() / 1000));
+
+  const sessionRange = useMemo(
+    () => ({ start: detail.start_ts, end: detail.end_ts }),
+    [detail.start_ts, detail.end_ts],
+  );
+
+  useEffect(() => {
+    if (!isLive || sessionRange.end <= sessionRange.start) return;
+    setTickSec(Math.floor(Date.now() / 1000));
+    const id = setInterval(
+      () => setTickSec(Math.floor(Date.now() / 1000)),
+      1000,
+    );
+    return () => clearInterval(id);
+  }, [isLive, sessionRange]);
+
+  const marketProgress = useMemo((): SessionMarketProgress | null => {
+    if (!sessionRange || sessionRange.end <= sessionRange.start) return null;
+    const last = pnlHistory[pnlHistory.length - 1];
+    let tSec: number;
+    if (last) {
+      tSec = isLive
+        ? Math.max(last.ts_ms / 1000, tickSec)
+        : last.ts_ms / 1000;
+    } else if (isLive) {
+      tSec = tickSec;
+    } else {
+      tSec = sessionRange.start;
+    }
+    const span = sessionRange.end - sessionRange.start;
+    const pct = Math.min(
+      100,
+      Math.max(0, ((tSec - sessionRange.start) / span) * 100),
+    );
+    const fmtHm = (ts: number) =>
+      new Date(ts * 1000).toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    const centerLabel = new Date(tSec * 1000).toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+    });
+    return {
+      pct,
+      startLabel: fmtHm(sessionRange.start),
+      endLabel: fmtHm(sessionRange.end),
+      centerLabel,
+    };
+  }, [sessionRange, pnlHistory, isLive, tickSec]);
+
+  const marketTitle = detail.title?.trim() ? detail.title : detail.slug;
+  const stateBadgeClass =
+    "h-5 border px-1.5 text-[10px] font-semibold uppercase tracking-wide";
+
+  return (
+    <BotDetailHeader
+      imageUrl={detail.image}
+      title={marketTitle}
+      subtitle={detail.slug}
+      marketProgress={marketProgress}
+      badges={
+        isLive ? (
+          <Badge
+            className={`${stateBadgeClass} border-transparent bg-emerald-500/15 text-emerald-600 dark:text-emerald-400`}
+          >
+            LIVE
+          </Badge>
+        ) : (
+          <Badge variant="outline" className={stateBadgeClass}>
+            {detail.state}
+          </Badge>
+        )
+      }
+      actions={
+        bot ? (
+          bot.state === "RUNNING" ? (
+            <Button
+              size="sm"
+              variant="secondary"
+              className="gap-1.5"
+              disabled={pending}
+              onClick={onStop}
+            >
+              {pending ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <CircleStop className="size-4" />
+              )}
+              Durdur
+            </Button>
+          ) : (
+            <Button
+              size="sm"
+              className="gap-1.5"
+              disabled={pending}
+              onClick={onStart}
+            >
+              {pending ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Play className="size-4" />
+              )}
+              Başlat
+            </Button>
+          )
+        ) : null
+      }
+    />
+  );
+});
 
 export default function MarketDetailPage() {
   const { id, slug } = useParams<{ id: string; slug: string }>();
   const botId = Number(id);
-  const { bot } = useBot(Number.isFinite(botId) ? botId : null, 5000);
+  const { bot, mutate } = useBot(Number.isFinite(botId) ? botId : null, 5000);
 
   const [detail, setDetail] = useState<SessionDetail | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [pending, setPending] = useState(false);
 
   useEffect(() => {
     if (!Number.isFinite(botId) || !slug) return;
-    let cancelled = false;
-    const reload = () =>
-      api
-        .sessionDetail(botId, slug)
-        .then((d) => {
-          if (cancelled) return;
+    let ctrl: AbortController | null = null;
+    let timer: ReturnType<typeof setInterval> | null = null;
+
+    const reload = async () => {
+      if (document.hidden) return;
+      ctrl?.abort();
+      ctrl = new AbortController();
+      const { signal } = ctrl;
+      try {
+        const d = await api.sessionDetail(botId, slug, signal);
+        if (!signal.aborted) {
           setDetail(d);
           setLoaded(true);
-        })
-        .catch(() => {
-          if (!cancelled) setLoaded(true);
-        });
-    reload();
-    const t = setInterval(reload, 10_000);
+        }
+      } catch (e) {
+        if (e instanceof Error && e.name === "AbortError") return;
+        setLoaded(true);
+      }
+    };
+
+    const startTimer = () => {
+      if (timer !== null) return;
+      timer = setInterval(() => void reload(), 10_000);
+    };
+    const stopTimer = () => {
+      if (timer !== null) {
+        clearInterval(timer);
+        timer = null;
+      }
+    };
+
+    const onVisibility = () => {
+      if (document.hidden) {
+        stopTimer();
+        ctrl?.abort();
+      } else {
+        void reload();
+        startTimer();
+      }
+    };
+
+    void reload();
+    document.addEventListener("visibilitychange", onVisibility);
+    if (!document.hidden) startTimer();
+
     return () => {
-      cancelled = true;
-      clearInterval(t);
+      stopTimer();
+      ctrl?.abort();
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [botId, slug]);
+
+  const doStart = useCallback(async () => {
+    if (!bot || pending) return;
+    const prevState = bot.state;
+    mutate({ state: "RUNNING" });
+    setPending(true);
+    try {
+      await api.startBot(bot.id);
+    } catch {
+      mutate({ state: prevState });
+    } finally {
+      setPending(false);
+    }
+  }, [bot, pending, mutate]);
+
+  const doStop = useCallback(async () => {
+    if (!bot || pending) return;
+    const prevState = bot.state;
+    mutate({ state: "STOPPED" });
+    setPending(true);
+    try {
+      await api.stopBot(bot.id);
+    } catch {
+      mutate({ state: prevState });
+    } finally {
+      setPending(false);
+    }
+  }, [bot, pending, mutate]);
 
   const isLive = detail?.is_live ?? false;
 
@@ -119,54 +330,10 @@ export default function MarketDetailPage() {
   });
 
   const sessionRange = useMemo(
-    () =>
+    (): SessionRange | null =>
       detail ? { start: detail.start_ts, end: detail.end_ts } : null,
     [detail],
   );
-
-  const [tickSec, setTickSec] = useState(() => Math.floor(Date.now() / 1000));
-  useEffect(() => {
-    if (!isLive || !sessionRange) return;
-    setTickSec(Math.floor(Date.now() / 1000));
-    const id = setInterval(() => setTickSec(Math.floor(Date.now() / 1000)), 1000);
-    return () => clearInterval(id);
-  }, [isLive, sessionRange]);
-
-  const marketProgress = useMemo((): SessionMarketProgress | null => {
-    if (!sessionRange || sessionRange.end <= sessionRange.start) return null;
-    const last = pnlHistory[pnlHistory.length - 1];
-    let tSec: number;
-    if (last) {
-      tSec = isLive
-        ? Math.max(last.ts_ms / 1000, tickSec)
-        : last.ts_ms / 1000;
-    } else if (isLive) {
-      tSec = tickSec;
-    } else {
-      tSec = sessionRange.start;
-    }
-    const span = sessionRange.end - sessionRange.start;
-    const pct = Math.min(
-      100,
-      Math.max(0, ((tSec - sessionRange.start) / span) * 100),
-    );
-    const fmtHm = (ts: number) =>
-      new Date(ts * 1000).toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit",
-      });
-    const centerLabel = new Date(tSec * 1000).toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    });
-    return {
-      pct,
-      startLabel: fmtHm(sessionRange.start),
-      endLabel: fmtHm(sessionRange.end),
-      centerLabel,
-    };
-  }, [sessionRange, pnlHistory, isLive, tickSec]);
 
   if (!loaded) {
     return (
@@ -195,67 +362,17 @@ export default function MarketDetailPage() {
     );
   }
 
-  const marketTitle =
-    detail.title?.trim() ? detail.title : detail.slug;
-  const stateBadgeClass =
-    "h-5 border px-1.5 text-[10px] font-semibold uppercase tracking-wide";
-
   return (
     <div className="space-y-4">
-      <BotDetailHeader
-        imageUrl={detail.image}
-        title={marketTitle}
-        subtitle={detail.slug}
-        marketProgress={marketProgress}
-        badges={
-          isLive ? (
-            <Badge
-              className={`${stateBadgeClass} border-transparent bg-emerald-500/15 text-emerald-600 dark:text-emerald-400`}
-            >
-              LIVE
-            </Badge>
-          ) : (
-            <Badge variant="outline" className={stateBadgeClass}>
-              {detail.state}
-            </Badge>
-          )
-        }
-        actions={
-          bot ? (
-            bot.state === "RUNNING" ? (
-              <Button
-                size="sm"
-                variant="secondary"
-                className="gap-1.5"
-                onClick={async () => {
-                  try {
-                    await api.stopBot(bot.id);
-                  } catch {
-                    /* yut */
-                  }
-                }}
-              >
-                <CircleStop className="size-4" />
-                Durdur
-              </Button>
-            ) : (
-              <Button
-                size="sm"
-                className="gap-1.5"
-                onClick={async () => {
-                  try {
-                    await api.startBot(bot.id);
-                  } catch {
-                    /* yut */
-                  }
-                }}
-              >
-                <Play className="size-4" />
-                Başlat
-              </Button>
-            )
-          ) : null
-        }
+      {/* Header ayrı bir memo bileşeninde — 1sn timer yalnız onu tetikler */}
+      <MarketSessionHeader
+        detail={detail}
+        pnlHistory={pnlHistory}
+        isLive={isLive}
+        bot={bot}
+        pending={pending}
+        onStart={doStart}
+        onStop={doStop}
       />
 
       <div className="flex flex-col gap-3">

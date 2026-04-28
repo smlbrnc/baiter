@@ -41,8 +41,9 @@ function historyQs(sinceMs: number, limit: number): string {
 export const api = {
   health: () => req<string>("/health"),
 
-  listBots: () => req<BotRow[]>("/bots"),
-  getBot: (id: number) => req<BotRow>(`/bots/${id}`),
+  listBots: (signal?: AbortSignal) => req<BotRow[]>("/bots", { signal }),
+  getBot: (id: number, signal?: AbortSignal) =>
+    req<BotRow>(`/bots/${id}`, { signal }),
   createBot: (body: CreateBotReq) =>
     req<{ id: number }>("/bots", {
       method: "POST",
@@ -60,17 +61,24 @@ export const api = {
   stopBot: (id: number) =>
     req<void>(`/bots/${id}/stop`, { method: "POST" }),
 
-  botLogs: (id: number, limit = 200) =>
-    req<LogRow[]>(`/bots/${id}/logs?limit=${limit}`),
-  botPnl: (id: number) => req<PnLSnapshot | null>(`/bots/${id}/pnl`),
+  botLogs: (id: number, limit = 200, signal?: AbortSignal) =>
+    req<LogRow[]>(`/bots/${id}/logs?limit=${limit}`, { signal }),
+  botPnl: (id: number, signal?: AbortSignal) =>
+    req<PnLSnapshot | null>(`/bots/${id}/pnl`, { signal }),
   botSession: (id: number) => req<SessionInfo | null>(`/bots/${id}/session`),
 
-  botSessions: (id: number, limit = 10, offset = 0) =>
+  botSessions: (
+    id: number,
+    limit = 10,
+    offset = 0,
+    signal?: AbortSignal,
+  ) =>
     req<SessionListResponse>(
       `/bots/${id}/sessions?limit=${limit}&offset=${offset}`,
+      { signal },
     ),
-  sessionDetail: (id: number, slug: string) =>
-    req<SessionDetail | null>(`/bots/${id}/sessions/${slug}`),
+  sessionDetail: (id: number, slug: string, signal?: AbortSignal) =>
+    req<SessionDetail | null>(`/bots/${id}/sessions/${slug}`, { signal }),
   sessionTicks: (id: number, slug: string, sinceMs = 0, limit = 800) =>
     req<MarketTick[]>(
       `/bots/${id}/sessions/${slug}/ticks?${historyQs(sinceMs, limit)}`,
