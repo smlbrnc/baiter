@@ -171,10 +171,18 @@ pub async fn list_sessions_for_bot(
                 COALESCE(p.up_filled,   0.0) AS up_filled,   \
                 COALESCE(p.down_filled, 0.0) AS down_filled, \
                 p.pnl_if_up, p.pnl_if_down, \
-                mr.winning_outcome \
+                CASE \
+                    WHEN lt.up_best_bid   > 0.95 THEN 'Up' \
+                    WHEN lt.down_best_bid > 0.95 THEN 'Down' \
+                    ELSE mr.winning_outcome \
+                END AS winning_outcome \
          FROM paged s \
          {LATEST_PNL_JOIN} \
          LEFT JOIN market_resolved mr ON mr.market = s.condition_id \
+         LEFT JOIN market_ticks lt \
+                ON lt.market_session_id = s.id \
+               AND lt.ts_ms = (SELECT MAX(ts_ms) FROM market_ticks \
+                                WHERE market_session_id = s.id) \
          ORDER BY s.start_ts DESC"
     );
     let rows = sqlx::query(&sql)
