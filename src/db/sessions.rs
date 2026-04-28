@@ -174,11 +174,10 @@ pub async fn list_sessions_for_bot(
                 CASE \
                     WHEN lt.up_best_bid   > 0.95 THEN 'Up' \
                     WHEN lt.down_best_bid > 0.95 THEN 'Down' \
-                    ELSE mr.winning_outcome \
+                    ELSE NULL \
                 END AS winning_outcome \
          FROM paged s \
          {LATEST_PNL_JOIN} \
-         LEFT JOIN market_resolved mr ON mr.market = s.condition_id \
          LEFT JOIN market_ticks lt \
                 ON lt.market_session_id = s.id \
                AND lt.ts_ms = (SELECT MAX(ts_ms) FROM market_ticks \
@@ -255,4 +254,35 @@ pub async fn session_by_bot_slug(
         realized_pnl: r.get("realized_pnl"),
         session_id: r.get("id"),
     }))
+}
+
+/// Bota ait tüm sessionların kazanan taraf PnL toplamı.
+/// Son tick fiyatından kazanan belirlenir (up_best_bid/down_best_bid > 0.95).
+pub async fn total_pnl_for_bot(
+    pool: &SqlitePool,
+    bot_id: i64,
+) -> Result<Option<f64>, AppError> {
+    let row = sqlx::query(
+        "SELECT SUM( \
+             CASE \
+                 WHEN lt.up_best_bid   > 0.95 THEN p.pnl_if_up \
+                 WHEN lt.down_best_bid > 0.95 THEN p.pnl_if_down \
+                 ELSE NULL \
+             END \
+         ) AS total_pnl \
+         FROM market_sessions s \
+         LEFT JOIN pnl_snapshots p \
+                ON p.market_session_id = s.id \
+               AND p.ts_ms = (SELECT MAX(ts_ms) FROM pnl_snapshots \
+                               WHERE market_session_id = s.id) \
+         LEFT JOIN market_ticks lt \
+                ON lt.market_session_id = s.id \
+               AND lt.ts_ms = (SELECT MAX(ts_ms) FROM market_ticks \
+                                WHERE market_session_id = s.id) \
+         WHERE s.bot_id = ?",
+    )
+    .bind(bot_id)
+    .fetch_one(pool)
+    .await?;
+    Ok(row.try_get("total_pnl").ok().flatten())
 }

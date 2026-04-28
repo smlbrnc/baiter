@@ -31,6 +31,7 @@ function fmtTs(ts: number): string {
 export function SessionsTable({ botId }: { botId: number }) {
   const [items, setItems] = useState<SessionListItem[] | null>(null);
   const [total, setTotal] = useState(0);
+  const [totalPnl, setTotalPnl] = useState<number | null>(null);
   const [page, setPage] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
@@ -49,6 +50,7 @@ export function SessionsTable({ botId }: { botId: number }) {
         if (signal.aborted) return;
         setItems(res.items);
         setTotal(res.total);
+        setTotalPnl(res.total_pnl ?? null);
         setError(null);
       } catch (e) {
         if (e instanceof Error && e.name === "AbortError") return;
@@ -98,11 +100,33 @@ export function SessionsTable({ botId }: { botId: number }) {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <span>Geçmiş Marketler</span>
-          <Badge variant="secondary" className="font-mono tabular-nums">
-            {total}
-          </Badge>
+        <CardTitle className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <span>Geçmiş Marketler</span>
+            <Badge variant="secondary" className="font-mono tabular-nums">
+              {total}
+            </Badge>
+          </div>
+          {totalPnl != null && (
+            <div className="flex flex-col items-end gap-0.5">
+              <span className="text-muted-foreground text-[10px] uppercase tracking-wider">
+                Toplam K/Z
+              </span>
+              <span
+                className={cn(
+                  "font-mono text-sm tabular-nums font-semibold",
+                  totalPnl > 0
+                    ? "text-emerald-500"
+                    : totalPnl < 0
+                      ? "text-destructive"
+                      : "text-foreground",
+                )}
+              >
+                {totalPnl > 0 ? "+" : ""}
+                {totalPnl.toFixed(4)}
+              </span>
+            </div>
+          )}
         </CardTitle>
       </CardHeader>
       <CardContent className="p-0">
@@ -164,7 +188,16 @@ export function SessionsTable({ botId }: { botId: number }) {
                   {s.winning_outcome && (
                     <WinnerBadge outcome={s.winning_outcome} />
                   )}
-                  <PnlValue value={s.realized_pnl} bold />
+                  <PnlValue
+                    value={
+                      s.winning_outcome?.toLowerCase() === "up"
+                        ? s.pnl_if_up
+                        : s.winning_outcome?.toLowerCase() === "down"
+                          ? s.pnl_if_down
+                          : s.realized_pnl
+                    }
+                    bold
+                  />
                 </Stat>
                 <ArrowRight className="text-muted-foreground group-hover:text-foreground h-4 w-4 shrink-0" />
               </Link>

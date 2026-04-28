@@ -388,9 +388,10 @@ async fn bot_sessions(
 ) -> Result<Json<Value>, AppError> {
     let limit = q.limit.clamp(1, 200);
     let offset = q.offset.max(0);
-    let (rows, total) = tokio::try_join!(
+    let (rows, total, total_pnl) = tokio::try_join!(
         db::sessions::list_sessions_for_bot(&state.pool, id, limit, offset),
         db::sessions::count_sessions_for_bot(&state.pool, id),
+        db::sessions::total_pnl_for_bot(&state.pool, id),
     )?;
     let now = crate::time::now_secs() as i64;
     let items: Vec<Value> = rows
@@ -414,10 +415,11 @@ async fn bot_sessions(
         })
         .collect();
     Ok(Json(serde_json::json!({
-        "items":  items,
-        "total":  total,
-        "limit":  limit,
-        "offset": offset,
+        "items":     items,
+        "total":     total,
+        "total_pnl": total_pnl,
+        "limit":     limit,
+        "offset":    offset,
     })))
 }
 

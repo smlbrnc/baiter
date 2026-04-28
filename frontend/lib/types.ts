@@ -106,6 +106,7 @@ export interface SessionListItem {
 export interface SessionListResponse {
   items: SessionListItem[];
   total: number;
+  total_pnl: number | null;
   limit: number;
   offset: number;
 }
