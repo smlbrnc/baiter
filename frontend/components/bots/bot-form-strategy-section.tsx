@@ -199,7 +199,7 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Field
                 label="AggTrade pyramid delta"
-                tooltip="AggTrade fazında (150–270 sn) trend yönünde atılan taker FAK emirlerinin fiyat ofseti: best_ask + delta. Trend filtresi: composite skor ortalaması > 5 ve dominant tarafın best_bid > 0.5."
+                tooltip="AggTrade fazında (225–270 sn) trend yönünde atılan taker FAK emirlerinin fiyat ofseti: best_ask + delta. Trend filtresi: composite skor ortalaması > 5 ve dominant tarafın best_bid > 0.5."
                 hint="0.00 – 0.10 (default 0.015)."
               >
                 <Input
@@ -215,7 +215,7 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
               </Field>
               <Field
                 label="FakTrade pyramid delta"
-                tooltip="FakTrade fazında (270–290 sn) atılan taker FAK delta'sı; AggTrade'e göre daha agresif (fill önceliği için)."
+                tooltip="FakTrade fazında (270–294 sn) atılan taker FAK delta'sı; AggTrade'e göre daha agresif (fill önceliği için)."
                 hint="0.00 – 0.20 (default 0.025)."
               >
                 <Input

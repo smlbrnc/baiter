@@ -38,6 +38,11 @@ use super::common::{Decision, OpenOrder, PlannedOrder, StrategyContext};
 use crate::time::MarketZone;
 use crate::types::{Outcome, OrderType, Side};
 
+/// FAK pyramid deneme sayısının tükenip tükenmediğini kontrol eder (ilk deneme + 2 retry).
+fn pyramid_retry(used: u8) -> bool {
+    used >= 3
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub enum AlisState {
     #[default]
@@ -49,8 +54,8 @@ pub enum AlisState {
     PositionOpen {
         dominant_dir: Outcome,
         avg_down_used: bool,
-        agg_pyramid_used: bool,
-        fak_pyramid_used: bool,
+        agg_pyramid: u8,
+        fak_pyramid: u8,
         score_sum: f64,
         score_samples: u32,
     },
@@ -98,8 +103,8 @@ impl AlisEngine {
                     let new_state = AlisState::PositionOpen {
                         dominant_dir: dom,
                         avg_down_used: false,
-                        agg_pyramid_used: false,
-                        fak_pyramid_used: false,
+                        agg_pyramid: 0,
+                        fak_pyramid: 0,
                         score_sum: ctx.effective_score,
                         score_samples: 1,
                     };
@@ -110,15 +115,15 @@ impl AlisEngine {
             }
             AlisState::PositionOpen {
                 avg_down_used,
-                agg_pyramid_used,
-                fak_pyramid_used,
+                agg_pyramid,
+                fak_pyramid,
                 ..
             } => match ctx.zone {
                 MarketZone::NormalTrade if !avg_down_used => try_avg_down(state, ctx),
-                MarketZone::AggTrade if !agg_pyramid_used => {
+                MarketZone::AggTrade if !pyramid_retry(agg_pyramid) => {
                     try_pyramid(state, ctx, MarketZone::AggTrade)
                 }
-                MarketZone::FakTrade if !fak_pyramid_used => {
+                MarketZone::FakTrade if !pyramid_retry(fak_pyramid) => {
                     try_pyramid(state, ctx, MarketZone::FakTrade)
                 }
                 _ => (state, Decision::NoOp),
@@ -137,8 +142,8 @@ fn sync_dominant(state: AlisState, ctx: &StrategyContext<'_>) -> AlisState {
     let AlisState::PositionOpen {
         dominant_dir,
         avg_down_used,
-        agg_pyramid_used,
-        fak_pyramid_used,
+        agg_pyramid,
+        fak_pyramid,
         score_sum,
         score_samples,
     } = state
@@ -154,8 +159,8 @@ fn sync_dominant(state: AlisState, ctx: &StrategyContext<'_>) -> AlisState {
     AlisState::PositionOpen {
         dominant_dir: real_dom,
         avg_down_used,
-        agg_pyramid_used,
-        fak_pyramid_used,
+        agg_pyramid,
+        fak_pyramid,
         score_sum,
         score_samples,
     }
@@ -165,8 +170,8 @@ fn update_score(state: AlisState, score: f64) -> AlisState {
     if let AlisState::PositionOpen {
         dominant_dir,
         avg_down_used,
-        agg_pyramid_used,
-        fak_pyramid_used,
+        agg_pyramid,
+        fak_pyramid,
         score_sum,
         score_samples,
     } = state
@@ -174,8 +179,8 @@ fn update_score(state: AlisState, score: f64) -> AlisState {
         AlisState::PositionOpen {
             dominant_dir,
             avg_down_used,
-            agg_pyramid_used,
-            fak_pyramid_used,
+            agg_pyramid,
+            fak_pyramid,
             score_sum: score_sum + score,
             score_samples: score_samples + 1,
         }
@@ -524,8 +529,8 @@ fn place_open_pair(ctx: &StrategyContext<'_>) -> (AlisState, Decision) {
 fn try_avg_down(state: AlisState, ctx: &StrategyContext<'_>) -> (AlisState, Decision) {
     let AlisState::PositionOpen {
         dominant_dir,
-        agg_pyramid_used,
-        fak_pyramid_used,
+        agg_pyramid,
+        fak_pyramid,
         score_sum,
         score_samples,
         ..
@@ -601,8 +606,8 @@ fn try_avg_down(state: AlisState, ctx: &StrategyContext<'_>) -> (AlisState, Deci
     let new_state = AlisState::PositionOpen {
         dominant_dir,
         avg_down_used: true,
-        agg_pyramid_used,
-        fak_pyramid_used,
+        agg_pyramid,
+        fak_pyramid,
         score_sum,
         score_samples,
     };
@@ -625,8 +630,8 @@ fn try_pyramid(
     let AlisState::PositionOpen {
         dominant_dir,
         avg_down_used,
-        agg_pyramid_used,
-        fak_pyramid_used,
+        agg_pyramid,
+        fak_pyramid,
         score_sum,
         score_samples,
     } = state
@@ -709,8 +714,10 @@ fn try_pyramid(
     let new_state = AlisState::PositionOpen {
         dominant_dir,
         avg_down_used,
-        agg_pyramid_used: agg_pyramid_used || phase == MarketZone::AggTrade,
-        fak_pyramid_used: fak_pyramid_used || phase == MarketZone::FakTrade,
+        agg_pyramid: agg_pyramid
+            + if phase == MarketZone::AggTrade { 1 } else { 0 },
+        fak_pyramid: fak_pyramid
+            + if phase == MarketZone::FakTrade { 1 } else { 0 },
         score_sum,
         score_samples,
     };

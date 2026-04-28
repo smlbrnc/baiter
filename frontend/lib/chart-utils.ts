@@ -8,7 +8,7 @@ export interface SessionRange {
 }
 
 /** `MarketZone::from_pct` geçişleri: Deep|Normal|Agg|Fak bitişleri (Stop öncesi). */
-export const ZONE_PCT_BOUNDARIES = [0.1, 0.5, 0.9, 0.97] as const;
+export const ZONE_PCT_BOUNDARIES = [0.1, 0.75, 0.9, 0.98] as const;
 
 /**
  * Sınır çizgisinin üst etiketi: çizgiyi geçince başlayan bölge

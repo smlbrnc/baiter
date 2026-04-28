@@ -34,13 +34,13 @@ pub fn zone_pct(start_ts: u64, end_ts: u64, now: u64) -> f64 {
 /// Market penceresi % bazlı bölge eşikleri (interval-agnostic).
 ///
 /// Aynı eşikler tüm interval'lerde geçerli; süre olarak farklı görünür:
-/// - 5m  (300s):  Deep <30s,  Normal <150s, Agg <270s, Fak <291s, Stop ≥291s
-/// - 15m (900s):  Deep <90s,  Normal <450s, Agg <810s, Fak <873s, Stop ≥873s
-/// - 1h  (3600s): Deep <6m,   Normal <30m,  Agg <54m,  Fak <58m,  Stop ≥58m
-/// - 4h  (14400s):Deep <24m,  Normal <2h,   Agg <3h36m,Fak <3h53m,Stop ≥3h53m
+/// - 5m  (300s):  Deep <30s,  Normal <225s, Agg <270s, Fak <294s, Stop ≥294s
+/// - 15m (900s):  Deep <90s,  Normal <675s, Agg <810s, Fak <882s, Stop ≥882s
+/// - 1h  (3600s): Deep <6m,   Normal <45m,  Agg <54m,  Fak <58m48s, Stop ≥58m48s
+/// - 4h  (14400s):Deep <24m,  Normal <3h,   Agg <3h36m,Fak <3h55m12s,Stop ≥3h55m12s
 ///
-/// Bantlar (§15): DeepTrade < 10 %, NormalTrade < 50 %, AggTrade < 90 %,
-/// FakTrade < 97 %, StopTrade ≥ 97 %.
+/// Bantlar: DeepTrade < 10 %, NormalTrade < 75 %, AggTrade < 90 %,
+/// FakTrade < 98 %, StopTrade ≥ 98 %.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub enum MarketZone {
@@ -55,11 +55,11 @@ impl MarketZone {
     pub fn from_pct(pct: f64) -> Self {
         if pct < 0.10 {
             Self::DeepTrade
-        } else if pct < 0.50 {
+        } else if pct < 0.75 {
             Self::NormalTrade
         } else if pct < 0.90 {
             Self::AggTrade
-        } else if pct < 0.97 {
+        } else if pct < 0.98 {
             Self::FakTrade
         } else {
             Self::StopTrade
