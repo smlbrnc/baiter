@@ -1,7 +1,16 @@
 #!/usr/bin/env python3
 """Elis backtest — Hibrit Maker Bid Grid (Alis-tabanlı + Composite Signal Yön Filtresi).
 
-Versiyon: v3 (16 marketde test edildi: yön %92, kesin PnL +$609, net +$560)
+Versiyon: v4b — 24 market combined optimize (16 bot14 + 8 bot15)
+  Yön doğruluğu : 17/20 = %85
+  Kesin PnL     : +$862.22
+  Net PnL       : +$226.30 (mid hesabı pesimist; gerçekte hold edilir)
+
+Önemli değişiklikler (v3 → v4b):
+  - REQUOTE_PRICE_EPS: 2 tick → 4 tick (spam %50 azaltıcı, en kritik fix)
+  - BSI_REV_TH: 2.0 → 1.5 (bsi_rev daha agresif)
+  - DSCORE_STRONG: 1.0 → 1.5 (momentum daha kati)
+  - OFI_DIR_TH: 0.4 → 0.3 (ofi_dir daha agresif)
 
 Kullanım:
     python3 scripts/backtest_market.py <market_slug>
@@ -44,7 +53,18 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-TICKS_DIR = ROOT / "exports" / "bot14-ticks-20260429"
+EXPORTS_DIR = ROOT / "exports"
+# Tüm `bot*-ticks-*` klasörlerini destekler — slug hangi klasörde varsa o kullanılır.
+TICKS_DIRS = sorted(EXPORTS_DIR.glob("bot*-ticks-*"))
+
+
+def find_ticks_path(slug: str) -> Path | None:
+    """Slug'ı tüm bot*-ticks-* klasörlerinde ara."""
+    for d in TICKS_DIRS:
+        p = d / f"{slug}_ticks.json"
+        if p.exists():
+            return p
+    return None
 
 # ============================================================================
 # ELIS PARAMETRELERİ — 16 marketde optimize edildi (yön %92, kesin PnL +$609)
@@ -53,13 +73,13 @@ TICKS_DIR = ROOT / "exports" / "bot14-ticks-20260429"
 # --- TICK ---
 TICK_SIZE = 0.01
 
-# --- COMPOSITE OPENER (5-rule ladder, t=20) ---
+# --- COMPOSITE OPENER (5-rule ladder, t=20) — v4b: 24-market combined optimize ---
 PRE_OPENER_TICKS = 20      # pre-opener pencere uzunluğu
-BSI_REV_TH = 2.0           # rule 1: |bsi|>2.0 → bsi tersi (extreme reversion)
+BSI_REV_TH = 1.5           # rule 1: |bsi|>1.5 → bsi tersi (v4b: 2.0→1.5 daha agresif)
 OFI_EXH_TH = 0.4           # rule 2: |ofi|>0.4 + |cvd|>3 → flow tersi (exhaustion)
 CVD_EXH_TH = 3.0
-OFI_DIR_TH = 0.4           # rule 3: |ofi|>0.4 → ofi yönü (aggressive flow)
-DSCORE_STRONG = 1.0        # rule 4: |dscore|>1.0 → dscore yönü (momentum)
+OFI_DIR_TH = 0.3           # rule 3: |ofi|>0.3 → ofi yönü (v4b: 0.4→0.3 daha agresif)
+DSCORE_STRONG = 1.5        # rule 4: |dscore|>1.5 → momentum (v4b: 1.0→1.5 daha kati)
 SCORE_NEUTRAL = 5.0        # rule 5: fallback — score_avg ≥ 5 → Up
 
 # --- SIGNAL FLIP (yön düzeltici, sadece çok güçlü reversal'da) ---
@@ -77,8 +97,8 @@ PYRAMID_USDC = 30.0
 SCOOP_USDC = 50.0
 MAX_SIZE = 50              # tek emir share cap
 
-# --- REQUOTE ---
-REQUOTE_PRICE_EPS = TICK_SIZE * 2   # 2 tick
+# --- REQUOTE — v4b: 2 tick → 4 tick (spam azaltıcı, en kritik düzeltme) ---
+REQUOTE_PRICE_EPS = TICK_SIZE * 4   # 4 tick (v4b: spam'ı %50+ azaltır)
 REQUOTE_COOLDOWN_S = 3
 # NOT: hedge_requote SADECE opp_bid YÜKSELDİĞİNDE tetiklenir (decide() içinde)
 # Alis bot'unun en büyük hatası: opp düşerken de hedge ekleyip kayıp büyütmesi.
@@ -448,9 +468,9 @@ def main():
         return 1
     slug = sys.argv[1]
     force_intent = sys.argv[2] if len(sys.argv) >= 3 else None
-    p = TICKS_DIR / f"{slug}_ticks.json"
-    if not p.exists():
-        print(f"Tick dosyası yok: {p}")
+    p = find_ticks_path(slug)
+    if p is None:
+        print(f"Tick dosyası yok: {slug}_ticks.json (klasörler: {[d.name for d in TICKS_DIRS]})")
         return 1
     ticks = json.load(p.open())
     print(f"Market: {slug}")

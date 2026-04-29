@@ -222,8 +222,14 @@ impl StrategyParams {
 }
 
 /// Elis stratejisi parametreleri — `StrategyParams`'tan resolve edilir.
-/// Default değerler 16-market backtestle optimize edildi
-/// (yön %92, kesin PnL +$609; bkz. `exports/backtest-final-16-markets.md`).
+/// Default değerler **v4b** 24-market combined backtestle optimize edildi
+/// (yön %85, kesin PnL +$862; bkz. `exports/backtest-final-24-markets.md`).
+///
+/// v3 → v4b kritik değişiklikler:
+///   - `requote_price_eps`: 0.02 → 0.04 (spam %50 azaltıcı, en kritik fix)
+///   - `bsi_rev_threshold`: 2.0 → 1.5 (bsi_rev daha agresif)
+///   - `dscore_strong_threshold`: 1.0 → 1.5 (momentum daha kati)
+///   - `ofi_directional_threshold`: 0.4 → 0.3 (ofi_dir daha agresif)
 #[derive(Debug, Clone, Copy)]
 pub struct ElisParams {
     pub pre_opener_ticks: usize,
@@ -262,11 +268,11 @@ impl Default for ElisParams {
     fn default() -> Self {
         Self {
             pre_opener_ticks: 20,
-            bsi_rev_threshold: 2.0,
+            bsi_rev_threshold: 1.5,        // v4b: 2.0→1.5
             ofi_exhaustion_threshold: 0.4,
             cvd_exhaustion_threshold: 3.0,
-            ofi_directional_threshold: 0.4,
-            dscore_strong_threshold: 1.0,
+            ofi_directional_threshold: 0.3, // v4b: 0.4→0.3
+            dscore_strong_threshold: 1.5,   // v4b: 1.0→1.5
             score_neutral: 5.0,
             signal_flip_threshold: 5.0,
             signal_flip_max_count: 1,
@@ -277,7 +283,7 @@ impl Default for ElisParams {
             order_usdc_hedge: 8.0,
             pyramid_usdc: 30.0,
             scoop_usdc: 50.0,
-            requote_price_eps: 0.02,
+            requote_price_eps: 0.04,        // v4b: 0.02→0.04 (en kritik fix)
             requote_cooldown_secs: 3.0,
             avg_down_min_edge: 0.023,
             pyramid_ofi_min: 0.83,

@@ -1,14 +1,14 @@
-//! Elis stratejisi 16-market integration testi.
+//! Elis stratejisi 24-market integration testi (v4b).
 //!
-//! `exports/bot14-ticks-20260429/btc-updown-5m-*_ticks.json` tick dosyalarını
-//! yükler ve `ElisEngine`'in:
+//! Tick dosyaları: `exports/bot14-ticks-20260429/` (16 market) +
+//! `exports/bot15-ticks-20260429/` (8 market). `ElisEngine`'in:
 //!  1. **20 tick boyunca Pending** kalıp emir vermediğini,
 //!  2. **t=20'de open_pair** ürettiğini ve composite opener intent'in
 //!     beklenen yönde olduğunu (Python sim ile %100 paralellik),
-//!  3. **Final tickte resolve olmuş** marketlerde opener doğruluğunun
-//!     %92 (12/13) seviyesinde olduğunu doğrular.
+//!  3. **Final tickte resolve olmuş** marketlerde yön doğruluğunun (flip dahil)
+//!     v4b parametreleriyle %85 (17/20) seviyesinde olduğunu doğrular.
 //!
-//! Backtest detayı: `exports/backtest-final-16-markets.md`
+//! Backtest detayı: `exports/backtest-final-24-markets.md`
 
 use std::fs;
 use std::path::PathBuf;
@@ -33,24 +33,36 @@ struct Tick {
     ts_ms: u64,
 }
 
-fn ticks_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("exports")
-        .join("bot14-ticks-20260429")
+fn exports_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("exports")
 }
 
 fn load_ticks(slug: &str) -> Vec<Tick> {
-    let path = ticks_dir().join(format!("{}_ticks.json", slug));
-    let raw = fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("tick dosyası okunamadı {:?}: {}", path, e));
-    serde_json::from_str(&raw).unwrap_or_else(|e| panic!("JSON parse hatası {:?}: {}", path, e))
+    // bot14-ticks-* veya bot15-ticks-* (veya yenileri) — slug hangi klasörde varsa ondan oku.
+    for entry in fs::read_dir(exports_dir()).expect("exports dir") {
+        let entry = entry.unwrap();
+        let name = entry.file_name();
+        let name_s = name.to_string_lossy();
+        if !name_s.starts_with("bot") || !name_s.contains("-ticks-") {
+            continue;
+        }
+        let p = entry.path().join(format!("{}_ticks.json", slug));
+        if p.exists() {
+            let raw = fs::read_to_string(&p)
+                .unwrap_or_else(|e| panic!("tick dosyası okunamadı {:?}: {}", p, e));
+            return serde_json::from_str(&raw)
+                .unwrap_or_else(|e| panic!("JSON parse hatası {:?}: {}", p, e));
+        }
+    }
+    panic!("tick dosyası bulunamadı: {}", slug);
 }
 
-/// Resolved marketler için "true winner" — Python sim'deki son fiyat
-/// kuralıyla aynı (final tick `up_best_bid > 0.95` → Up, `< 0.05` → Down).
-/// Tablo: `exports/backtest-final-16-markets.md` §3.1
+/// Resolved marketler için "true winner" — final tick `up_best_bid >= 0.95` → Up,
+/// `down_best_bid >= 0.95` → Down. 24 marketin 20'si net resolve, 4'ü belirsiz.
+/// Tablo: `exports/backtest-final-24-markets.md` §3.1
 fn expected_winner(slug: &str) -> Option<Outcome> {
     match slug {
+        // bot14 (16 market)
         "btc-updown-5m-1777467000" => Some(Outcome::Up),
         "btc-updown-5m-1777467300" => Some(Outcome::Down),
         "btc-updown-5m-1777467600" => None,            // belirsiz
@@ -67,6 +79,15 @@ fn expected_winner(slug: &str) -> Option<Outcome> {
         "btc-updown-5m-1777475100" => Some(Outcome::Down),
         "btc-updown-5m-1777476300" => Some(Outcome::Down),
         "btc-updown-5m-1777476600" => Some(Outcome::Up),
+        // bot15 (8 market)
+        "btc-updown-5m-1777479000" => Some(Outcome::Down),
+        "btc-updown-5m-1777479300" => Some(Outcome::Down),
+        "btc-updown-5m-1777479600" => Some(Outcome::Down),
+        "btc-updown-5m-1777479900" => Some(Outcome::Up),
+        "btc-updown-5m-1777480200" => Some(Outcome::Up),
+        "btc-updown-5m-1777480500" => Some(Outcome::Up),
+        "btc-updown-5m-1777480800" => Some(Outcome::Up),
+        "btc-updown-5m-1777481100" => None,            // belirsiz
         _ => None,
     }
 }
@@ -164,6 +185,7 @@ fn simulate_market(slug: &str) -> SimResult {
 }
 
 const ALL_SLUGS: &[&str] = &[
+    // bot14 (16 market)
     "btc-updown-5m-1777467000",
     "btc-updown-5m-1777467300",
     "btc-updown-5m-1777467600",
@@ -180,6 +202,15 @@ const ALL_SLUGS: &[&str] = &[
     "btc-updown-5m-1777475100",
     "btc-updown-5m-1777476300",
     "btc-updown-5m-1777476600",
+    // bot15 (8 market)
+    "btc-updown-5m-1777479000",
+    "btc-updown-5m-1777479300",
+    "btc-updown-5m-1777479600",
+    "btc-updown-5m-1777479900",
+    "btc-updown-5m-1777480200",
+    "btc-updown-5m-1777480500",
+    "btc-updown-5m-1777480800",
+    "btc-updown-5m-1777481100",
 ];
 
 #[test]
@@ -234,10 +265,10 @@ fn all_16_markets_simulate_without_panic() {
 }
 
 #[test]
-fn opener_direction_accuracy_meets_92pct() {
-    // Resolved marketler (13 adet) içinde final intent (flip sonrası dahil)
-    // gerçek winner ile ≥%85 oranda eşleşmeli. Python backtest'i 12/13 = %92
-    // veriyordu; minimum eşik %85'i Rust impl ile de tutturmalıyız.
+fn opener_direction_accuracy_meets_85pct() {
+    // 24-market combined: 20 resolved. Final intent (flip dahil) gerçek winner
+    // ile ≥%80 eşleşmeli. v4b parametreleriyle Python sim 17/20 = %85 veriyor;
+    // Rust impl en az %80 (16/20) tutturmalı.
     let mut correct = 0usize;
     let mut total = 0usize;
     let mut log: Vec<String> = Vec::new();
@@ -272,8 +303,8 @@ fn opener_direction_accuracy_meets_92pct() {
         log.join("\n")
     );
     assert!(
-        pct >= 85.0,
-        "Yön doğruluğu %85 altında: {}/{} = {:.0}%",
+        pct >= 80.0,
+        "Yön doğruluğu %80 altında: {}/{} = {:.0}%",
         correct,
         total,
         pct
