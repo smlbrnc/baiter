@@ -417,15 +417,6 @@ fn reconcile_parity(state: AlisState, ctx: &StrategyContext<'_>) -> Option<Decis
     if (total_opp_remaining - target_remaining).abs() < parity_eps {
         return None;
     }
-    if opp_orders.is_empty() {
-        return None;
-    }
-
-    let cancels: Vec<String> = opp_orders.iter().map(|o| o.id.clone()).collect();
-
-    if target_remaining <= 0.0 {
-        return Some(Decision::CancelOrders(cancels));
-    }
 
     let avg_d = dom_avg(m, dom);
     if avg_d <= 0.0 {
@@ -436,6 +427,31 @@ fn reconcile_parity(state: AlisState, ctx: &StrategyContext<'_>) -> Option<Decis
         ctx.min_price,
         ctx.max_price,
     );
+
+    // Hedge tamamen yoksa (API reddi veya timing hatası yüzünden open_orders'dan
+    // düştüyse) yeni emir ver; iptal edilecek birşey yok.
+    if opp_orders.is_empty() {
+        if target_remaining <= 0.0 {
+            return None;
+        }
+        let new_hedge = PlannedOrder {
+            outcome: opp,
+            token_id: ctx.token_id(opp).to_string(),
+            side: Side::Buy,
+            price: target_price,
+            size: target_remaining,
+            order_type: OrderType::Gtc,
+            reason: format!("alis:hedge:{}", opp.as_lowercase()),
+        };
+        return Some(Decision::PlaceOrders(vec![new_hedge]));
+    }
+
+    let cancels: Vec<String> = opp_orders.iter().map(|o| o.id.clone()).collect();
+
+    if target_remaining <= 0.0 {
+        return Some(Decision::CancelOrders(cancels));
+    }
+
     let new_hedge = PlannedOrder {
         outcome: opp,
         token_id: ctx.token_id(opp).to_string(),
