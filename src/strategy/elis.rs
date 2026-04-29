@@ -56,12 +56,18 @@ pub struct TickSnapshot {
     pub bsi: Option<f64>,
     pub ofi: Option<f64>,
     pub cvd: Option<f64>,
+    /// Polymarket UP best bid (price anchor için)
+    pub up_bid: f64,
+    /// Polymarket DOWN best bid (price anchor için)
+    pub down_bid: f64,
 }
 
 /// Composite opener kuralın hangi dalı tetiklendi (debug + log için).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OpenerRule {
     BsiReversion,
+    /// Polymarket bid farkı ≥ price_anchor_threshold → piyasa konsensüsünü takip et.
+    PriceAnchor,
     Exhaustion,
     OfiDirectional,
     Momentum,
@@ -126,6 +132,8 @@ impl ElisEngine {
                     bsi: ctx.bsi,
                     ofi: ctx.ofi,
                     cvd: ctx.cvd,
+                    up_bid: ctx.up_best_bid,
+                    down_bid: ctx.down_best_bid,
                 });
                 // Hem minimum tick sayısı hem de minimum süre (BBA spam koruması)
                 let elapsed_secs = (ctx.now_ms.saturating_sub(first_ms)) as f64 / 1000.0;
@@ -205,6 +213,18 @@ fn predict_opener(ticks: &[TickSnapshot], p: &ElisParams) -> (Outcome, OpenerRul
             return (
                 if bsi > 0.0 { Outcome::Down } else { Outcome::Up },
                 OpenerRule::BsiReversion,
+            );
+        }
+    }
+
+    // Rule 1.5: Price anchor — BSI sonrası; erken spike BSI yakaladığında bu atlanır.
+    // Opener anındaki son tick bids'ini kullan.
+    if let Some(last) = ticks.last() {
+        let price_diff = last.down_bid - last.up_bid;
+        if price_diff.abs() >= p.price_anchor_threshold {
+            return (
+                if price_diff > 0.0 { Outcome::Down } else { Outcome::Up },
+                OpenerRule::PriceAnchor,
             );
         }
     }
@@ -374,6 +394,12 @@ fn decide_active(
         || (ctx.effective_score < p.score_neutral && intent == Outcome::Down);
     if !score_dir_match {
         active.score_persist_since_ms = now;
+    }
+
+    // Hard stop: DOM fiyatı eşiğin altına düştüyse pozisyon büyütme.
+    // Yanlış yönde açılan marketlerde avg-down + requote sarmalını keser.
+    if dom_b < p.hard_stop_dom_bid_min {
+        return Decision::NoOp;
     }
 
     // 6. Avg-down (one-shot)
@@ -680,6 +706,8 @@ mod tests {
                 bsi: Some(3.5),
                 ofi: Some(0.0),
                 cvd: Some(0.0),
+                up_bid: 0.5,
+                down_bid: 0.5,
             });
         }
         let (intent, rule) = predict_opener(&ticks, &p);
@@ -697,6 +725,8 @@ mod tests {
                 bsi: Some(0.5),
                 ofi: Some(0.6),
                 cvd: Some(5.0),
+                up_bid: 0.5,
+                down_bid: 0.5,
             });
         }
         let (intent, rule) = predict_opener(&ticks, &p);
@@ -714,6 +744,8 @@ mod tests {
                 bsi: None,
                 ofi: None,
                 cvd: None,
+                up_bid: 0.5,
+                down_bid: 0.5,
             })
             .collect::<Vec<_>>();
         let (intent, rule) = predict_opener(&ticks, &p);
@@ -731,6 +763,8 @@ mod tests {
                 bsi: None,
                 ofi: None,
                 cvd: None,
+                up_bid: 0.5,
+                down_bid: 0.5,
             })
             .collect::<Vec<_>>();
         let (intent, rule) = predict_opener(&ticks, &p);

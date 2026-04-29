@@ -75,6 +75,9 @@ TICK_SIZE = 0.01
 
 # --- COMPOSITE OPENER (5-rule ladder, t=20) — v4b: 24-market combined optimize ---
 PRE_OPENER_TICKS = 20      # pre-opener pencere uzunluğu
+# Rule 0: Price anchor — opener anında bid farkı ≥ eşik ise Polymarket fiyatını takip et.
+# Sinyal kurallarından ÖNCElikli; piyasa consensus'u ile ters düşmeyi önler.
+PRICE_ANCHOR_TH = 0.20     # |down_bid - up_bid| ≥ 0.20 → fiyat yönünü seç (0.10 çok agresif, erken spike'ları revert eder)
 BSI_REV_TH = 1.5           # rule 1: |bsi|>1.5 → bsi tersi (v4b: 2.0→1.5 daha agresif)
 OFI_EXH_TH = 0.4           # rule 2: |ofi|>0.4 + |cvd|>3 → flow tersi (exhaustion)
 CVD_EXH_TH = 3.0
@@ -116,6 +119,12 @@ PARITY_MIN_GAP_QTY = 250
 PARITY_COOLDOWN_S = 5
 PARITY_OPP_BID_MIN = 0.15  # opp_bid < 0.15 ise hedge artma (kazanan netleşti)
 
+# --- HARD STOP (kayıp limiti) ---
+# DOM fiyatı bu eşiğin altına düşünce pozisyon büyüme durur.
+# Yanlış yönde açılan marketlerde avg-down sarmalını kırar.
+# 0.25 = ~3x mevcut bedel → bu noktada 1 UP kazanmak için 4x DOWN lazım.
+HARD_STOP_DOM_BID_MIN = 0.25
+
 # --- LOCK ---
 LOCK_AVG_THRESHOLD = 0.97  # avg_up + avg_down ≤ 0.97 → kâr garantili
 
@@ -129,7 +138,7 @@ DEADLINE_SAFETY_S = 8
 
 
 def predict_opener(pre_ticks):
-    """5-rule ladder, grid-search ile 9/9 doğruluk."""
+    """6-rule ladder (Rule 0 = price anchor)."""
     last = pre_ticks[-1]
     first = pre_ticks[0]
     dscore = last["signal_score"] - first["signal_score"]
@@ -143,6 +152,12 @@ def predict_opener(pre_ticks):
     # Rule 1: BSI extreme reversion
     if abs(bsi) > BSI_REV_TH:
         return ("Down" if bsi > 0 else "Up", "bsi_rev")
+
+    # Rule 1.5: Price anchor — BSI'dan sonra; erken fiyat spike'larını BSI yakaladığında bu atlanır.
+    # Piyasa konsensüsü sinyallerden daha güçlü olduğunda yönü sabitle.
+    price_diff = last["down_best_bid"] - last["up_best_bid"]
+    if abs(price_diff) >= PRICE_ANCHOR_TH:
+        return ("Down" if price_diff > 0 else "Up", "price_anchor")
 
     # Rule 2: OFI+CVD exhaustion (aşırı tek-yön flow → reversion)
     if abs(ofi_avg) > OFI_EXH_TH and abs(cvd) > CVD_EXH_TH:
@@ -339,8 +354,13 @@ class Sim:
             if locked:
                 continue
 
-            # 4. Avg-down (one-shot)
+            # Hard stop: DOM fiyatı eşiğin altına düştüyse pozisyon büyütme.
+            # Yanlış yönde açılan marketlerde avg-down + requote sarmalını keser.
             dom_b = bid(tick, self.intent)
+            if dom_b < HARD_STOP_DOM_BID_MIN:
+                continue
+
+            # 4. Avg-down (one-shot)
             avg_dom = self.avg(self.intent)
             if (not self.avg_down_used and avg_dom > 0
                 and dom_b + AVG_DOWN_MIN_EDGE <= avg_dom):

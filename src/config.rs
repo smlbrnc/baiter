@@ -132,6 +132,9 @@ pub struct StrategyParams {
     #[serde(default)]
     pub elis_bsi_rev_threshold: Option<f64>,
     #[serde(default)]
+    /// Rule 1.5: |down_bid - up_bid| ≥ bu eşik → piyasa fiyatını takip et (BSI'dan sonra çalışır).
+    pub elis_price_anchor_threshold: Option<f64>,
+    #[serde(default)]
     pub elis_ofi_exhaustion_threshold: Option<f64>,
     #[serde(default)]
     pub elis_cvd_exhaustion_threshold: Option<f64>,
@@ -179,6 +182,10 @@ pub struct StrategyParams {
     pub elis_parity_opp_bid_min: Option<f64>,
     #[serde(default)]
     pub elis_lock_avg_threshold: Option<f64>,
+    /// DOM fiyatı bu eşiğin altına düşünce pozisyon büyütme (hard stop).
+    /// Yanlış yönde açılan marketlerde avg-down + requote sarmalını keser.
+    #[serde(default)]
+    pub elis_hard_stop_dom_bid_min: Option<f64>,
     #[serde(default)]
     pub elis_scoop_opp_bid_max: Option<f64>,
     #[serde(default)]
@@ -240,6 +247,8 @@ pub struct ElisParams {
     /// Minimum süre (saniye) — opener bu süreden önce ateşlenmez (BBA spam koruması).
     pub opener_min_secs: f64,
     pub bsi_rev_threshold: f64,
+    /// Rule 1.5: |down_bid - up_bid| ≥ bu eşik → fiyat yönünü seç (BSI'dan sonra çalışır).
+    pub price_anchor_threshold: f64,
     pub ofi_exhaustion_threshold: f64,
     pub cvd_exhaustion_threshold: f64,
     pub ofi_directional_threshold: f64,
@@ -264,6 +273,8 @@ pub struct ElisParams {
     pub parity_cooldown_secs: f64,
     pub parity_opp_bid_min: f64,
     pub lock_avg_threshold: f64,
+    /// DOM fiyatı bu eşiğin altına düşünce pozisyon büyütme (hard stop).
+    pub hard_stop_dom_bid_min: f64,
     pub scoop_opp_bid_max: f64,
     pub scoop_min_remaining_secs: f64,
     pub scoop_cooldown_secs: f64,
@@ -276,6 +287,7 @@ impl Default for ElisParams {
             pre_opener_ticks: 20,
             opener_min_secs: 20.0,  // BBA spam koruması: t=0'dan en az 20s bekle
             bsi_rev_threshold: 1.5,        // v4b: 2.0→1.5
+            price_anchor_threshold: 0.20,  // |down_bid - up_bid| ≥ 0.20 → piyasa yönü (BSI sonrası)
             ofi_exhaustion_threshold: 0.4,
             cvd_exhaustion_threshold: 3.0,
             ofi_directional_threshold: 0.3, // v4b: 0.4→0.3
@@ -300,6 +312,7 @@ impl Default for ElisParams {
             parity_cooldown_secs: 5.0,
             parity_opp_bid_min: 0.15,
             lock_avg_threshold: 0.97,
+            hard_stop_dom_bid_min: 0.25, // DOM 0.25 altına düşünce alım durdur
             scoop_opp_bid_max: 0.05,
             scoop_min_remaining_secs: 35.0,
             scoop_cooldown_secs: 2.0,
@@ -316,6 +329,9 @@ impl ElisParams {
             pre_opener_ticks: p.elis_pre_opener_ticks.unwrap_or(d.pre_opener_ticks),
             opener_min_secs: p.elis_opener_min_secs.unwrap_or(d.opener_min_secs),
             bsi_rev_threshold: p.elis_bsi_rev_threshold.unwrap_or(d.bsi_rev_threshold),
+            price_anchor_threshold: p
+                .elis_price_anchor_threshold
+                .unwrap_or(d.price_anchor_threshold),
             ofi_exhaustion_threshold: p
                 .elis_ofi_exhaustion_threshold
                 .unwrap_or(d.ofi_exhaustion_threshold),
@@ -362,6 +378,9 @@ impl ElisParams {
                 .unwrap_or(d.parity_cooldown_secs),
             parity_opp_bid_min: p.elis_parity_opp_bid_min.unwrap_or(d.parity_opp_bid_min),
             lock_avg_threshold: p.elis_lock_avg_threshold.unwrap_or(d.lock_avg_threshold),
+            hard_stop_dom_bid_min: p
+                .elis_hard_stop_dom_bid_min
+                .unwrap_or(d.hard_stop_dom_bid_min),
             scoop_opp_bid_max: p.elis_scoop_opp_bid_max.unwrap_or(d.scoop_opp_bid_max),
             scoop_min_remaining_secs: p
                 .elis_scoop_min_remaining_secs
