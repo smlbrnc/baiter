@@ -196,7 +196,7 @@ Bot 3 modda çalışır:
 ## MODE 1 — BALANCED
 
 ```
-abs(imbalance) < 3
+abs(imbalance) < 1
 ```
 
 iki taraf aktif
@@ -206,7 +206,7 @@ iki taraf aktif
 ## MODE 2 — HEDGE
 
 ```
-imbalance > 3
+abs(imbalance) >= 1
 ```
 
 tek taraf trade
@@ -231,7 +231,7 @@ Order iptal edilir:
 * bid değişti
 * imbalance büyüdü
 * spread kapandı
-* momentum spike
+* momentum spike (uygulama: `NoOp`; iptal/emir yok)
 * avg > 1
 
 ---
@@ -328,7 +328,7 @@ while market_open:
         lock_mode()
 
     if momentum_detected:
-        hedge_only()
+        no_op()
 ```
 
 ---
@@ -338,19 +338,19 @@ while market_open:
 Eğer:
 
 ```
-signal_score > 5
+abs(signal_score - 5) > 3
 ```
 
 veya
 
 ```
-delta(signal_score) > threshold
+abs(delta(signal_score)) > 3   (tick-to-tick önceki score'a göre)
 ```
 
 Bot:
 
-* yeni trade durdurur
-* sadece hedge
+* bu tick'te **aksi yok** (`NoOp`): açık emirleri iptal etmez, yeni emir de koymaz
+* sonraki tick'lerde koşul düzelince normal/balanced akış devam eder
 
 ---
 

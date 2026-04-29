@@ -16,13 +16,13 @@
 //!    emirlerini iptal + hafif tarafa hedge bid; `locked = true` set'lenir.
 //! 3. **StopTrade** (`zone == StopTrade`): lock ile aynı (yeni pair giriş yok,
 //!    sadece imbalance hedge).
-//! 4. **Momentum** (`|score - 5| > 0.5` veya `|Δscore| > 0.5`): aynı hedge-only
-//!    davranış.
+//! 4. **Momentum** (`|score - 5| > MOMENTUM_ABS` veya `|Δscore| > MOMENTUM_DELTA`):
+//!    hedge-only değil — yeni aksiyon yok (`NoOp`); iptal/emir yenilemesi yapılmaz.
 //! 5. **Spread kapalı** (`up_bid + down_bid >= 0.985`): tüm Elis emirleri iptal,
 //!    yeni emir verme.
 //! 6. **Normal** (imbalance bantları):
-//!    - `|imb| < 3` → her iki outcome `best_bid` maker bid (BALANCED).
-//!    - `3 ≤ |imb|` → ağır taraf iptal + hafif `best_ask - tick` hedge.
+//!    - `|imb| < BALANCED_IMB` → her iki outcome `best_bid` maker bid (BALANCED).
+//!    - `BALANCED_IMB ≤ |imb|` → ağır taraf iptal + hafif `best_ask - tick` hedge.
 //!
 //! Tek tick'te tüm aksiyonlar tek `Decision` (idealde `CancelAndPlace`)
 //! envelope'unda batch'lenir.
@@ -42,12 +42,12 @@ const EXIT_THRESHOLD: f64 = 1.000;
 /// §11 — `avg_up + avg_down` bu eşiği aşarsa hard stop.
 const HARD_STOP_AVG: f64 = 1.01;
 /// §9 MODE1 — `|imb|` bu sınırın altında ise iki taraf da pair quoting.
-const BALANCED_IMB: f64 = 3.0;
-/// §15 — composite skorun nötrden (`5.0`) mutlak sapması bu eşiği aşarsa
-/// momentum dondurma.
-const MOMENTUM_ABS: f64 = 2.0;
-/// §15 — tick-to-tick skor sıçraması bu eşiği aşarsa momentum dondurma.
-const MOMENTUM_DELTA: f64 = 2.0;
+const BALANCED_IMB: f64 = 1.0;
+/// §15 — composite skorun nötrden (`5.0`) mutlak sapması bu eşiği aşarsa momentum
+/// modunda `NoOp` (hedge_only yok).
+const MOMENTUM_ABS: f64 = 3.0;
+/// §15 — tick-to-tick skor sıçraması bu eşiği aşarsa momentum modunda `NoOp`.
+const MOMENTUM_DELTA: f64 = 3.0;
 /// Composite skorun nötr orta noktası.
 const NEUTRAL_SCORE: f64 = 5.0;
 
@@ -108,7 +108,7 @@ fn compute_decision(ctx: &StrategyContext<'_>, prev_score: f64, locked: bool) ->
     let mom_abs = (ctx.effective_score - NEUTRAL_SCORE).abs() > MOMENTUM_ABS;
     let mom_delta = (ctx.effective_score - prev_score).abs() > MOMENTUM_DELTA;
     if mom_abs || mom_delta {
-        return hedge_only(ctx, false);
+        return Decision::NoOp;
     }
 
     let spread = ctx.up_best_bid + ctx.down_best_bid;
@@ -593,14 +593,13 @@ mod tests {
     }
 
     #[test]
-    fn momentum_score_jump_triggers_hedge_only() {
+    fn momentum_large_score_jump_is_noop_preserves_open_orders() {
         let mut m = StrategyMetrics::default();
         m.up_filled = 1.0;
         m.avg_up = 0.45;
         let p = StrategyParams::default();
         let orders = [open("u1", Outcome::Up, 0.45, 22.0, "elis:bid:up")];
-        // last_score 5.0 → effective_score 7.5: |Δ| = 2.5 > MOMENTUM_DELTA(2.0) → momentum.
-        // Hedge hedef = 0.52 - 0.01 = 0.51 (down outcome'da hiç emir yok).
+        // last_score 5.0 → effective_score 9.5: |Δ| = 4.5 > MOMENTUM_DELTA(3.0) → momentum → NoOp.
         let c = ctx(
             &m,
             &p,
@@ -609,7 +608,7 @@ mod tests {
             0.46,
             0.49,
             0.52,
-            7.5,
+            9.5,
             MarketZone::DeepTrade,
         );
         let prev_state = ElisState::Active {
@@ -617,16 +616,7 @@ mod tests {
             locked: false,
         };
         let (_, d) = ElisEngine::decide(prev_state, &c);
-        match d {
-            Decision::CancelAndPlace { cancels, places } => {
-                assert!(cancels.contains(&"u1".to_string()));
-                assert_eq!(places.len(), 1);
-                assert_eq!(places[0].outcome, Outcome::Down);
-                assert_eq!(places[0].reason, "elis:hedge:down");
-                assert!((places[0].price - 0.51).abs() < 1e-9);
-            }
-            other => panic!("beklenen CancelAndPlace (momentum hedge), gelen {:?}", other),
-        }
+        assert!(matches!(d, Decision::NoOp), "momentum modu hedge-only değil, NoOp beklendi");
     }
 
     #[test]

@@ -672,7 +672,11 @@ fn try_pyramid(
         MarketZone::FakTrade => ctx.strategy_params.pyramid_fak_delta_or_default(),
         _ => return (state, Decision::NoOp),
     };
-    let pyramid_usdc = ctx.strategy_params.pyramid_usdc_or(ctx.order_usdc);
+    // pyramid_usdc, api_min_order_size'ın altında olamaz; küçük ayarlanmışsa sessizce düzeltilir.
+    let pyramid_usdc = ctx
+        .strategy_params
+        .pyramid_usdc_or(ctx.order_usdc)
+        .max(ctx.api_min_order_size);
     let price = clamp_price(best_ask_trend + delta, ctx.min_price, ctx.max_price);
     if price <= 0.0 {
         return (state, Decision::NoOp);
