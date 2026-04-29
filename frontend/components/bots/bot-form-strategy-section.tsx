@@ -335,12 +335,12 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
               <Field
                 label="Taraf başı maks USDC"
                 tooltip="Tek bir tarafın (UP veya DOWN) toplam maliyet tavanı. Bu eşik aşıldığında o taraf için DCA emri gönderilmez. Default: 500 USDC."
-                hint="10 – 10 000 USDC (default 500)."
+                hint="50 – 10 000 USDC (default 500)."
               >
                 <Input
                   type="number"
                   step="50"
-                  min="10"
+                  min="50"
                   max="10000"
                   value={arasMaxUsdPerSide}
                   onChange={(e) =>
