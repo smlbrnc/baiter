@@ -121,6 +121,68 @@ pub struct StrategyParams {
     pub pyramid_fak_delta: Option<f64>,
     #[serde(default)]
     pub pyramid_usdc: Option<f64>,
+
+    // === Elis-spesifik (16 marketde optimize) ===
+    #[serde(default)]
+    pub elis_pre_opener_ticks: Option<usize>,
+    #[serde(default)]
+    pub elis_bsi_rev_threshold: Option<f64>,
+    #[serde(default)]
+    pub elis_ofi_exhaustion_threshold: Option<f64>,
+    #[serde(default)]
+    pub elis_cvd_exhaustion_threshold: Option<f64>,
+    #[serde(default)]
+    pub elis_ofi_directional_threshold: Option<f64>,
+    #[serde(default)]
+    pub elis_dscore_strong_threshold: Option<f64>,
+    #[serde(default)]
+    pub elis_score_neutral: Option<f64>,
+    #[serde(default)]
+    pub elis_signal_flip_threshold: Option<f64>,
+    #[serde(default)]
+    pub elis_signal_flip_max_count: Option<u32>,
+    #[serde(default)]
+    pub elis_flip_freeze_opp_secs: Option<f64>,
+    #[serde(default)]
+    pub elis_open_usdc_dom: Option<f64>,
+    #[serde(default)]
+    pub elis_open_usdc_hedge: Option<f64>,
+    #[serde(default)]
+    pub elis_order_usdc_dom: Option<f64>,
+    #[serde(default)]
+    pub elis_order_usdc_hedge: Option<f64>,
+    #[serde(default)]
+    pub elis_pyramid_usdc: Option<f64>,
+    #[serde(default)]
+    pub elis_scoop_usdc: Option<f64>,
+    #[serde(default)]
+    pub elis_requote_price_eps: Option<f64>,
+    #[serde(default)]
+    pub elis_requote_cooldown_secs: Option<f64>,
+    #[serde(default)]
+    pub elis_avg_down_min_edge: Option<f64>,
+    #[serde(default)]
+    pub elis_pyramid_ofi_min: Option<f64>,
+    #[serde(default)]
+    pub elis_pyramid_score_persist_secs: Option<f64>,
+    #[serde(default)]
+    pub elis_pyramid_cooldown_secs: Option<f64>,
+    #[serde(default)]
+    pub elis_parity_min_gap_qty: Option<f64>,
+    #[serde(default)]
+    pub elis_parity_cooldown_secs: Option<f64>,
+    #[serde(default)]
+    pub elis_parity_opp_bid_min: Option<f64>,
+    #[serde(default)]
+    pub elis_lock_avg_threshold: Option<f64>,
+    #[serde(default)]
+    pub elis_scoop_opp_bid_max: Option<f64>,
+    #[serde(default)]
+    pub elis_scoop_min_remaining_secs: Option<f64>,
+    #[serde(default)]
+    pub elis_scoop_cooldown_secs: Option<f64>,
+    #[serde(default)]
+    pub elis_deadline_safety_secs: Option<f64>,
 }
 
 impl StrategyParams {
@@ -156,5 +218,146 @@ impl StrategyParams {
 
     pub fn pyramid_usdc_or(&self, fallback: f64) -> f64 {
         self.pyramid_usdc.unwrap_or(fallback).max(0.0)
+    }
+}
+
+/// Elis stratejisi parametreleri — `StrategyParams`'tan resolve edilir.
+/// Default değerler 16-market backtestle optimize edildi
+/// (yön %92, kesin PnL +$609; bkz. `exports/backtest-final-16-markets.md`).
+#[derive(Debug, Clone, Copy)]
+pub struct ElisParams {
+    pub pre_opener_ticks: usize,
+    pub bsi_rev_threshold: f64,
+    pub ofi_exhaustion_threshold: f64,
+    pub cvd_exhaustion_threshold: f64,
+    pub ofi_directional_threshold: f64,
+    pub dscore_strong_threshold: f64,
+    pub score_neutral: f64,
+    pub signal_flip_threshold: f64,
+    pub signal_flip_max_count: u32,
+    pub flip_freeze_opp_secs: f64,
+    pub open_usdc_dom: f64,
+    pub open_usdc_hedge: f64,
+    pub order_usdc_dom: f64,
+    pub order_usdc_hedge: f64,
+    pub pyramid_usdc: f64,
+    pub scoop_usdc: f64,
+    pub requote_price_eps: f64,
+    pub requote_cooldown_secs: f64,
+    pub avg_down_min_edge: f64,
+    pub pyramid_ofi_min: f64,
+    pub pyramid_score_persist_secs: f64,
+    pub pyramid_cooldown_secs: f64,
+    pub parity_min_gap_qty: f64,
+    pub parity_cooldown_secs: f64,
+    pub parity_opp_bid_min: f64,
+    pub lock_avg_threshold: f64,
+    pub scoop_opp_bid_max: f64,
+    pub scoop_min_remaining_secs: f64,
+    pub scoop_cooldown_secs: f64,
+    pub deadline_safety_secs: f64,
+}
+
+impl Default for ElisParams {
+    fn default() -> Self {
+        Self {
+            pre_opener_ticks: 20,
+            bsi_rev_threshold: 2.0,
+            ofi_exhaustion_threshold: 0.4,
+            cvd_exhaustion_threshold: 3.0,
+            ofi_directional_threshold: 0.4,
+            dscore_strong_threshold: 1.0,
+            score_neutral: 5.0,
+            signal_flip_threshold: 5.0,
+            signal_flip_max_count: 1,
+            flip_freeze_opp_secs: 60.0,
+            open_usdc_dom: 25.0,
+            open_usdc_hedge: 12.0,
+            order_usdc_dom: 15.0,
+            order_usdc_hedge: 8.0,
+            pyramid_usdc: 30.0,
+            scoop_usdc: 50.0,
+            requote_price_eps: 0.02,
+            requote_cooldown_secs: 3.0,
+            avg_down_min_edge: 0.023,
+            pyramid_ofi_min: 0.83,
+            pyramid_score_persist_secs: 5.0,
+            pyramid_cooldown_secs: 3.0,
+            parity_min_gap_qty: 250.0,
+            parity_cooldown_secs: 5.0,
+            parity_opp_bid_min: 0.15,
+            lock_avg_threshold: 0.97,
+            scoop_opp_bid_max: 0.05,
+            scoop_min_remaining_secs: 35.0,
+            scoop_cooldown_secs: 2.0,
+            deadline_safety_secs: 8.0,
+        }
+    }
+}
+
+impl ElisParams {
+    /// `StrategyParams`'tan opsiyonel override'ları uygular; eksik alanlar default kalır.
+    pub fn from_strategy_params(p: &StrategyParams) -> Self {
+        let d = Self::default();
+        Self {
+            pre_opener_ticks: p.elis_pre_opener_ticks.unwrap_or(d.pre_opener_ticks),
+            bsi_rev_threshold: p.elis_bsi_rev_threshold.unwrap_or(d.bsi_rev_threshold),
+            ofi_exhaustion_threshold: p
+                .elis_ofi_exhaustion_threshold
+                .unwrap_or(d.ofi_exhaustion_threshold),
+            cvd_exhaustion_threshold: p
+                .elis_cvd_exhaustion_threshold
+                .unwrap_or(d.cvd_exhaustion_threshold),
+            ofi_directional_threshold: p
+                .elis_ofi_directional_threshold
+                .unwrap_or(d.ofi_directional_threshold),
+            dscore_strong_threshold: p
+                .elis_dscore_strong_threshold
+                .unwrap_or(d.dscore_strong_threshold),
+            score_neutral: p.elis_score_neutral.unwrap_or(d.score_neutral),
+            signal_flip_threshold: p
+                .elis_signal_flip_threshold
+                .unwrap_or(d.signal_flip_threshold),
+            signal_flip_max_count: p
+                .elis_signal_flip_max_count
+                .unwrap_or(d.signal_flip_max_count),
+            flip_freeze_opp_secs: p
+                .elis_flip_freeze_opp_secs
+                .unwrap_or(d.flip_freeze_opp_secs),
+            open_usdc_dom: p.elis_open_usdc_dom.unwrap_or(d.open_usdc_dom),
+            open_usdc_hedge: p.elis_open_usdc_hedge.unwrap_or(d.open_usdc_hedge),
+            order_usdc_dom: p.elis_order_usdc_dom.unwrap_or(d.order_usdc_dom),
+            order_usdc_hedge: p.elis_order_usdc_hedge.unwrap_or(d.order_usdc_hedge),
+            pyramid_usdc: p.elis_pyramid_usdc.unwrap_or(d.pyramid_usdc),
+            scoop_usdc: p.elis_scoop_usdc.unwrap_or(d.scoop_usdc),
+            requote_price_eps: p.elis_requote_price_eps.unwrap_or(d.requote_price_eps),
+            requote_cooldown_secs: p
+                .elis_requote_cooldown_secs
+                .unwrap_or(d.requote_cooldown_secs),
+            avg_down_min_edge: p.elis_avg_down_min_edge.unwrap_or(d.avg_down_min_edge),
+            pyramid_ofi_min: p.elis_pyramid_ofi_min.unwrap_or(d.pyramid_ofi_min),
+            pyramid_score_persist_secs: p
+                .elis_pyramid_score_persist_secs
+                .unwrap_or(d.pyramid_score_persist_secs),
+            pyramid_cooldown_secs: p
+                .elis_pyramid_cooldown_secs
+                .unwrap_or(d.pyramid_cooldown_secs),
+            parity_min_gap_qty: p.elis_parity_min_gap_qty.unwrap_or(d.parity_min_gap_qty),
+            parity_cooldown_secs: p
+                .elis_parity_cooldown_secs
+                .unwrap_or(d.parity_cooldown_secs),
+            parity_opp_bid_min: p.elis_parity_opp_bid_min.unwrap_or(d.parity_opp_bid_min),
+            lock_avg_threshold: p.elis_lock_avg_threshold.unwrap_or(d.lock_avg_threshold),
+            scoop_opp_bid_max: p.elis_scoop_opp_bid_max.unwrap_or(d.scoop_opp_bid_max),
+            scoop_min_remaining_secs: p
+                .elis_scoop_min_remaining_secs
+                .unwrap_or(d.scoop_min_remaining_secs),
+            scoop_cooldown_secs: p
+                .elis_scoop_cooldown_secs
+                .unwrap_or(d.scoop_cooldown_secs),
+            deadline_safety_secs: p
+                .elis_deadline_safety_secs
+                .unwrap_or(d.deadline_safety_secs),
+        }
     }
 }

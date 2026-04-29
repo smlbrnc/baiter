@@ -83,6 +83,15 @@ pub struct StrategyContext<'a> {
     pub avg_threshold: f64,
     pub signal_ready: bool,
     pub strategy_params: &'a StrategyParams,
+    // === Elis-extended sinyal alanları (forward-compatible) ===
+    /// Buy-Side Imbalance (`Option`); None ise Elis fallback'e düşer.
+    pub bsi: Option<f64>,
+    /// Order Flow Imbalance (`Option`).
+    pub ofi: Option<f64>,
+    /// Cumulative Volume Delta (`Option`).
+    pub cvd: Option<f64>,
+    /// Market kapanmasına kalan saniye (`Option`); None ise scoop/deadline pas geçilir.
+    pub market_remaining_secs: Option<f64>,
 }
 
 impl StrategyContext<'_> {

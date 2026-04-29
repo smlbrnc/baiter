@@ -1,342 +1,588 @@
-//! Elis stratejisi — Polymarket dual-side inventory arbitrage
-//! ([elis-strategy.md](.cursor/docs/elis-strategy.md)).
+//! Elis stratejisi v2.0 — Hibrit Maker Bid Grid (Alis-tabanlı + Composite Signal Yön Filtresi).
 //!
-//! ## Amaç
+//! Doküman: `.cursor/docs/elis-strategy.md`
+//! Backtest raporu: `exports/backtest-final-16-markets.md` (16 marketde yön %92, +$560 net PnL)
 //!
-//! YES/NO best-bid toplamı `< 0.985` iken iki tarafa da maker bid yerleştirip
-//! pair_count maksimize ederek `avg_up + avg_down ≤ avg_threshold` kilidini
-//! yakalamak. Yön tahmini yok; tek motor envanter dengesi (`imbalance`) ve
-//! ortalama maliyet (`avg_sum`).
+//! ## Yapı özeti
 //!
-//! ## Karar önceliği (her tick)
+//! 1. **Pre-opener (t < 20 tick)**: tick'leri `Pending` state'inde topla
+//! 2. **Opening (t = 20 tick)**: composite 5-rule ladder ile yön tahmini → asymmetric open
+//! 3. **Managing**: 10-katman decide chain
+//! 4. **Lock / Scoop / Stop**: kâr garantili / late scoop / deadline
 //!
-//! 1. **Hard stop** (`avg_sum > 1.01`): tüm Elis emirleri iptal + hafif tarafa
-//!    tek hedge bid (imbalance varsa).
-//! 2. **Lock** (`metrics.profit_locked(avg_threshold)`): ağır taraftaki Elis
-//!    emirlerini iptal + hafif tarafa hedge bid; `locked = true` set'lenir.
-//! 3. **StopTrade** (`zone == StopTrade`): lock ile aynı (yeni pair giriş yok,
-//!    sadece imbalance hedge).
-//! 4. **Momentum** (`|score - 5| > MOMENTUM_ABS` veya `|Δscore| > MOMENTUM_DELTA`):
-//!    hedge-only değil — yeni aksiyon yok (`NoOp`); iptal/emir yenilemesi yapılmaz.
-//! 5. **Spread kapalı** (`up_bid + down_bid >= 0.985`): tüm Elis emirleri iptal,
-//!    yeni emir verme.
-//! 6. **Normal** (imbalance bantları):
-//!    - `|imb| < BALANCED_IMB` → her iki outcome `best_bid` maker bid (BALANCED).
-//!    - `BALANCED_IMB ≤ |imb|` → ağır taraf iptal + hafif `best_ask - tick` hedge.
+//! ## 10-katman decide chain
 //!
-//! Tek tick'te tüm aksiyonlar tek `Decision` (idealde `CancelAndPlace`)
-//! envelope'unda batch'lenir.
+//! ```text
+//! 0. Pending (t<20)         → no-op (tick buffer'a ekle)
+//! 1. Opening (t=20)         → composite open + hedge (asymmetric)
+//! 2. Deadline (rem≤8s)      → STOP, hiç emir yok
+//! 3. Pre-resolve scoop      → opp_bid≤0.05 + rem≤35s → $50 dom @ ask-1tick
+//! 4. Signal flip            → |dscore_from_open|>5.0 + flip_count<1
+//!                              → 2x dom boost, 0.3x hedge, freeze 60s
+//! 5. (locked ise 6-9 atla)  — kâr garantili
+//! 6. Avg-down (one-shot)    → dom_bid+2.3tick≤avg_dom → $15 dom
+//! 7. Pyramid                → ofi≥0.83 + persist 5s + score yönü match → $15 dom
+//! 8. Dom requote            → |Δdom_bid|≥2tick + 3s cooldown → $15 dom
+//! 9. Hedge requote (KRİTİK!) → opp YÜKSELDİ ≥2tick + opp≥0.15 + freeze geçti → $8 hedge
+//!                              (sadece artış — Alis'in en büyük hatası düzeltildi)
+//! 10. Parity gap            → |up-dn|>250 + 5s cooldown + freeze geçti → opp_size
+//! ```
+//!
+//! ## Composite opener (5-rule ladder)
+//!
+//! 1. **BSI reversion**: `|bsi|>2.0` → bsi tersi (extreme reversion)
+//! 2. **OFI+CVD exhaustion**: `|ofi|>0.4 + |cvd|>3` → flow tersi
+//! 3. **OFI directional**: `|ofi|>0.4` → ofi yönü (aggressive flow)
+//! 4. **Strong dscore**: `|dscore|>1.0` → dscore yönü (momentum)
+//! 5. **Fallback**: `score_avg ≥ 5` → Up
+//!
+//! `ctx.bsi/ofi/cvd` `None` ise rule 1-3 atlanır → 2-rule (momentum + score_avg) fallback.
+//!
+//! ## Forward-compatibility
+//!
+//! `bsi/ofi/cvd/market_remaining_secs` opsiyonel — RTDS pipeline'da yoksa Elis fallback'e
+//! düşer (sadece `signal_score` kullanır), eklendikçe full 5-rule devreye girer.
 
 use serde::{Deserialize, Serialize};
 
-use super::common::{Decision, OpenOrder, PlannedOrder, StrategyContext};
-use crate::time::MarketZone;
+use super::common::{Decision, PlannedOrder, StrategyContext};
+use crate::config::ElisParams;
 use crate::types::{Outcome, OrderType, Side};
 
-/// §3 — `yes_bid + no_bid` bu eşiğin altında ise yeni pair girişi açıktır.
-const ENTRY_THRESHOLD: f64 = 0.990;
-/// §3 — Hysteresis: spread bu eşiği aşarsa mevcut emirler iptal edilir.
-/// ENTRY ile EXIT arasında ([0.990, 1.000)) kalan spreadlerde mevcut emirlere
-/// dokunulmaz — 1-2 saniyelik spread kapanmaları emirleri öldürmesin.
-const EXIT_THRESHOLD: f64 = 1.000;
-/// §11 — `avg_up + avg_down` bu eşiği aşarsa hard stop.
-const HARD_STOP_AVG: f64 = 1.01;
-/// §9 MODE1 — `|imb|` bu sınırın altında ise iki taraf da pair quoting.
-const BALANCED_IMB: f64 = 1.0;
-/// §15 — composite skorun nötrden (`5.0`) mutlak sapması bu eşiği aşarsa momentum
-/// modunda `NoOp` (hedge_only yok).
-const MOMENTUM_ABS: f64 = 3.0;
-/// §15 — tick-to-tick skor sıçraması bu eşiği aşarsa momentum modunda `NoOp`.
-const MOMENTUM_DELTA: f64 = 3.0;
-/// Composite skorun nötr orta noktası.
-const NEUTRAL_SCORE: f64 = 5.0;
+/// Pre-opener tick snapshot'u — ElisState içinde sliding window olarak saklanır.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+pub struct TickSnapshot {
+    pub score: f64,
+    pub bsi: Option<f64>,
+    pub ofi: Option<f64>,
+    pub cvd: Option<f64>,
+}
+
+/// Composite opener kuralın hangi dalı tetiklendi (debug + log için).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OpenerRule {
+    BsiReversion,
+    Exhaustion,
+    OfiDirectional,
+    Momentum,
+    ScoreAverage,
+}
 
 /// Elis FSM state'i.
-///
-/// `Pending` ilk tick'te (skor henüz okunmamışken) bir kez kullanılır; sonraki
-/// tüm tick'lerde `Active` döner. `last_score` momentum delta için, `locked`
-/// ise `metrics.profit_locked()` bir kez gerçekleştikten sonra geri dönmemesi
-/// için latch'lenir.
-#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ElisState {
-    #[default]
-    Pending,
-    Active {
-        last_score: f64,
-        locked: bool,
-    },
+    /// Pre-opener buffer; t=20'ye kadar tick'leri topla.
+    Pending { ticks: Vec<TickSnapshot> },
+    /// Açık pozisyon; tüm decide() katmanları burada.
+    Active(Box<ActiveState>),
+    /// Deadline / hard stop sonrası — sadece NoOp.
+    Done,
+}
+
+impl Default for ElisState {
+    fn default() -> Self {
+        Self::Pending { ticks: Vec::new() }
+    }
+}
+
+/// Open sonrası Elis durumu — `Box`'lı çünkü enum variant size'ı dengelemek gerek.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ActiveState {
+    pub intent: Outcome,
+    pub opener_score: f64,
+    pub opener_rule: OpenerRule,
+    pub flip_count: u32,
+    pub flip_freeze_until_ms: u64,
+    pub avg_down_used: bool,
+    pub last_pyr_ms: Option<u64>,
+    pub last_dom_price: Option<f64>,
+    pub last_hedge_price: Option<f64>,
+    pub last_requote_dom_ms: u64,
+    pub last_requote_hedge_ms: u64,
+    pub last_parity_ms: u64,
+    pub last_scoop_ms: u64,
+    pub score_persist_since_ms: u64,
+    pub locked: bool,
 }
 
 pub struct ElisEngine;
 
 impl ElisEngine {
+    /// Tek tick — yeni state + Decision döndürür. State enum heap-alloc içerebilir
+    /// (Pending ticks Vec, Active Box) → her tick `clone` küçük ama döndürmek için
+    /// move-by-value yapısı kullanıyoruz.
     pub fn decide(state: ElisState, ctx: &StrategyContext<'_>) -> (ElisState, Decision) {
-        let prev_score = match state {
-            ElisState::Active { last_score, .. } => last_score,
-            ElisState::Pending => ctx.effective_score,
-        };
-        let prev_locked = matches!(state, ElisState::Active { locked: true, .. });
-        let next_locked = prev_locked || ctx.metrics.profit_locked(ctx.avg_threshold);
+        let p = ElisParams::from_strategy_params(ctx.strategy_params);
 
-        let decision = compute_decision(ctx, prev_score, next_locked);
+        match state {
+            ElisState::Done => (ElisState::Done, Decision::NoOp),
 
-        let next_state = ElisState::Active {
-            last_score: ctx.effective_score,
-            locked: next_locked,
-        };
-        (next_state, decision)
+            ElisState::Pending { mut ticks } => {
+                ticks.push(TickSnapshot {
+                    score: ctx.effective_score,
+                    bsi: ctx.bsi,
+                    ofi: ctx.ofi,
+                    cvd: ctx.cvd,
+                });
+                if ticks.len() < p.pre_opener_ticks {
+                    return (ElisState::Pending { ticks }, Decision::NoOp);
+                }
+                // t=20 — composite open
+                let (intent, rule) = predict_opener(&ticks, &p);
+                let active = open_pair(ctx, &p, intent, rule);
+                (ElisState::Active(Box::new(active.0)), active.1)
+            }
+
+            ElisState::Active(mut active) => {
+                let decision = decide_active(&mut active, ctx, &p);
+                // Deadline → Done'a geç
+                let new_state = if matches!(decision, Decision::CancelOrders(_))
+                    && active_is_deadline(&active, ctx, &p)
+                {
+                    ElisState::Done
+                } else {
+                    ElisState::Active(active)
+                };
+                (new_state, decision)
+            }
+        }
     }
 }
 
-/// Tick başına kararı türetir; state mutasyonu çağıran tarafta yapılır.
-fn compute_decision(ctx: &StrategyContext<'_>, prev_score: f64, locked: bool) -> Decision {
-    let m = ctx.metrics;
-    let abs_imb = m.imbalance().abs();
+// ============================================================================
+// COMPOSITE OPENER (5-rule ladder)
+// ============================================================================
 
-    if m.avg_sum() > HARD_STOP_AVG {
-        return hedge_only(ctx, /* cancel_all = */ true);
-    }
-
-    if locked {
-        return hedge_only(ctx, false);
-    }
-
-    if ctx.zone == MarketZone::StopTrade {
-        return hedge_only(ctx, false);
-    }
-
-    let mom_abs = (ctx.effective_score - NEUTRAL_SCORE).abs() > MOMENTUM_ABS;
-    let mom_delta = (ctx.effective_score - prev_score).abs() > MOMENTUM_DELTA;
-    if mom_abs || mom_delta {
-        return Decision::NoOp;
-    }
-
-    let spread = ctx.up_best_bid + ctx.down_best_bid;
-    if spread >= EXIT_THRESHOLD {
-        // Spread açıkça kârsız — tüm Elis emirlerini iptal et.
-        return cancel_only(ctx);
-    }
-    if spread >= ENTRY_THRESHOLD {
-        // Hysteresis bölgesi: yeni pair girişi yok, mevcut emirlere dokunma.
-        return Decision::NoOp;
-    }
-
-    if abs_imb < BALANCED_IMB {
-        balanced(ctx)
-    } else {
-        hedge_only(ctx, false)
-    }
+/// Pre-opener feature'lar.
+struct PreFeatures {
+    dscore: f64,
+    score_avg: f64,
+    bsi: Option<f64>,
+    ofi_avg: Option<f64>,
+    cvd: Option<f64>,
 }
 
-/// Tüm Elis emirlerini iptal etmek için kısa yol; başka aksiyon yok.
-fn cancel_only(ctx: &StrategyContext<'_>) -> Decision {
-    let cancels = collect_elis_open_ids(ctx);
-    if cancels.is_empty() {
-        Decision::NoOp
-    } else {
-        Decision::CancelOrders(cancels)
-    }
-}
+fn compute_features(ticks: &[TickSnapshot]) -> PreFeatures {
+    let n = ticks.len() as f64;
+    let dscore = ticks.last().unwrap().score - ticks.first().unwrap().score;
+    let score_avg = ticks.iter().map(|t| t.score).sum::<f64>() / n;
 
-/// Hedge-only modu: ağır taraftaki Elis emirlerini iptal, hafif tarafa tek
-/// hedge bid. `cancel_all = true` ise hafif taraf da dahil tüm Elis emirleri
-/// iptal edilip ardından light hedge yeniden yerleştirilir (hard-stop için).
-fn hedge_only(ctx: &StrategyContext<'_>, cancel_all: bool) -> Decision {
-    let imb = ctx.metrics.imbalance();
-    let (heavy, light) = if imb > 0.0 {
-        (Some(Outcome::Up), Some(Outcome::Down))
-    } else if imb < 0.0 {
-        (Some(Outcome::Down), Some(Outcome::Up))
+    let bsi = ticks.last().and_then(|t| t.bsi);
+    let cvd = ticks.last().and_then(|t| t.cvd);
+
+    // OFI ortalaması — tüm ticklerde Some olmalı, aksi halde None
+    let ofi_avg = if ticks.iter().all(|t| t.ofi.is_some()) {
+        Some(ticks.iter().map(|t| t.ofi.unwrap()).sum::<f64>() / n)
     } else {
-        (None, None)
+        None
     };
 
-    // Heavy-side cancellations (cancel_all=true ise tüm Elis emirleri).
-    let heavy_cancels: Vec<String> = ctx
+    PreFeatures {
+        dscore,
+        score_avg,
+        bsi,
+        ofi_avg,
+        cvd,
+    }
+}
+
+/// 5-rule ladder; bsi/ofi/cvd `None` ise rule 1-3 atlanır.
+fn predict_opener(ticks: &[TickSnapshot], p: &ElisParams) -> (Outcome, OpenerRule) {
+    let f = compute_features(ticks);
+
+    // Rule 1: BSI extreme reversion
+    if let Some(bsi) = f.bsi {
+        if bsi.abs() > p.bsi_rev_threshold {
+            return (
+                if bsi > 0.0 { Outcome::Down } else { Outcome::Up },
+                OpenerRule::BsiReversion,
+            );
+        }
+    }
+
+    // Rule 2: OFI+CVD exhaustion
+    if let (Some(ofi), Some(cvd)) = (f.ofi_avg, f.cvd) {
+        if ofi.abs() > p.ofi_exhaustion_threshold && cvd.abs() > p.cvd_exhaustion_threshold {
+            if ofi > 0.0 && cvd > 0.0 {
+                return (Outcome::Down, OpenerRule::Exhaustion);
+            }
+            if ofi < 0.0 && cvd < 0.0 {
+                return (Outcome::Up, OpenerRule::Exhaustion);
+            }
+        }
+    }
+
+    // Rule 3: OFI directional
+    if let Some(ofi) = f.ofi_avg {
+        if ofi.abs() > p.ofi_directional_threshold {
+            return (
+                if ofi > 0.0 { Outcome::Up } else { Outcome::Down },
+                OpenerRule::OfiDirectional,
+            );
+        }
+    }
+
+    // Rule 4: Strong dscore momentum
+    if f.dscore.abs() > p.dscore_strong_threshold {
+        return (
+            if f.dscore > 0.0 {
+                Outcome::Up
+            } else {
+                Outcome::Down
+            },
+            OpenerRule::Momentum,
+        );
+    }
+
+    // Rule 5: Fallback — score_avg
+    let dir = if f.score_avg >= p.score_neutral {
+        Outcome::Up
+    } else {
+        Outcome::Down
+    };
+    (dir, OpenerRule::ScoreAverage)
+}
+
+// ============================================================================
+// OPEN PAIR (asymmetric)
+// ============================================================================
+
+fn open_pair(
+    ctx: &StrategyContext<'_>,
+    p: &ElisParams,
+    intent: Outcome,
+    rule: OpenerRule,
+) -> (ActiveState, Decision) {
+    let dom_b = ctx.best_bid(intent);
+    let hedge_b = ctx.best_bid(intent.opposite());
+
+    let mut places: Vec<PlannedOrder> = Vec::new();
+
+    if let Some(o) = build_bid(ctx, intent, dom_b - 2.0 * ctx.tick_size, p.open_usdc_dom, "open:dom") {
+        places.push(o);
+    }
+    if let Some(o) = build_bid(
+        ctx,
+        intent.opposite(),
+        hedge_b - 2.0 * ctx.tick_size,
+        p.open_usdc_hedge,
+        "open:hedge",
+    ) {
+        places.push(o);
+    }
+
+    let active = ActiveState {
+        intent,
+        opener_score: ctx.effective_score,
+        opener_rule: rule,
+        flip_count: 0,
+        flip_freeze_until_ms: 0,
+        avg_down_used: false,
+        last_pyr_ms: None,
+        last_dom_price: Some(dom_b),
+        last_hedge_price: Some(hedge_b),
+        last_requote_dom_ms: ctx.now_ms,
+        last_requote_hedge_ms: ctx.now_ms,
+        last_parity_ms: 0,
+        last_scoop_ms: 0,
+        score_persist_since_ms: ctx.now_ms,
+        locked: false,
+    };
+
+    let decision = if places.is_empty() {
+        Decision::NoOp
+    } else {
+        Decision::PlaceOrders(places)
+    };
+    (active, decision)
+}
+
+// ============================================================================
+// DECIDE ACTIVE — 10-katman zincir
+// ============================================================================
+
+fn decide_active(
+    active: &mut ActiveState,
+    ctx: &StrategyContext<'_>,
+    p: &ElisParams,
+) -> Decision {
+    let now = ctx.now_ms;
+    let m = ctx.metrics;
+    let intent = active.intent;
+    let opp = intent.opposite();
+    let dom_b = ctx.best_bid(intent);
+    let opp_b = ctx.best_bid(opp);
+
+    // 2. Deadline safety
+    if let Some(rem) = ctx.market_remaining_secs {
+        if rem <= p.deadline_safety_secs {
+            return cancel_all_managed(ctx);
+        }
+    }
+
+    // 3. Pre-resolve scoop (lock'a aldırmaz)
+    if let Some(rem) = ctx.market_remaining_secs {
+        if opp_b <= p.scoop_opp_bid_max
+            && rem <= p.scoop_min_remaining_secs
+            && elapsed_secs(now, active.last_scoop_ms) >= p.scoop_cooldown_secs
+        {
+            let dom_a = ctx.best_ask(intent);
+            let price = (dom_a - ctx.tick_size).max(ctx.min_price);
+            if let Some(o) = build_bid_at_price(ctx, intent, price, p.scoop_usdc, "scoop") {
+                active.last_scoop_ms = now;
+                return Decision::PlaceOrders(vec![o]);
+            }
+        }
+    }
+
+    // 4. Signal flip (lock'a aldırmaz, max 1 kez)
+    let dscore_from_open = ctx.effective_score - active.opener_score;
+    if dscore_from_open.abs() > p.signal_flip_threshold
+        && active.flip_count < p.signal_flip_max_count
+    {
+        let new_intent = if dscore_from_open > 0.0 {
+            Outcome::Up
+        } else {
+            Outcome::Down
+        };
+        if new_intent != intent {
+            return execute_flip(active, ctx, p, new_intent, dscore_from_open);
+        }
+    }
+
+    // 5. Lock check
+    let avg_sum = m.avg_up + m.avg_down;
+    let both_filled = m.up_filled > 0.0 && m.down_filled > 0.0;
+    let locked = both_filled && avg_sum <= p.lock_avg_threshold;
+    active.locked = locked;
+    if locked {
+        return Decision::NoOp;
+    }
+
+    // Skor persist tracking — yön değişiyorsa reset
+    let score_dir_match = (ctx.effective_score >= p.score_neutral
+        && intent == Outcome::Up)
+        || (ctx.effective_score < p.score_neutral && intent == Outcome::Down);
+    if !score_dir_match {
+        active.score_persist_since_ms = now;
+    }
+
+    // 6. Avg-down (one-shot)
+    let avg_dom = if intent == Outcome::Up { m.avg_up } else { m.avg_down };
+    if !active.avg_down_used && avg_dom > 0.0 && dom_b + p.avg_down_min_edge <= avg_dom {
+        active.avg_down_used = true;
+        if let Some(o) = build_bid(ctx, intent, dom_b, p.order_usdc_dom, "avg_down") {
+            active.last_dom_price = Some(dom_b);
+            return Decision::PlaceOrders(vec![o]);
+        }
+    }
+
+    // 7. Pyramid
+    if let Some(ofi) = ctx.ofi {
+        let persist_secs = elapsed_secs(now, active.score_persist_since_ms);
+        let cooldown_ok = active
+            .last_pyr_ms
+            .is_none_or(|t| elapsed_secs(now, t) >= p.pyramid_cooldown_secs);
+        if ofi >= p.pyramid_ofi_min
+            && persist_secs >= p.pyramid_score_persist_secs
+            && cooldown_ok
+            && score_dir_match
+            && dscore_from_open.abs() < 1.0
+        {
+            if let Some(o) = build_bid(ctx, intent, dom_b, p.pyramid_usdc, "pyramid") {
+                active.last_pyr_ms = Some(now);
+                active.last_dom_price = Some(dom_b);
+                return Decision::PlaceOrders(vec![o]);
+            }
+        }
+    }
+
+    // 8. Dom requote (fiyat 2 tick değişti + 3s cooldown)
+    let mut places: Vec<PlannedOrder> = Vec::new();
+    if let Some(last) = active.last_dom_price {
+        if (dom_b - last).abs() >= p.requote_price_eps
+            && elapsed_secs(now, active.last_requote_dom_ms) >= p.requote_cooldown_secs
+        {
+            if let Some(o) = build_bid(ctx, intent, dom_b, p.order_usdc_dom, "requote_dom") {
+                places.push(o);
+                active.last_dom_price = Some(dom_b);
+                active.last_requote_dom_ms = now;
+            }
+        }
+    }
+
+    // 9. Hedge requote — SADECE opp YÜKSELDİĞİNDE (kritik!)
+    if let Some(last_hedge) = active.last_hedge_price {
+        let hedge_drift = opp_b - last_hedge;
+        if hedge_drift >= p.requote_price_eps
+            && elapsed_secs(now, active.last_requote_hedge_ms) >= p.requote_cooldown_secs
+            && opp_b >= p.parity_opp_bid_min
+            && now >= active.flip_freeze_until_ms
+        {
+            if let Some(o) = build_bid(ctx, opp, opp_b, p.order_usdc_hedge, "requote_hedge") {
+                places.push(o);
+                active.last_hedge_price = Some(opp_b);
+                active.last_requote_hedge_ms = now;
+            }
+        }
+    }
+
+    // 10. Parity gap
+    let gap = (m.up_filled - m.down_filled).abs();
+    if gap > p.parity_min_gap_qty
+        && elapsed_secs(now, active.last_parity_ms) >= p.parity_cooldown_secs
+        && opp_b >= p.parity_opp_bid_min
+        && now >= active.flip_freeze_until_ms
+    {
+        if let Some(o) = build_bid(ctx, opp, opp_b, p.order_usdc_hedge, "parity_topup") {
+            places.push(o);
+            active.last_parity_ms = now;
+        }
+    }
+
+    if places.is_empty() {
+        Decision::NoOp
+    } else {
+        Decision::PlaceOrders(places)
+    }
+}
+
+fn execute_flip(
+    active: &mut ActiveState,
+    ctx: &StrategyContext<'_>,
+    p: &ElisParams,
+    new_intent: Outcome,
+    dscore_from_open: f64,
+) -> Decision {
+    active.flip_count += 1;
+    active.flip_freeze_until_ms = ctx.now_ms + (p.flip_freeze_opp_secs * 1000.0) as u64;
+    active.intent = new_intent;
+    active.opener_score = ctx.effective_score;
+    active.avg_down_used = false;
+    active.score_persist_since_ms = ctx.now_ms;
+
+    let dom_b = ctx.best_bid(new_intent);
+    let hedge_b = ctx.best_bid(new_intent.opposite());
+
+    let mut places: Vec<PlannedOrder> = Vec::new();
+    // Flip sonrası dom'a 2x boost
+    if let Some(o) = build_bid(
+        ctx,
+        new_intent,
+        dom_b,
+        p.order_usdc_dom * 2.0,
+        "signal_flip",
+    ) {
+        places.push(o);
+    }
+    // Hedge çok küçük (eski intent'e zaten çok pozisyon var)
+    if let Some(o) = build_bid(
+        ctx,
+        new_intent.opposite(),
+        hedge_b,
+        p.order_usdc_hedge * 0.3,
+        "flip_hedge",
+    ) {
+        places.push(o);
+    }
+    active.last_dom_price = Some(dom_b);
+    active.last_hedge_price = Some(hedge_b);
+    let _ = dscore_from_open; // placeholder for log
+
+    if places.is_empty() {
+        Decision::NoOp
+    } else {
+        Decision::PlaceOrders(places)
+    }
+}
+
+// ============================================================================
+// HELPERS
+// ============================================================================
+
+fn build_bid(
+    ctx: &StrategyContext<'_>,
+    outcome: Outcome,
+    target_price: f64,
+    usdc: f64,
+    tag: &str,
+) -> Option<PlannedOrder> {
+    let price = target_price.clamp(ctx.min_price, ctx.max_price);
+    if price < ctx.min_price {
+        return None;
+    }
+    build_bid_at_price(ctx, outcome, price, usdc, tag)
+}
+
+fn build_bid_at_price(
+    ctx: &StrategyContext<'_>,
+    outcome: Outcome,
+    price: f64,
+    usdc: f64,
+    tag: &str,
+) -> Option<PlannedOrder> {
+    if price <= 0.0 || usdc <= 0.0 {
+        return None;
+    }
+    let size = usdc / price;
+    if size * price < ctx.api_min_order_size {
+        return None;
+    }
+    Some(PlannedOrder {
+        outcome,
+        token_id: ctx.token_id(outcome).to_string(),
+        side: Side::Buy,
+        price,
+        size,
+        order_type: OrderType::Gtc,
+        reason: format!("elis:{}:{}", tag, outcome.as_lowercase()),
+    })
+}
+
+fn cancel_all_managed(ctx: &StrategyContext<'_>) -> Decision {
+    let ids: Vec<String> = ctx
         .open_orders
         .iter()
         .filter(|o| is_managed(&o.reason))
-        .filter(|o| match (cancel_all, heavy) {
-            (true, _) => true,
-            (false, Some(h)) => o.outcome == h,
-            // Imbalance == 0: light yok, tüm Elis emirleri iptal.
-            (false, None) => true,
-        })
         .map(|o| o.id.clone())
         .collect();
-
-    let Some(light_outcome) = light else {
-        return materialize(heavy_cancels, Vec::new());
-    };
-
-    let Some(planned) = build_hedge_bid(ctx, light_outcome) else {
-        return materialize(heavy_cancels, Vec::new());
-    };
-
-    let existing_light: Vec<&OpenOrder> = ctx
-        .open_orders
-        .iter()
-        .filter(|o| is_managed(&o.reason) && o.outcome == light_outcome)
-        .collect();
-
-    // Mevcut hafif emir hedef fiyata yakın **ve** iptal listesinde değilse
-    // (yani cancel_all=false ve heavy != light) yerinde bırakılır. cancel_all
-    // modunda emir zaten iptal edileceği için bu kısa devre uygulanmaz.
-    let eps = requote_threshold(ctx.tick_size);
-    let light_at_target = existing_light.len() == 1
-        && (existing_light[0].price - planned.price).abs() < eps
-        && !heavy_cancels.contains(&existing_light[0].id);
-
-    if light_at_target {
-        return materialize(heavy_cancels, Vec::new());
-    }
-
-    let mut cancels = heavy_cancels;
-    for o in &existing_light {
-        if !cancels.contains(&o.id) {
-            cancels.push(o.id.clone());
-        }
-    }
-    materialize(cancels, vec![planned])
-}
-
-/// Balanced mod: her iki outcome için `best_bid` maker bid; mevcut emir
-/// hedeftekiyle aynıysa skip.
-fn balanced(ctx: &StrategyContext<'_>) -> Decision {
-    let mut cancels: Vec<String> = Vec::new();
-    let mut places: Vec<PlannedOrder> = Vec::new();
-
-    for outcome in [Outcome::Up, Outcome::Down] {
-        let target = build_normal_bid(ctx, outcome);
-        let existing: Vec<&OpenOrder> = ctx
-            .open_orders
-            .iter()
-            .filter(|o| is_managed(&o.reason) && o.outcome == outcome)
-            .collect();
-
-        match target {
-            Some(planned) => {
-                let eps = requote_threshold(ctx.tick_size);
-                if existing.len() == 1 {
-                    let ep = existing[0].price;
-                    // Mevcut fiyat hedefe yakınsa (±eps) veya hedefin ÜZERİNDEYSE
-                    // (bid düştü, emir passive fill için iyi konumda), dokunma.
-                    // Yalnızca fiyat hedefin ALTINA düştüyse (bid yükseldi) requote.
-                    if ep >= planned.price - eps {
-                        continue;
-                    }
-                    cancels.push(existing[0].id.clone());
-                } else {
-                    for o in &existing {
-                        cancels.push(o.id.clone());
-                    }
-                }
-                places.push(planned);
-            }
-            None => {
-                // Geçerli fiyat yoksa eldeki emirleri iptal et, yeni koyma.
-                for o in &existing {
-                    cancels.push(o.id.clone());
-                }
-            }
-        }
-    }
-
-    materialize(cancels, places)
-}
-
-/// Outcome için maker normal pair bid.
-///
-/// Adaptif fiyatlama: henüz hiç pair fill yoksa (`pair_count == 0`)
-/// `best_bid - tick_size` ile konservatif başlar (avg_sum'u düşük tutar);
-/// en az bir pair fill oluştuktan sonra `best_bid`'e döner.
-fn build_normal_bid(ctx: &StrategyContext<'_>, outcome: Outcome) -> Option<PlannedOrder> {
-    let bb = ctx.best_bid(outcome);
-    if bb <= 0.0 {
-        return None;
-    }
-    let target = if ctx.metrics.pair_count() == 0.0 {
-        // İlk fill'i ucuza almaya çalış; avg_sum'u düşük başlatır.
-        (bb - ctx.tick_size).max(ctx.min_price)
+    if ids.is_empty() {
+        Decision::NoOp
     } else {
-        bb
-    };
-    let price = target.clamp(ctx.min_price, ctx.max_price);
-    let size = ctx.order_usdc / price;
-    if size <= 0.0 || size * price < ctx.api_min_order_size {
-        return None;
+        Decision::CancelOrders(ids)
     }
-    Some(PlannedOrder {
-        outcome,
-        token_id: ctx.token_id(outcome).to_string(),
-        side: Side::Buy,
-        price,
-        size,
-        order_type: OrderType::Gtc,
-        reason: format!("elis:bid:{}", outcome.as_lowercase()),
-    })
-}
-
-/// Hafif outcome için `best_ask - tick` agresif maker hedge bid.
-fn build_hedge_bid(ctx: &StrategyContext<'_>, outcome: Outcome) -> Option<PlannedOrder> {
-    let ba = ctx.best_ask(outcome);
-    if ba <= 0.0 {
-        return None;
-    }
-    let raw = ba - ctx.tick_size;
-    if raw <= 0.0 {
-        return None;
-    }
-    let price = raw.clamp(ctx.min_price, ctx.max_price);
-    let size = ctx.order_usdc / price;
-    if size <= 0.0 || size * price < ctx.api_min_order_size {
-        return None;
-    }
-    Some(PlannedOrder {
-        outcome,
-        token_id: ctx.token_id(outcome).to_string(),
-        side: Side::Buy,
-        price,
-        size,
-        order_type: OrderType::Gtc,
-        reason: format!("elis:hedge:{}", outcome.as_lowercase()),
-    })
 }
 
 fn is_managed(reason: &str) -> bool {
     reason.starts_with("elis:")
 }
 
-fn collect_elis_open_ids(ctx: &StrategyContext<'_>) -> Vec<String> {
-    ctx.open_orders
-        .iter()
-        .filter(|o| is_managed(&o.reason))
-        .map(|o| o.id.clone())
-        .collect()
-}
-
-/// Tick yarısı kadar fark "değişmedi" sayılır (re-quote spam'i engeller).
-fn requote_threshold(tick_size: f64) -> f64 {
-    (tick_size / 2.0).max(1e-6)
-}
-
-/// Cancel/places listesini en uygun `Decision` varyantına paketler.
-fn materialize(cancels: Vec<String>, places: Vec<PlannedOrder>) -> Decision {
-    match (cancels.is_empty(), places.is_empty()) {
-        (true, true) => Decision::NoOp,
-        (false, true) => Decision::CancelOrders(cancels),
-        (true, false) => Decision::PlaceOrders(places),
-        (false, false) => Decision::CancelAndPlace { cancels, places },
+fn elapsed_secs(now_ms: u64, then_ms: u64) -> f64 {
+    if now_ms <= then_ms {
+        return 0.0;
     }
+    (now_ms - then_ms) as f64 / 1000.0
 }
+
+fn active_is_deadline(_active: &ActiveState, ctx: &StrategyContext<'_>, p: &ElisParams) -> bool {
+    ctx.market_remaining_secs
+        .map(|r| r <= p.deadline_safety_secs)
+        .unwrap_or(false)
+}
+
+// ============================================================================
+// TESTS
+// ============================================================================
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::StrategyParams;
+    use crate::strategy::common::OpenOrder;
     use crate::strategy::metrics::StrategyMetrics;
+    use crate::time::MarketZone;
 
-    fn ctx<'a>(
+    fn ctx_full<'a>(
         m: &'a StrategyMetrics,
         params: &'a StrategyParams,
         open_orders: &'a [OpenOrder],
@@ -345,7 +591,11 @@ mod tests {
         down_bid: f64,
         down_ask: f64,
         score: f64,
-        zone: MarketZone,
+        bsi: Option<f64>,
+        ofi: Option<f64>,
+        cvd: Option<f64>,
+        rem_secs: Option<f64>,
+        now_ms: u64,
     ) -> StrategyContext<'a> {
         StrategyContext {
             metrics: m,
@@ -355,11 +605,11 @@ mod tests {
             up_best_ask: up_ask,
             down_best_bid: down_bid,
             down_best_ask: down_ask,
-            api_min_order_size: 5.0,
+            api_min_order_size: 1.0,
             order_usdc: 10.0,
             effective_score: score,
-            zone,
-            now_ms: 1_000,
+            zone: MarketZone::DeepTrade,
+            now_ms,
             last_averaging_ms: 0,
             tick_size: 0.01,
             open_orders,
@@ -369,104 +619,224 @@ mod tests {
             avg_threshold: 0.98,
             signal_ready: true,
             strategy_params: params,
-        }
-    }
-
-    fn open(id: &str, outcome: Outcome, price: f64, size: f64, reason: &str) -> OpenOrder {
-        OpenOrder {
-            id: id.to_string(),
-            outcome,
-            side: Side::Buy,
-            price,
-            size,
-            reason: reason.to_string(),
-            placed_at_ms: 0,
-            size_matched: 0.0,
+            bsi,
+            ofi,
+            cvd,
+            market_remaining_secs: rem_secs,
         }
     }
 
     #[test]
-    fn balanced_places_both_sides_when_spread_open() {
-        // pair_count == 0 → adaptif fiyat: best_bid - tick_size (0.45-0.01=0.44, 0.50-0.01=0.49)
+    fn pending_buffers_ticks_until_open() {
         let m = StrategyMetrics::default();
         let p = StrategyParams::default();
-        let c = ctx(
-            &m,
-            &p,
-            &[],
-            0.45,
-            0.46,
-            0.50,
-            0.51,
-            5.0,
-            MarketZone::DeepTrade,
+        let mut state = ElisState::default();
+        // İlk 19 tick: hep Pending kalır, NoOp.
+        for i in 0..19 {
+            let c = ctx_full(
+                &m, &p, &[], 0.50, 0.51, 0.50, 0.51, 5.0,
+                None, None, None, Some(290.0), 1000 * i,
+            );
+            let (s, d) = ElisEngine::decide(state, &c);
+            assert!(matches!(s, ElisState::Pending { .. }));
+            assert!(matches!(d, Decision::NoOp));
+            state = s;
+        }
+        // 20. tick: composite open (signaller None, fallback ScoreAverage)
+        let c = ctx_full(
+            &m, &p, &[], 0.50, 0.51, 0.50, 0.51, 5.5,
+            None, None, None, Some(290.0), 20_000,
         );
-        let (state, d) = ElisEngine::decide(ElisState::Pending, &c);
-        assert!(matches!(state, ElisState::Active { locked: false, .. }));
+        let (s, d) = ElisEngine::decide(state, &c);
+        assert!(matches!(s, ElisState::Active(_)));
         match d {
             Decision::PlaceOrders(orders) => {
                 assert_eq!(orders.len(), 2);
-                let up = orders.iter().find(|o| o.outcome == Outcome::Up).unwrap();
-                let dn = orders.iter().find(|o| o.outcome == Outcome::Down).unwrap();
-                assert_eq!(up.reason, "elis:bid:up");
-                assert!((up.price - 0.44).abs() < 1e-9);
-                assert_eq!(dn.reason, "elis:bid:down");
-                assert!((dn.price - 0.49).abs() < 1e-9);
+                let dom = &orders[0];
+                let hedge = &orders[1];
+                assert_eq!(dom.outcome, Outcome::Up);
+                assert_eq!(hedge.outcome, Outcome::Down);
             }
             other => panic!("beklenen PlaceOrders, gelen {:?}", other),
         }
     }
 
     #[test]
-    fn balanced_uses_best_bid_after_first_pair_fill() {
-        // pair_count > 0 ve avg_sum = 0.99 (> avg_threshold=0.98, < hard_stop=1.01)
-        // → profit_locked değil → balanced mod → normal fiyat: best_bid
-        let mut m = StrategyMetrics::default();
-        m.up_filled = 5.0;
-        m.avg_up = 0.50;
-        m.down_filled = 5.0;
-        m.avg_down = 0.49;
-        let p = StrategyParams::default();
-        let c = ctx(
-            &m,
-            &p,
-            &[],
-            0.45,
-            0.46,
-            0.50,
-            0.51,
-            5.0,
-            MarketZone::DeepTrade,
-        );
-        let (_, d) = ElisEngine::decide(ElisState::Pending, &c);
-        match d {
-            Decision::PlaceOrders(orders) => {
-                let up = orders.iter().find(|o| o.outcome == Outcome::Up).unwrap();
-                let dn = orders.iter().find(|o| o.outcome == Outcome::Down).unwrap();
-                assert!((up.price - 0.45).abs() < 1e-9, "pair fill sonrası up best_bid beklendi");
-                assert!((dn.price - 0.50).abs() < 1e-9, "pair fill sonrası down best_bid beklendi");
-            }
-            other => panic!("beklenen PlaceOrders, gelen {:?}", other),
+    fn predict_opener_bsi_reversion() {
+        let p = ElisParams::default();
+        let mut ticks = Vec::new();
+        for _ in 0..20 {
+            ticks.push(TickSnapshot {
+                score: 5.0,
+                bsi: Some(3.5),
+                ofi: Some(0.0),
+                cvd: Some(0.0),
+            });
         }
+        let (intent, rule) = predict_opener(&ticks, &p);
+        assert_eq!(intent, Outcome::Down);
+        assert_eq!(rule, OpenerRule::BsiReversion);
     }
 
     #[test]
-    fn spread_closed_cancels_open_orders() {
+    fn predict_opener_exhaustion() {
+        let p = ElisParams::default();
+        let mut ticks = Vec::new();
+        for _ in 0..20 {
+            ticks.push(TickSnapshot {
+                score: 6.5,
+                bsi: Some(0.5),
+                ofi: Some(0.6),
+                cvd: Some(5.0),
+            });
+        }
+        let (intent, rule) = predict_opener(&ticks, &p);
+        assert_eq!(intent, Outcome::Down);
+        assert_eq!(rule, OpenerRule::Exhaustion);
+    }
+
+    #[test]
+    fn predict_opener_momentum_when_signals_missing() {
+        // bsi/ofi/cvd None → rule 1-3 atlanır → momentum
+        let p = ElisParams::default();
+        let ticks = (0..20)
+            .map(|i| TickSnapshot {
+                score: 4.0 + i as f64 * 0.1,
+                bsi: None,
+                ofi: None,
+                cvd: None,
+            })
+            .collect::<Vec<_>>();
+        let (intent, rule) = predict_opener(&ticks, &p);
+        assert_eq!(intent, Outcome::Up);
+        assert_eq!(rule, OpenerRule::Momentum);
+    }
+
+    #[test]
+    fn predict_opener_score_avg_fallback() {
+        // bsi/ofi/cvd None + dscore küçük → score_avg
+        let p = ElisParams::default();
+        let ticks = (0..20)
+            .map(|_| TickSnapshot {
+                score: 4.0,
+                bsi: None,
+                ofi: None,
+                cvd: None,
+            })
+            .collect::<Vec<_>>();
+        let (intent, rule) = predict_opener(&ticks, &p);
+        assert_eq!(intent, Outcome::Down);
+        assert_eq!(rule, OpenerRule::ScoreAverage);
+    }
+
+    #[test]
+    fn signal_flip_triggers_when_threshold_exceeded() {
         let m = StrategyMetrics::default();
-        let p = StrategyParams::default();
-        let orders = [open("o1", Outcome::Up, 0.49, 20.0, "elis:bid:up")];
-        let c = ctx(
-            &m,
-            &p,
-            &orders,
-            0.49,
-            0.50,
-            0.51,
-            0.52,
-            5.0,
-            MarketZone::DeepTrade,
+        let p_params = StrategyParams::default();
+        let p = ElisParams::default();
+
+        let mut active = ActiveState {
+            intent: Outcome::Up,
+            opener_score: 5.0,
+            opener_rule: OpenerRule::ScoreAverage,
+            flip_count: 0,
+            flip_freeze_until_ms: 0,
+            avg_down_used: false,
+            last_pyr_ms: None,
+            last_dom_price: Some(0.50),
+            last_hedge_price: Some(0.50),
+            last_requote_dom_ms: 0,
+            last_requote_hedge_ms: 0,
+            last_parity_ms: 0,
+            last_scoop_ms: 0,
+            score_persist_since_ms: 0,
+            locked: false,
+        };
+        // dscore = -6.0, |6| > 5.0 (threshold)
+        let c = ctx_full(
+            &m, &p_params, &[], 0.30, 0.31, 0.70, 0.71, -1.0,
+            None, None, None, Some(200.0), 100_000,
         );
-        let (_, d) = ElisEngine::decide(ElisState::Pending, &c);
+        let d = decide_active(&mut active, &c, &p);
+        assert_eq!(active.intent, Outcome::Down);
+        assert_eq!(active.flip_count, 1);
+        assert!(matches!(d, Decision::PlaceOrders(_)));
+    }
+
+    #[test]
+    fn lock_blocks_new_orders() {
+        let mut m = StrategyMetrics::default();
+        m.up_filled = 100.0;
+        m.avg_up = 0.45;
+        m.down_filled = 100.0;
+        m.avg_down = 0.50;
+        // avg_sum = 0.95 ≤ 0.97 → lock
+
+        let p_params = StrategyParams::default();
+        let p = ElisParams::default();
+        let mut active = ActiveState {
+            intent: Outcome::Up,
+            opener_score: 5.0,
+            opener_rule: OpenerRule::ScoreAverage,
+            flip_count: 0,
+            flip_freeze_until_ms: 0,
+            avg_down_used: false,
+            last_pyr_ms: None,
+            last_dom_price: Some(0.45),
+            last_hedge_price: Some(0.50),
+            last_requote_dom_ms: 0,
+            last_requote_hedge_ms: 0,
+            last_parity_ms: 0,
+            last_scoop_ms: 0,
+            score_persist_since_ms: 0,
+            locked: false,
+        };
+        let c = ctx_full(
+            &m, &p_params, &[], 0.45, 0.46, 0.50, 0.51, 5.0,
+            None, None, None, Some(200.0), 100_000,
+        );
+        let d = decide_active(&mut active, &c, &p);
+        assert!(active.locked);
+        assert!(matches!(d, Decision::NoOp));
+    }
+
+    #[test]
+    fn deadline_cancels_all() {
+        let m = StrategyMetrics::default();
+        let p_params = StrategyParams::default();
+        let p = ElisParams::default();
+        let mut active = ActiveState {
+            intent: Outcome::Up,
+            opener_score: 5.0,
+            opener_rule: OpenerRule::ScoreAverage,
+            flip_count: 0,
+            flip_freeze_until_ms: 0,
+            avg_down_used: false,
+            last_pyr_ms: None,
+            last_dom_price: Some(0.50),
+            last_hedge_price: Some(0.50),
+            last_requote_dom_ms: 0,
+            last_requote_hedge_ms: 0,
+            last_parity_ms: 0,
+            last_scoop_ms: 0,
+            score_persist_since_ms: 0,
+            locked: false,
+        };
+        let orders = [OpenOrder {
+            id: "o1".into(),
+            outcome: Outcome::Up,
+            side: Side::Buy,
+            price: 0.50,
+            size: 20.0,
+            reason: "elis:open:dom:up".into(),
+            placed_at_ms: 0,
+            size_matched: 0.0,
+        }];
+        let c = ctx_full(
+            &m, &p_params, &orders, 0.50, 0.51, 0.50, 0.51, 5.0,
+            None, None, None, Some(5.0), 295_000,
+        );
+        let d = decide_active(&mut active, &c, &p);
         match d {
             Decision::CancelOrders(ids) => assert_eq!(ids, vec!["o1".to_string()]),
             other => panic!("beklenen CancelOrders, gelen {:?}", other),
@@ -474,193 +844,42 @@ mod tests {
     }
 
     #[test]
-    fn imbalance_above_band_triggers_hedge_only() {
-        let mut m = StrategyMetrics::default();
-        m.up_filled = 5.0;
-        m.avg_up = 0.45;
-        m.down_filled = 0.0;
-        let p = StrategyParams::default();
-        // d1 normal bid 0.49; hedge hedef = 0.51 - 0.01 = 0.50 (≠ 0.49).
-        let orders = [
-            open("u1", Outcome::Up, 0.45, 22.0, "elis:bid:up"),
-            open("d1", Outcome::Down, 0.49, 20.0, "elis:bid:down"),
-        ];
-        let c = ctx(
-            &m,
-            &p,
-            &orders,
-            0.45,
-            0.46,
-            0.49,
-            0.51,
-            5.0,
-            MarketZone::DeepTrade,
-        );
-        let (_, d) = ElisEngine::decide(ElisState::Pending, &c);
-        match d {
-            Decision::CancelAndPlace { cancels, places } => {
-                assert!(cancels.contains(&"u1".to_string()));
-                assert!(cancels.contains(&"d1".to_string()));
-                assert_eq!(places.len(), 1);
-                assert_eq!(places[0].outcome, Outcome::Down);
-                assert_eq!(places[0].reason, "elis:hedge:down");
-                assert!((places[0].price - 0.50).abs() < 1e-9);
-            }
-            other => panic!("beklenen CancelAndPlace, gelen {:?}", other),
-        }
-    }
-
-    #[test]
-    fn hard_stop_cancels_all_and_hedges_light() {
-        let mut m = StrategyMetrics::default();
-        m.up_filled = 5.0;
-        m.avg_up = 0.55;
-        m.down_filled = 1.0;
-        m.avg_down = 0.50;
-        let p = StrategyParams::default();
-        // avg_sum = 1.05 > 1.01 → HARD STOP. Hedge hedef = 0.52 - 0.01 = 0.51.
-        let orders = [
-            open("u1", Outcome::Up, 0.45, 22.0, "elis:bid:up"),
-            open("d1", Outcome::Down, 0.49, 20.0, "elis:hedge:down"),
-        ];
-        let c = ctx(
-            &m,
-            &p,
-            &orders,
-            0.45,
-            0.46,
-            0.49,
-            0.52,
-            5.0,
-            MarketZone::DeepTrade,
-        );
-        let (_, d) = ElisEngine::decide(ElisState::Pending, &c);
-        match d {
-            Decision::CancelAndPlace { cancels, places } => {
-                assert!(cancels.contains(&"u1".to_string()));
-                assert!(cancels.contains(&"d1".to_string()));
-                assert_eq!(places.len(), 1);
-                assert_eq!(places[0].outcome, Outcome::Down);
-                assert_eq!(places[0].reason, "elis:hedge:down");
-                assert!((places[0].price - 0.51).abs() < 1e-9);
-            }
-            other => panic!("beklenen CancelAndPlace, gelen {:?}", other),
-        }
-    }
-
-    #[test]
-    fn lock_latches_and_keeps_position() {
-        // avg_up + avg_down ≤ avg_threshold AND pair_count > 0 → profit_locked.
-        let mut m = StrategyMetrics::default();
-        m.up_filled = 5.0;
-        m.avg_up = 0.45;
-        m.down_filled = 5.0;
-        m.avg_down = 0.50;
-        let p = StrategyParams::default();
-        let c = ctx(
-            &m,
-            &p,
-            &[],
-            0.45,
-            0.46,
-            0.50,
-            0.51,
-            5.0,
-            MarketZone::DeepTrade,
-        );
-        let (state, _) = ElisEngine::decide(ElisState::Pending, &c);
-        assert!(matches!(state, ElisState::Active { locked: true, .. }));
-
-        // Tekrar tick: avg değişmese bile locked kalır.
-        let mut m2 = StrategyMetrics::default();
-        m2.up_filled = 5.0;
-        m2.avg_up = 0.50;
-        m2.down_filled = 5.0;
-        m2.avg_down = 0.55; // avg_sum = 1.05 > avg_threshold → profit_locked false
-        let c2 = ctx(
-            &m2,
-            &p,
-            &[],
-            0.45,
-            0.46,
-            0.50,
-            0.51,
-            5.0,
-            MarketZone::DeepTrade,
-        );
-        let (state2, _) = ElisEngine::decide(state, &c2);
-        assert!(matches!(state2, ElisState::Active { locked: true, .. }));
-    }
-
-    #[test]
-    fn momentum_large_score_jump_is_noop_preserves_open_orders() {
-        let mut m = StrategyMetrics::default();
-        m.up_filled = 1.0;
-        m.avg_up = 0.45;
-        let p = StrategyParams::default();
-        let orders = [open("u1", Outcome::Up, 0.45, 22.0, "elis:bid:up")];
-        // last_score 5.0 → effective_score 9.5: |Δ| = 4.5 > MOMENTUM_DELTA(3.0) → momentum → NoOp.
-        let c = ctx(
-            &m,
-            &p,
-            &orders,
-            0.45,
-            0.46,
-            0.49,
-            0.52,
-            9.5,
-            MarketZone::DeepTrade,
-        );
-        let prev_state = ElisState::Active {
-            last_score: 5.0,
+    fn scoop_triggers_late_when_opp_cheap() {
+        let m = StrategyMetrics::default();
+        let p_params = StrategyParams::default();
+        let p = ElisParams::default();
+        let mut active = ActiveState {
+            intent: Outcome::Up,
+            opener_score: 5.0,
+            opener_rule: OpenerRule::ScoreAverage,
+            flip_count: 0,
+            flip_freeze_until_ms: 0,
+            avg_down_used: false,
+            last_pyr_ms: None,
+            last_dom_price: Some(0.95),
+            last_hedge_price: Some(0.05),
+            last_requote_dom_ms: 0,
+            last_requote_hedge_ms: 0,
+            last_parity_ms: 0,
+            last_scoop_ms: 0,
+            score_persist_since_ms: 0,
             locked: false,
         };
-        let (_, d) = ElisEngine::decide(prev_state, &c);
-        assert!(matches!(d, Decision::NoOp), "momentum modu hedge-only değil, NoOp beklendi");
-    }
-
-    #[test]
-    fn stoptrade_zone_blocks_new_pairs() {
-        let m = StrategyMetrics::default();
-        let p = StrategyParams::default();
-        let c = ctx(
-            &m,
-            &p,
-            &[],
-            0.45,
-            0.46,
-            0.50,
-            0.51,
-            5.0,
-            MarketZone::StopTrade,
+        // up_bid=0.95, down_bid=0.03 (≤0.05), rem=20s (≤35)
+        let c = ctx_full(
+            &m, &p_params, &[], 0.95, 0.96, 0.03, 0.04, 8.0,
+            None, None, None, Some(20.0), 280_000,
         );
-        let (_, d) = ElisEngine::decide(ElisState::Pending, &c);
-        // imbalance == 0 ve hiç emir yok → NoOp.
-        assert!(matches!(d, Decision::NoOp));
-    }
-
-    #[test]
-    fn balanced_existing_at_target_is_noop() {
-        // pair_count == 0 → adaptif hedef: best_bid - tick (0.44, 0.49).
-        // Mevcut emirler hedefte → NoOp.
-        let m = StrategyMetrics::default();
-        let p = StrategyParams::default();
-        let orders = [
-            open("u1", Outcome::Up, 0.44, 22.0, "elis:bid:up"),
-            open("d1", Outcome::Down, 0.49, 20.0, "elis:bid:down"),
-        ];
-        let c = ctx(
-            &m,
-            &p,
-            &orders,
-            0.45,
-            0.46,
-            0.50,
-            0.51,
-            5.0,
-            MarketZone::DeepTrade,
-        );
-        let (_, d) = ElisEngine::decide(ElisState::Pending, &c);
-        assert!(matches!(d, Decision::NoOp));
+        let d = decide_active(&mut active, &c, &p);
+        match d {
+            Decision::PlaceOrders(orders) => {
+                assert_eq!(orders.len(), 1);
+                assert_eq!(orders[0].outcome, Outcome::Up);
+                assert!(orders[0].reason.contains("scoop"));
+            }
+            other => panic!("beklenen PlaceOrders (scoop), gelen {:?}", other),
+        }
+        assert_eq!(active.last_scoop_ms, 280_000);
     }
 }
+

@@ -18,7 +18,10 @@ use aras::ArasState;
 use elis::ElisState;
 
 /// `MarketSession` FSM state'i — aktif stratejinin discriminated union'ı.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+///
+/// Not: `Copy` değil çünkü `ElisState::Pending` 20-tick `Vec` içeriyor.
+/// Engine `clone()` ile state geçişi yapar (her tick küçük heap kopyalama).
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum StrategyState {
     Alis(AlisState),
     Elis(ElisState),

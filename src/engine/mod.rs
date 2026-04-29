@@ -141,9 +141,14 @@ impl MarketSession {
             avg_threshold: cfg.strategy_params.avg_threshold(),
             signal_ready,
             strategy_params: &cfg.strategy_params,
+            // RTDS pipeline'a bsi/ofi/cvd eklendiğinde Some ile pas edilecek.
+            bsi: None,
+            ofi: None,
+            cvd: None,
+            market_remaining_secs: Some(self.end_ts.saturating_sub(now_ms_v / 1000) as f64),
         };
-        let prev_state = self.state;
-        let (next_state, decision) = match self.state {
+        let prev_state = self.state.clone();
+        let (next_state, decision) = match self.state.clone() {
             StrategyState::Alis(s) => {
                 let (ns, d) = AlisEngine::decide(s, &ctx);
                 (StrategyState::Alis(ns), d)
@@ -157,13 +162,13 @@ impl MarketSession {
                 (StrategyState::Aras(ns), d)
             }
         };
-        self.state = next_state;
         if let Some(method) = detect_alis_lock_transition(&prev_state, &next_state) {
             emit_profit_locked(self, method, now_ms_v);
         }
         if detect_elis_lock_transition(&prev_state, &next_state) {
             emit_profit_locked(self, "elis_avg", now_ms_v);
         }
+        self.state = next_state;
         decision
     }
 }
@@ -190,15 +195,13 @@ fn detect_alis_lock_transition(
 /// `locked: false → true` geçişi rapor edilir (idempotent: aynı tick yine
 /// false dönerse emit etmez).
 fn detect_elis_lock_transition(prev: &StrategyState, next: &StrategyState) -> bool {
-    let prev_locked = matches!(
-        prev,
-        StrategyState::Elis(ElisState::Active { locked: true, .. })
-    );
-    let next_locked = matches!(
-        next,
-        StrategyState::Elis(ElisState::Active { locked: true, .. })
-    );
-    !prev_locked && next_locked
+    fn locked(s: &StrategyState) -> bool {
+        match s {
+            StrategyState::Elis(ElisState::Active(active)) => active.locked,
+            _ => false,
+        }
+    }
+    !locked(prev) && locked(next)
 }
 
 fn emit_profit_locked(session: &MarketSession, method: &str, ts_ms: u64) {
