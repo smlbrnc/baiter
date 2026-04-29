@@ -30,8 +30,8 @@ fn cancel_ids_for_log(decision: &Decision) -> &[String] {
 pub async fn tick(ctx: &Ctx, sess: &mut MarketSession) {
     let recv_at = std::time::Instant::now();
     let server_ts = sess.last_book_server_ts_ms;
-    let (composite, signal_ready) = decision_composite(ctx, sess).await;
-    let decision = sess.tick(&ctx.cfg, now_ms(), composite, signal_ready);
+    let (composite, signal_ready, bsi, ofi, cvd) = decision_composite(ctx, sess).await;
+    let decision = sess.tick(&ctx.cfg, now_ms(), composite, signal_ready, bsi, ofi, cvd);
     let bot_id = ctx.bot_id;
     let label = ctx.bot_label.as_ref();
 

@@ -27,8 +27,15 @@ pub struct RtdsSnapshot {
 const NEUTRAL_WINDOW_SCORE: f64 = 5.0;
 
 /// Lookahead'lı opener composite skoru + RTDS pencere açılışı yakalandı mı.
-pub async fn decision_composite(ctx: &Ctx, sess: &MarketSession) -> (f64, bool) {
-    let binance_score = ctx.signal_state.read().await.signal_score;
+/// `bsi/ofi/cvd` Elis composite opener kuralları için döndürülür.
+pub async fn decision_composite(
+    ctx: &Ctx,
+    sess: &MarketSession,
+) -> (f64, bool, Option<f64>, Option<f64>, Option<f64>) {
+    let (binance_score, bsi, ofi, cvd) = {
+        let snap = ctx.signal_state.read().await;
+        (snap.signal_score, snap.bsi, snap.ofi, snap.cvd)
+    };
     let rtds_enabled = ctx.cfg.strategy_params.rtds_enabled_or_default();
     let (window_score, signal_ready) = if rtds_enabled {
         let rtds_snap = ctx.rtds_state.read().await;
@@ -44,7 +51,7 @@ pub async fn decision_composite(ctx: &Ctx, sess: &MarketSession) -> (f64, bool) 
         binance_score,
         ctx.cfg.strategy_params.window_delta_weight_or_default(),
     );
-    (composite, signal_ready)
+    (composite, signal_ready, Some(bsi), Some(ofi), Some(cvd))
 }
 
 /// Lookahead'sız anlık composite + alt sinyaller. Tek RwLock turu.

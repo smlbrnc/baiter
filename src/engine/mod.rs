@@ -117,6 +117,9 @@ impl MarketSession {
         now_ms_v: u64,
         effective_score: f64,
         signal_ready: bool,
+        bsi: Option<f64>,
+        ofi: Option<f64>,
+        cvd: Option<f64>,
     ) -> Decision {
         let zone = self.current_zone(now_ms_v / 1000);
         let ctx = StrategyContext {
@@ -141,10 +144,9 @@ impl MarketSession {
             avg_threshold: cfg.strategy_params.avg_threshold(),
             signal_ready,
             strategy_params: &cfg.strategy_params,
-            // RTDS pipeline'a bsi/ofi/cvd eklendiğinde Some ile pas edilecek.
-            bsi: None,
-            ofi: None,
-            cvd: None,
+            bsi,
+            ofi,
+            cvd,
             market_remaining_secs: Some(self.end_ts.saturating_sub(now_ms_v / 1000) as f64),
         };
         let prev_state = self.state.clone();
