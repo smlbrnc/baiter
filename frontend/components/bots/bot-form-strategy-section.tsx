@@ -1,5 +1,5 @@
 import type { Dispatch, SetStateAction } from "react";
-import { Sliders } from "lucide-react";
+import { Sliders, TrendingUp } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import type { CreateBotReq, StrategyParams } from "@/lib/types";
 import { STRATEGY_PARAMS_DEFAULTS } from "@/lib/types";
@@ -18,6 +18,7 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const params: StrategyParams = form.strategy_params ?? {};
   const isAlis = form.strategy === "alis";
   const isElis = form.strategy === "elis";
+  const isAras = form.strategy === "aras";
 
   const patch = (next: Partial<StrategyParams>) => {
     setForm({
@@ -42,6 +43,28 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const pyramidFakDelta =
     params.pyramid_fak_delta ?? STRATEGY_PARAMS_DEFAULTS.pyramid_fak_delta;
   const pyramidUsdc = params.pyramid_usdc ?? null;
+
+  // ── Aras defaults ─────────────────────────────────────────────────────
+  const arasPollSecs =
+    params.aras_poll_secs ?? STRATEGY_PARAMS_DEFAULTS.aras_poll_secs;
+  const arasDcaMinDrop =
+    params.aras_dca_min_drop ?? STRATEGY_PARAMS_DEFAULTS.aras_dca_min_drop;
+  const arasSharesPerOrder =
+    params.aras_shares_per_order ??
+    STRATEGY_PARAMS_DEFAULTS.aras_shares_per_order;
+  const arasMaxUsdPerSide =
+    params.aras_max_usd_per_side ??
+    STRATEGY_PARAMS_DEFAULTS.aras_max_usd_per_side;
+  const arasHedgeStepSecs =
+    params.aras_hedge_step_secs ??
+    STRATEGY_PARAMS_DEFAULTS.aras_hedge_step_secs;
+  const arasBandLow =
+    params.aras_band_low ?? STRATEGY_PARAMS_DEFAULTS.aras_band_low;
+  const arasBandHigh =
+    params.aras_band_high ?? STRATEGY_PARAMS_DEFAULTS.aras_band_high;
+  const arasCheapThreshold =
+    params.aras_cheap_threshold ??
+    STRATEGY_PARAMS_DEFAULTS.aras_cheap_threshold;
 
   return (
     <div className="space-y-3">
@@ -230,6 +253,199 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                 />
               </Field>
             </div>
+          </div>
+        </div>
+      )}
+
+      {isAras && (
+        <div className="space-y-3">
+          <div>
+            <SectionLabel icon={TrendingUp} title="Aras parametreleri" />
+            <p className="text-muted-foreground mt-1 text-sm">
+              DCA + Kademeli Hedge Arbitrajı ayarları. Pahalı taraf (mid &gt;{" "}
+              <code>cheap_threshold</code>) her{" "}
+              <code>poll_secs</code> saniyede bid−1tick ile alım yapılır; fill
+              olunca ucuz tarafa bid−3t→2t→1t kademeli GTC hedge açılır.
+            </p>
+          </div>
+
+          {/* Zamanlama */}
+          <div className="bg-muted/25 space-y-4 rounded-md border border-border/40 p-3">
+            <p className="text-muted-foreground text-xs font-semibold uppercase tracking-wider">
+              Zamanlama
+            </p>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Field
+                label="DCA kontrol aralığı (sn)"
+                tooltip="Pahalı taraf bid fiyatı her bu sürede kontrol edilir. Koşullar uygunsa bid−1tick fiyatına GTC emir gönderilir. Default: 2.0 sn."
+                hint="0.5 – 60 sn (default 2.0)."
+              >
+                <Input
+                  type="number"
+                  step="0.5"
+                  min="0.5"
+                  max="60"
+                  value={arasPollSecs}
+                  onChange={(e) =>
+                    patch({ aras_poll_secs: Number(e.target.value) })
+                  }
+                />
+              </Field>
+              <Field
+                label="Hedge adım bekleme (sn)"
+                tooltip="Bir hedge adımı dolmadan sonraki adıma geçilmez. bid-3tick (step 1) → bu süre bekle → bid-2tick (step 2) → bekle → bid-1tick (step 3). Default: 6.0 sn."
+                hint="1 – 60 sn (default 6.0)."
+              >
+                <Input
+                  type="number"
+                  step="0.5"
+                  min="1"
+                  max="60"
+                  value={arasHedgeStepSecs}
+                  onChange={(e) =>
+                    patch({ aras_hedge_step_secs: Number(e.target.value) })
+                  }
+                />
+              </Field>
+            </div>
+          </div>
+
+          {/* Emir boyutu ve limit */}
+          <div className="bg-muted/25 space-y-4 rounded-md border border-border/40 p-3">
+            <p className="text-muted-foreground text-xs font-semibold uppercase tracking-wider">
+              Emir boyutu &amp; limit
+            </p>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Field
+                label="Emir başı share"
+                tooltip="Her DCA ve hedge emrinin share miktarı. 16 market backtest'te 40 share/emir kullanıldı. Default: 40."
+                hint="5 – 1000 share (default 40)."
+              >
+                <Input
+                  type="number"
+                  step="5"
+                  min="5"
+                  max="1000"
+                  value={arasSharesPerOrder}
+                  onChange={(e) =>
+                    patch({ aras_shares_per_order: Number(e.target.value) })
+                  }
+                />
+              </Field>
+              <Field
+                label="Taraf başı maks USDC"
+                tooltip="Tek bir tarafın (UP veya DOWN) toplam maliyet tavanı. Bu eşik aşıldığında o taraf için DCA emri gönderilmez. Default: 500 USDC."
+                hint="10 – 10 000 USDC (default 500)."
+              >
+                <Input
+                  type="number"
+                  step="50"
+                  min="10"
+                  max="10000"
+                  value={arasMaxUsdPerSide}
+                  onChange={(e) =>
+                    patch({ aras_max_usd_per_side: Number(e.target.value) })
+                  }
+                />
+              </Field>
+            </div>
+
+            <Field
+              label="DCA min düşüş (fiyat birimi)"
+              tooltip="Yeni bir DCA emri ancak güncel entry fiyatı mevcut ortalamadan en az bu kadar düşükse gönderilir: entry < avg − min_drop. İlk giriş (filled=0) bu kontrolü atlar. Default: 0.01 (1 tick)."
+              hint="0.001 – 0.20 (default 0.01)."
+            >
+              <Input
+                type="number"
+                step="0.005"
+                min="0.001"
+                max="0.20"
+                value={arasDcaMinDrop}
+                onChange={(e) =>
+                  patch({ aras_dca_min_drop: Number(e.target.value) })
+                }
+              />
+            </Field>
+          </div>
+
+          {/* Bant ve eşik */}
+          <div className="bg-muted/25 space-y-4 rounded-md border border-border/40 p-3">
+            <p className="text-muted-foreground text-xs font-semibold uppercase tracking-wider">
+              İşlem bandı &amp; eşik
+            </p>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <Field
+                label="Alt bant (band_low)"
+                tooltip="Bu fiyatın altındaki ucuz taraf için hedge emri gönderilmez. Settle yakını aşırı kaldıraçtan korur. Default: 0.10."
+                hint="0.01 – 0.49 (default 0.10)."
+              >
+                <Input
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  max="0.49"
+                  value={arasBandLow}
+                  onChange={(e) =>
+                    patch({ aras_band_low: Number(e.target.value) })
+                  }
+                />
+              </Field>
+              <Field
+                label="Pahalı/ucuz eşiği"
+                tooltip="Bu eşiğin üstündeki taraf 'pahalı' (DCA hedefi), altındaki taraf 'ucuz' (hedge hedefi) olarak sınıflandırılır. Default: 0.50."
+                hint="0.10 – 0.90 (default 0.50)."
+              >
+                <Input
+                  type="number"
+                  step="0.01"
+                  min="0.10"
+                  max="0.90"
+                  value={arasCheapThreshold}
+                  onChange={(e) =>
+                    patch({ aras_cheap_threshold: Number(e.target.value) })
+                  }
+                />
+              </Field>
+              <Field
+                label="Üst bant (band_high)"
+                tooltip="DCA emri pahalı taraf bu fiyatın altındayken gönderilir. Settle yakını aşırı alımdan korur. Default: 0.90."
+                hint="0.51 – 0.99 (default 0.90)."
+              >
+                <Input
+                  type="number"
+                  step="0.01"
+                  min="0.51"
+                  max="0.99"
+                  value={arasBandHigh}
+                  onChange={(e) =>
+                    patch({ aras_band_high: Number(e.target.value) })
+                  }
+                />
+              </Field>
+            </div>
+          </div>
+
+          {/* Bilgi özeti */}
+          <div className="space-y-2 rounded-md border border-border/40 bg-muted/10 px-3 py-2.5 text-xs leading-relaxed text-muted-foreground">
+            <p className="font-medium text-foreground">Aras — nasıl çalışır?</p>
+            <ul className="list-disc space-y-1 pl-4">
+              <li>
+                <strong>DCA:</strong> mid &gt; cheap_threshold ve mid &lt;
+                band_high ise pahalı taraf her poll_secs saniyede
+                bid−1tick&apos;e GTC emir alır. Ortalama düşmedikçe (min_drop)
+                veya maks limit aşılınca yeni emir verilmez.
+              </li>
+              <li>
+                <strong>Hedge:</strong> DCA fill olunca ucuz taraf (mid &lt;
+                cheap_threshold) için bid−3tick emri verilir. Her hedge_step_secs
+                saniyede fill olmazsa iptal edilip bir sonraki adım (bid−2t →
+                bid−1t) denenir.
+              </li>
+              <li>
+                <strong>ARB kilidi:</strong> avg_up + avg_down &lt; 1.00 ise
+                pair başına garantili kâr kilitlenir ve log&apos;a yazılır.
+              </li>
+            </ul>
           </div>
         </div>
       )}

@@ -194,6 +194,32 @@ pub struct StrategyParams {
     pub elis_scoop_cooldown_secs: Option<f64>,
     #[serde(default)]
     pub elis_deadline_safety_secs: Option<f64>,
+
+    // === Aras DCA + Kademeli Hedge parametreleri ===
+    /// DCA kontrol aralığı (saniye). Default: 2.0
+    #[serde(default)]
+    pub aras_poll_secs: Option<f64>,
+    /// Ortalama maliyetten min düşüş tetik (1 tick = 0.01). Default: 0.01
+    #[serde(default)]
+    pub aras_dca_min_drop: Option<f64>,
+    /// Her emir kaç share. Default: 40.0
+    #[serde(default)]
+    pub aras_shares_per_order: Option<f64>,
+    /// Taraf başına maks USDC. Default: 500.0
+    #[serde(default)]
+    pub aras_max_usd_per_side: Option<f64>,
+    /// Hedge adım arası bekleme (saniye). Default: 6.0
+    #[serde(default)]
+    pub aras_hedge_step_secs: Option<f64>,
+    /// Alt işlem bandı — bu altında işlem yapma. Default: 0.10
+    #[serde(default)]
+    pub aras_band_low: Option<f64>,
+    /// Üst işlem bandı — DCA için bu üstünde işlem yapma. Default: 0.90
+    #[serde(default)]
+    pub aras_band_high: Option<f64>,
+    /// Pahalı/ucuz sınırı. Default: 0.50
+    #[serde(default)]
+    pub aras_cheap_threshold: Option<f64>,
 }
 
 impl StrategyParams {
@@ -229,6 +255,32 @@ impl StrategyParams {
 
     pub fn pyramid_usdc_or(&self, fallback: f64) -> f64 {
         self.pyramid_usdc.unwrap_or(fallback).max(0.0)
+    }
+
+    // === Aras accessors ===
+    pub fn aras_poll_secs(&self) -> f64 {
+        self.aras_poll_secs.unwrap_or(2.0).max(0.5)
+    }
+    pub fn aras_dca_min_drop(&self) -> f64 {
+        self.aras_dca_min_drop.unwrap_or(0.01).max(0.001)
+    }
+    pub fn aras_shares_per_order(&self) -> f64 {
+        self.aras_shares_per_order.unwrap_or(40.0).max(5.0)
+    }
+    pub fn aras_max_usd_per_side(&self) -> f64 {
+        self.aras_max_usd_per_side.unwrap_or(500.0).max(10.0)
+    }
+    pub fn aras_hedge_step_secs(&self) -> f64 {
+        self.aras_hedge_step_secs.unwrap_or(6.0).max(1.0)
+    }
+    pub fn aras_band_low(&self) -> f64 {
+        self.aras_band_low.unwrap_or(0.10).clamp(0.01, 0.49)
+    }
+    pub fn aras_band_high(&self) -> f64 {
+        self.aras_band_high.unwrap_or(0.90).clamp(0.51, 0.99)
+    }
+    pub fn aras_cheap_threshold(&self) -> f64 {
+        self.aras_cheap_threshold.unwrap_or(0.50).clamp(0.10, 0.90)
     }
 }
 

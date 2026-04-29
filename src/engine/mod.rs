@@ -170,6 +170,9 @@ impl MarketSession {
         if detect_elis_lock_transition(&prev_state, &next_state) {
             emit_profit_locked(self, "elis_avg", now_ms_v);
         }
+        if let Some(pnl) = detect_aras_lock_transition(&prev_state, &next_state) {
+            emit_aras_arb_lock(self, pnl, now_ms_v);
+        }
         self.state = next_state;
         decision
     }
@@ -204,6 +207,33 @@ fn detect_elis_lock_transition(prev: &StrategyState, next: &StrategyState) -> bo
         }
     }
     !locked(prev) && locked(next)
+}
+
+/// Aras ARB kilidi: arb_lock_count arttıysa yeni kilit var.
+fn detect_aras_lock_transition(
+    prev: &StrategyState,
+    next: &StrategyState,
+) -> Option<f64> {
+    let StrategyState::Aras(prev_a) = prev else { return None };
+    let StrategyState::Aras(next_a) = next else { return None };
+    if next_a.arb_lock_count() > prev_a.arb_lock_count() {
+        Some(next_a.guaranteed_pnl())
+    } else {
+        None
+    }
+}
+
+fn emit_aras_arb_lock(session: &MarketSession, guaranteed_pnl: f64, ts_ms: u64) {
+    let StrategyState::Aras(ref aras) = session.state else { return };
+    tracing::info!(
+        bot_id = session.bot_id,
+        slug = %session.slug,
+        arb_count = aras.arb_lock_count(),
+        guaranteed_pnl,
+        ts_ms,
+        "aras: arb_lock_event"
+    );
+    // İleride FrontendEvent::ArasArbLock eklenebilir; şimdilik log yeterli.
 }
 
 fn emit_profit_locked(session: &MarketSession, method: &str, ts_ms: u64) {

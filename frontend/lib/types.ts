@@ -49,6 +49,48 @@ export interface StrategyParams {
    * Alis: pyramid emir başına USDC. `null` → opener `order_usdc` ile aynı.
    */
   pyramid_usdc?: number | null;
+
+  // ── Aras DCA + Kademeli Hedge ──────────────────────────────────────────
+  /**
+   * DCA kontrol aralığı (saniye). Her bu sürede pahalı taraf bid kontrol edilir.
+   * Default 2.0.
+   */
+  aras_poll_secs?: number | null;
+  /**
+   * Ortalama maliyetten minimum düşüş tetikleyici (fiyat birimi).
+   * `entry < avg - min_drop` koşulunu sağlamadan DCA emri verilmez.
+   * Default 0.01 (1 tick).
+   */
+  aras_dca_min_drop?: number | null;
+  /**
+   * Her emir için share miktarı. Default 40.
+   */
+  aras_shares_per_order?: number | null;
+  /**
+   * Taraf başına maksimum USDC harcama limiti. Default 500.
+   */
+  aras_max_usd_per_side?: number | null;
+  /**
+   * Hedge kademesi arasındaki bekleme süresi (saniye).
+   * bid-3t → (step_secs) → bid-2t → (step_secs) → bid-1t.
+   * Default 6.0.
+   */
+  aras_hedge_step_secs?: number | null;
+  /**
+   * Alt işlem bandı. Bu fiyatın altında hem DCA hem hedge yapılmaz.
+   * Default 0.10.
+   */
+  aras_band_low?: number | null;
+  /**
+   * Üst işlem bandı. DCA için bu fiyatın üstüne çıkmaz.
+   * Default 0.90.
+   */
+  aras_band_high?: number | null;
+  /**
+   * Pahalı / ucuz taraf sınırı. Bu eşiğin üstündeki taraf DCA hedefi,
+   * altındaki taraf hedge hedefidir. Default 0.50.
+   */
+  aras_cheap_threshold?: number | null;
 }
 
 export interface BotRow {
@@ -361,4 +403,13 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   open_delta: 0.01,
   pyramid_agg_delta: 0.015,
   pyramid_fak_delta: 0.025,
+  // Aras
+  aras_poll_secs: 2.0,
+  aras_dca_min_drop: 0.01,
+  aras_shares_per_order: 40,
+  aras_max_usd_per_side: 500,
+  aras_hedge_step_secs: 6.0,
+  aras_band_low: 0.10,
+  aras_band_high: 0.90,
+  aras_cheap_threshold: 0.50,
 } as const;

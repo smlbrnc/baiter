@@ -74,14 +74,13 @@ def main():
         print("Usage: batch_backtest.py <slug>... | --all-bot15 | --all-bot14")
         return 1
 
-    if args[0] == "--all-bot15":
-        d = next((x for x in TICKS_DIRS if x.name.startswith("bot15-")), None)
+    if args[0].startswith("--all-bot"):
+        prefix = args[0][2:]  # "all-bot15" → "all-bot15"
+        botid = prefix.replace("all-", "")  # "bot15"
+        d = next((x for x in TICKS_DIRS if x.name.startswith(f"{botid}-")), None)
         if d is None:
-            print("bot15-* klasörü yok")
+            print(f"{botid}-* klasörü yok")
             return 1
-        slugs = sorted(p.stem.replace("_ticks", "") for p in d.glob("btc-updown-5m-*_ticks.json"))
-    elif args[0] == "--all-bot14":
-        d = next((x for x in TICKS_DIRS if x.name.startswith("bot14-")), None)
         slugs = sorted(p.stem.replace("_ticks", "") for p in d.glob("btc-updown-5m-*_ticks.json"))
     else:
         slugs = args

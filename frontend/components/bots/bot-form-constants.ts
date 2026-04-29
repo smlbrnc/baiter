@@ -24,7 +24,8 @@ export const STRATEGY_OPTIONS: {
   {
     id: "aras",
     label: "Aras",
-    description: "İskelet — strateji kuralları henüz tanımlanmadı.",
+    description:
+      "DCA + Kademeli Hedge Arbitrajı: pahalı tarafı (>0.50) 2 sn'de bir DCA ile ortalar, fill'de ucuz tarafa bid-3t→bid-2t→bid-1t kademeli GTC hedge açar; avg_up+avg_down<1.00 → garantili kâr kilidi.",
   },
 ];
 
