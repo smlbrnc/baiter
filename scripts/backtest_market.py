@@ -134,7 +134,9 @@ def predict_opener(pre_ticks):
     first = pre_ticks[0]
     dscore = last["signal_score"] - first["signal_score"]
     score_avg = sum(t["signal_score"] for t in pre_ticks) / len(pre_ticks)
-    bsi = last["bsi"]
+    # BSI: ilk tick'teki Hawkes tepe değeri kullanılır (reversion'ın başlangıcı).
+    # Son tick BSI = zaten reversiyon sonucu → onu tekrar revert etmek yanlış.
+    bsi = first["bsi"]
     ofi_avg = sum(t["ofi"] for t in pre_ticks) / len(pre_ticks)
     cvd = last["cvd"]
 

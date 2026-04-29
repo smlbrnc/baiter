@@ -172,7 +172,11 @@ fn compute_features(ticks: &[TickSnapshot]) -> PreFeatures {
     let dscore = ticks.last().unwrap().score - ticks.first().unwrap().score;
     let score_avg = ticks.iter().map(|t| t.score).sum::<f64>() / n;
 
-    let bsi = ticks.last().and_then(|t| t.bsi);
+    // BSI reversion: ilk tick'teki ekstrem BSI = piyasanın hangi yönde aşırı ısındığının
+    // göstergesi. Hawkes decay ile t=0'daki tepe t=20s'de çoktan söndü; son tick BSI
+    // zaten reversiyon sonucunu yansıtır, reversion'ı değil.
+    let bsi = ticks.first().and_then(|t| t.bsi);
+    // CVD: kümülatif olduğu için son tick tercih edilir (tüm pencereyi özetler).
     let cvd = ticks.last().and_then(|t| t.cvd);
 
     // OFI ortalaması — tüm ticklerde Some olmalı, aksi halde None
