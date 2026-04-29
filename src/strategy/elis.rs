@@ -71,8 +71,9 @@ pub enum OpenerRule {
 /// Elis FSM state'i.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ElisState {
-    /// Pre-opener buffer; t=20'ye kadar tick'leri topla.
-    Pending { ticks: Vec<TickSnapshot> },
+    /// Pre-opener buffer; hem `pre_opener_ticks` hem de `opener_min_secs` dolmadan açılmaz.
+    /// `first_tick_ms`: ilk BBA tick'inin timestamp'i (0 = henüz tick yok).
+    Pending { ticks: Vec<TickSnapshot>, first_tick_ms: u64 },
     /// Açık pozisyon; tüm decide() katmanları burada.
     Active(Box<ActiveState>),
     /// Deadline / hard stop sonrası — sadece NoOp.
@@ -81,7 +82,7 @@ pub enum ElisState {
 
 impl Default for ElisState {
     fn default() -> Self {
-        Self::Pending { ticks: Vec::new() }
+        Self::Pending { ticks: Vec::new(), first_tick_ms: 0 }
     }
 }
 
@@ -117,17 +118,21 @@ impl ElisEngine {
         match state {
             ElisState::Done => (ElisState::Done, Decision::NoOp),
 
-            ElisState::Pending { mut ticks } => {
+            ElisState::Pending { mut ticks, first_tick_ms } => {
+                // İlk tick'te zaman damgasını kaydet
+                let first_ms = if first_tick_ms == 0 { ctx.now_ms } else { first_tick_ms };
                 ticks.push(TickSnapshot {
                     score: ctx.effective_score,
                     bsi: ctx.bsi,
                     ofi: ctx.ofi,
                     cvd: ctx.cvd,
                 });
-                if ticks.len() < p.pre_opener_ticks {
-                    return (ElisState::Pending { ticks }, Decision::NoOp);
+                // Hem minimum tick sayısı hem de minimum süre (BBA spam koruması)
+                let elapsed_secs = (ctx.now_ms.saturating_sub(first_ms)) as f64 / 1000.0;
+                if ticks.len() < p.pre_opener_ticks || elapsed_secs < p.opener_min_secs {
+                    return (ElisState::Pending { ticks, first_tick_ms: first_ms }, Decision::NoOp);
                 }
-                // t=20 — composite open
+                // opener_min_secs geçti ve yeterli tick var — composite open
                 let (intent, rule) = predict_opener(&ticks, &p);
                 let active = open_pair(ctx, &p, intent, rule);
                 (ElisState::Active(Box::new(active.0)), active.1)

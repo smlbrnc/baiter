@@ -125,6 +125,10 @@ pub struct StrategyParams {
     // === Elis-spesifik (16 marketde optimize) ===
     #[serde(default)]
     pub elis_pre_opener_ticks: Option<usize>,
+    /// Açılımın erken tetiklenme önlemi: ilk tick'ten bu kadar saniye geçmeden opener ateşlenmez.
+    /// BBA tick'leri 1-3/sn gelir; 20 tick ~9s ediyor — bu guard ~20s garantiler.
+    #[serde(default)]
+    pub elis_opener_min_secs: Option<f64>,
     #[serde(default)]
     pub elis_bsi_rev_threshold: Option<f64>,
     #[serde(default)]
@@ -233,6 +237,8 @@ impl StrategyParams {
 #[derive(Debug, Clone, Copy)]
 pub struct ElisParams {
     pub pre_opener_ticks: usize,
+    /// Minimum süre (saniye) — opener bu süreden önce ateşlenmez (BBA spam koruması).
+    pub opener_min_secs: f64,
     pub bsi_rev_threshold: f64,
     pub ofi_exhaustion_threshold: f64,
     pub cvd_exhaustion_threshold: f64,
@@ -268,6 +274,7 @@ impl Default for ElisParams {
     fn default() -> Self {
         Self {
             pre_opener_ticks: 20,
+            opener_min_secs: 20.0,  // BBA spam koruması: t=0'dan en az 20s bekle
             bsi_rev_threshold: 1.5,        // v4b: 2.0→1.5
             ofi_exhaustion_threshold: 0.4,
             cvd_exhaustion_threshold: 3.0,
@@ -307,6 +314,7 @@ impl ElisParams {
         let d = Self::default();
         Self {
             pre_opener_ticks: p.elis_pre_opener_ticks.unwrap_or(d.pre_opener_ticks),
+            opener_min_secs: p.elis_opener_min_secs.unwrap_or(d.opener_min_secs),
             bsi_rev_threshold: p.elis_bsi_rev_threshold.unwrap_or(d.bsi_rev_threshold),
             ofi_exhaustion_threshold: p
                 .elis_ofi_exhaustion_threshold
