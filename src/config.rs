@@ -272,6 +272,7 @@ impl Default for ElisParams {
 
 impl ElisParams {
     /// `StrategyParams`'tan opsiyonel override'ları uygular; eksik alanlar default kalır.
+    #[inline(always)]
     pub fn from_strategy_params(p: &StrategyParams) -> Self {
         let d = Self::default();
         Self {

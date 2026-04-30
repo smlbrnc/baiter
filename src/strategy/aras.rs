@@ -295,9 +295,7 @@ impl ArasEngine {
                 continue;
             }
 
-            // Taraf başına efektif emir büyüklüğü (yükselen tarafa rising_shares_mult çarpanı)
             let sh = p.shares_for(outcome, ctx);
-            let _opp_sh = p.shares_for(outcome.opposite(), ctx);
 
             // İmbalans koruması: bu taraf karşı taraftan > 1 emir kadar ileride olamaz.
             // ÖNEMLI: pending bonus KALDIRILDI. Yükselen tarafın pending emri fill
@@ -324,14 +322,7 @@ impl ArasEngine {
                 continue;
             }
 
-            // Emir fiyatı: bid − 1tick (pasif maker alımı, sabit 1-tick mesafe)
-            // bid-spread yerine sabit 1-tick: spread geniş olduğunda entry çok aşağı düşer ve
-            // DryRun fill modeli (entry >= ask) gerektiren mesafeyi karşılanamaz hale getirir;
-            // bu da yükselen tarafın hiç fill almamasına, düşen tarafın aşırı fill almasına
-            // (TERS! imbalance) yol açar. Sabit 1-tick her iki tarafta eşit dolum şansı verir.
             let cur_bid = ctx.best_bid(outcome);
-            let cur_ask = ctx.best_ask(outcome);
-            let _ = cur_ask; // sadece pair cost için kullanılıyor
             let entry = round_tick(cur_bid - p.tick, p.tick).clamp(p.tick, 0.99);
 
             // Çift pair cost filtresi: bu tarafı al + karşı tarafı al → kârlı mı?
