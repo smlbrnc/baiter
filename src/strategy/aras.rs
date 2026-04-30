@@ -136,6 +136,8 @@ fn has_open_order(open_orders: &[OpenOrder], outcome: Outcome) -> bool {
 struct ArasParams {
     poll_ms: u64,
     shares: f64,
+    /// Yükselen taraf (mid >= 0.50) için emir büyüklüğü çarpanı. Default 1.25.
+    rising_shares_mult: f64,
     max_usd_per_side: f64,
     band_low: f64,
     band_high: f64,
@@ -148,10 +150,21 @@ impl ArasParams {
         Self {
             poll_ms: (sp.aras_poll_secs() * 1000.0) as u64,
             shares: sp.aras_shares_per_order(),
+            rising_shares_mult: sp.aras_rising_shares_mult(),
             max_usd_per_side: sp.aras_max_usd_per_side(),
             band_low: sp.aras_band_low(),
             band_high: sp.aras_band_high(),
             tick: ctx.tick_size.max(0.001),
+        }
+    }
+
+    /// Bu taraf için efektif emir büyüklüğü.
+    fn shares_for(&self, outcome: Outcome, ctx: &StrategyContext<'_>) -> f64 {
+        let m = (ctx.best_bid(outcome) + ctx.best_ask(outcome)) / 2.0;
+        if m >= 0.50 {
+            self.shares * self.rising_shares_mult
+        } else {
+            self.shares
         }
     }
 }
@@ -282,6 +295,10 @@ impl ArasEngine {
                 continue;
             }
 
+            // Taraf başına efektif emir büyüklüğü (yükselen tarafa rising_shares_mult çarpanı)
+            let sh = p.shares_for(outcome, ctx);
+            let opp_sh = p.shares_for(outcome.opposite(), ctx);
+
             // İmbalans koruması: bu taraf karşı taraftan > 1 emir kadar ileride olamaz.
             // Karşı tarafın bekleyen (henüz fill olmamış) emri de sayılır —
             // aksi takdirde bu taraf fill alırken karşı taraf pending'de bekliyorsa
@@ -294,8 +311,8 @@ impl ArasEngine {
             let opp_effective = match outcome {
                 Outcome::Up => m.down_filled,
                 Outcome::Down => m.up_filled,
-            } + if st.pending[opp_idx] { p.shares } else { 0.0 };
-            if this_filled > opp_effective + p.shares {
+            } + if st.pending[opp_idx] { opp_sh } else { 0.0 };
+            if this_filled > opp_effective + sh {
                 tracing::debug!(
                     side = outcome.as_str(),
                     this_filled,
@@ -370,7 +387,7 @@ impl ArasEngine {
                 token_id: ctx.token_id(outcome).to_string(),
                 side: Side::Buy,
                 price: entry,
-                size: p.shares,
+                size: sh,
                 order_type: OrderType::Gtc,
                 reason,
             });

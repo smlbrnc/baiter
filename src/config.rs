@@ -220,6 +220,10 @@ pub struct StrategyParams {
     /// Pahalı/ucuz sınırı. Default: 0.50
     #[serde(default)]
     pub aras_cheap_threshold: Option<f64>,
+    /// Yükselen (pahalı, mid >= 0.50) taraf emir büyüklüğü çarpanı. Default: 1.25
+    /// 1.0 = simetrik; 1.25 = yükselen tarafa %25 fazla share; >1.5 arbitraj garantisini bozabilir.
+    #[serde(default)]
+    pub aras_rising_shares_mult: Option<f64>,
 }
 
 impl StrategyParams {
@@ -281,6 +285,9 @@ impl StrategyParams {
     }
     pub fn aras_cheap_threshold(&self) -> f64 {
         self.aras_cheap_threshold.unwrap_or(0.50).clamp(0.10, 0.90)
+    }
+    pub fn aras_rising_shares_mult(&self) -> f64 {
+        self.aras_rising_shares_mult.unwrap_or(1.25).clamp(1.0, 2.0)
     }
 }
 

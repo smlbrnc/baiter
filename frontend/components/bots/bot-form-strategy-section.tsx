@@ -57,6 +57,9 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
     params.aras_band_low ?? STRATEGY_PARAMS_DEFAULTS.aras_band_low;
   const arasBandHigh =
     params.aras_band_high ?? STRATEGY_PARAMS_DEFAULTS.aras_band_high;
+  const arasRisingSharesMult =
+    params.aras_rising_shares_mult ??
+    STRATEGY_PARAMS_DEFAULTS.aras_rising_shares_mult;
 
   return (
     <div className="space-y-3">
@@ -326,12 +329,12 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
             </div>
           </div>
 
-          {/* Bant */}
+          {/* Bant ve yükselen ağırlık */}
           <div className="bg-muted/25 space-y-4 rounded-md border border-border/40 p-3">
             <p className="text-muted-foreground text-xs font-semibold uppercase tracking-wider">
-              İşlem bandı
+              İşlem bandı &amp; yükselen ağırlık
             </p>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               <Field
                 label="Alt bant (band_low)"
                 tooltip="Mid fiyatı bu eşiğin altındaki taraf için emir verilmez. Settle yakını aşırı riskten korur. Default: 0.10."
@@ -364,6 +367,22 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                   }
                 />
               </Field>
+              <Field
+                label="Yükselen taraf çarpanı"
+                tooltip="Pahalı taraf (mid ≥ 0.50) için emir büyüklüğü çarpanı. 1.25 = %25 fazla share. Simülasyon: 1.25x en iyi ROI, >1.5 arbitraj garantisini bozabilir. Default: 1.25."
+                hint="1.00 – 1.50 (default 1.25)."
+              >
+                <Input
+                  type="number"
+                  step="0.05"
+                  min="1.00"
+                  max="1.50"
+                  value={arasRisingSharesMult}
+                  onChange={(e) =>
+                    patch({ aras_rising_shares_mult: Number(e.target.value) })
+                  }
+                />
+              </Field>
             </div>
           </div>
 
@@ -377,10 +396,16 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                 Fiyat yükselse de, düşse de alım devam eder.
               </li>
               <li>
-                <strong>Pasif emir:</strong> Her iki tarafa da{" "}
-                <em>bid−1tick</em> GTC emir verilir. Bu marketlerde spread
-                genelde 1-tick olduğundan directional ayrım pratik fark
-                yaratmaz; sabit bid−1tick imbalansı en aza indirir.
+                <strong>Pasif emir:</strong> Her iki tarafa{" "}
+                <em>bid−spread</em> GTC emir verilir. Spread geniş anlarda
+                daha ucuz fiyat yakalanır.
+              </li>
+              <li>
+                <strong>Yükselen ağırlık:</strong> Pahalı taraf (mid ≥ 0.50)
+                emirleri{" "}
+                <em>rising_shares_mult</em> çarpanıyla büyütülür. 1.25x
+                simülasyonda en iyi W/L ve ROI dengesi: baseline +300.8 →{" "}
+                <strong>+352.1 USDC</strong>.
               </li>
               <li>
                 <strong>Çift pair cost filtresi:</strong>{" "}

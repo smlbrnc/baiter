@@ -91,6 +91,12 @@ export interface StrategyParams {
    * altındaki taraf hedge hedefidir. Default 0.50.
    */
   aras_cheap_threshold?: number | null;
+  /**
+   * Yükselen (pahalı, mid >= 0.50) taraf emir büyüklüğü çarpanı.
+   * 1.0 = simetrik; 1.25 = yükselen tarafa %25 fazla share.
+   * >1.5 arbitraj garantisini bozabilir. Default 1.25.
+   */
+  aras_rising_shares_mult?: number | null;
 }
 
 export interface BotRow {
@@ -412,4 +418,5 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   aras_band_low: 0.10,
   aras_band_high: 0.90,
   aras_cheap_threshold: 0.50,
+  aras_rising_shares_mult: 1.25,
 } as const;
