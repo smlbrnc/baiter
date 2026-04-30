@@ -297,12 +297,13 @@ impl ArasEngine {
 
             // Taraf başına efektif emir büyüklüğü (yükselen tarafa rising_shares_mult çarpanı)
             let sh = p.shares_for(outcome, ctx);
-            let opp_sh = p.shares_for(outcome.opposite(), ctx);
+            let _opp_sh = p.shares_for(outcome.opposite(), ctx);
 
             // İmbalans koruması: bu taraf karşı taraftan > 1 emir kadar ileride olamaz.
-            // Karşı tarafın bekleyen (henüz fill olmamış) emri de sayılır —
-            // aksi takdirde bu taraf fill alırken karşı taraf pending'de bekliyorsa
-            // imbalans koruması bypass edilmiş olur.
+            // ÖNEMLI: pending bonus KALDIRILDI. Yükselen tarafın pending emri fill
+            // almayabilir (ask yükseliyor, entry'e ulaşamaz); pending'i efektif sayarsak
+            // düşen tarafa izin verdiğimiz ekstra fill limit 2x'e çıkıyor ve TERS! imbalance
+            // oluşuyor. Sadece gerçek fill'ler sayılır.
             let this_filled = match outcome {
                 Outcome::Up => m.up_filled,
                 Outcome::Down => m.down_filled,
@@ -311,7 +312,7 @@ impl ArasEngine {
             let opp_effective = match outcome {
                 Outcome::Up => m.down_filled,
                 Outcome::Down => m.up_filled,
-            } + if st.pending[opp_idx] { opp_sh } else { 0.0 };
+            };
             if this_filled > opp_effective + sh {
                 tracing::debug!(
                     side = outcome.as_str(),
@@ -323,14 +324,15 @@ impl ArasEngine {
                 continue;
             }
 
-            // Emir fiyatı: bid − spread (pasif maker alımı)
-            // Spread genelde 1-tick → bid-1tick ile özdeş.
-            // Spread geniş olduğunda (likit olmayan an) daha ucuz fiyatı yakala.
-            // Bayatlama koruması (entry > pending + 3tick) gereksiz yüksek pasif emirleri temizler.
+            // Emir fiyatı: bid − 1tick (pasif maker alımı, sabit 1-tick mesafe)
+            // bid-spread yerine sabit 1-tick: spread geniş olduğunda entry çok aşağı düşer ve
+            // DryRun fill modeli (entry >= ask) gerektiren mesafeyi karşılanamaz hale getirir;
+            // bu da yükselen tarafın hiç fill almamasına, düşen tarafın aşırı fill almasına
+            // (TERS! imbalance) yol açar. Sabit 1-tick her iki tarafta eşit dolum şansı verir.
             let cur_bid = ctx.best_bid(outcome);
             let cur_ask = ctx.best_ask(outcome);
-            let spread = (cur_ask - cur_bid).max(p.tick); // en az 1 tick
-            let entry = round_tick(cur_bid - spread, p.tick).clamp(p.tick, 0.99);
+            let _ = cur_ask; // sadece pair cost için kullanılıyor
+            let entry = round_tick(cur_bid - p.tick, p.tick).clamp(p.tick, 0.99);
 
             // Çift pair cost filtresi: bu tarafı al + karşı tarafı al → kârlı mı?
             // Karşı tarafın mevcut ask'ını kullan (en muhafazakâr senaryo)
