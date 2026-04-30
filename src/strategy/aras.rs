@@ -1,25 +1,20 @@
-//! Aras stratejisi — DCA + Agresif Hedge Arbitrajı
+//! Aras stratejisi — Çift Taraflı Eş Zamanlı Alım Arbitrajı
 //!
 //! Doküman: `docs/aras.md`
-//! Backtest: `scripts/arb_dca_v3.py` (16 market, +$88.15, +6.22% ROI, 13W/3L)
 //!
 //! ## Strateji özeti
 //!
-//! - **DCA tarafı** (`mid > CHEAP_THRESHOLD && mid < BAND_HIGH`): Pahalı/kazanan taraf.
-//!   Her `poll_secs` saniyede bir, bid fiyatı `dca_min_drop` kadar düştüyse `bid-1tick`
-//!   fiyatına GTC emir verilir.
-//!   **İmbalans koruması**: hedge_shares + 1 emir sınırını aşan DCA atlanır.
+//! Her `poll_secs` saniyede UP **ve** DOWN taraflarına EŞ ZAMANLI GTC emir verilir.
 //!
-//! - **Hedge tarafı** (`BAND_LOW < mid < CHEAP_THRESHOLD`): Ucuz/kaybeden taraf.
-//!   DCA fill oluşunca her adımda `bid-1tick` agresif hedge emri açılır.
-//!   Fill olmazsa `hedge_step_secs` sonra yenilenir (aynı fiyat hedefe doğru düştükçe).
+//! - Giriş koşulu: `entry_a + ask_b < 1.00` (pair alımı kârlı olmalı)
+//! - Fiyat yükselse de, düşse de alım devam eder — `dca_min_drop` koşulu yok.
+//! - **İmbalans koruması**: bir taraf diğerinden > 1 emir (shares) kadar ileride olamaz.
+//! - **Bant**: her taraf `BAND_LOW–BAND_HIGH` aralığında olmalı.
+//! - **ARB kilidi**: fill sonrası `avg_up + avg_dn < 1.00` → garantili kâr loglanır.
 //!
-//! - **ARB kilidi**: Hedge fill'inde `avg_up + avg_down < 1.00` → garantili kâr.
+//! ## Reason etiketleri
 //!
-//! ## Reason etiketleri (open_orders tespiti için)
-//!
-//! - `"aras:dca:up"` / `"aras:dca:down"` — DCA emirleri
-//! - `"aras:hedge:up:N"` / `"aras:hedge:down:N"` — Hedge emri (N = adım 1/2/3)
+//! - `"aras:buy:up"` / `"aras:buy:down"` — anlık GTC emirler
 
 use serde::{Deserialize, Serialize};
 
@@ -27,104 +22,34 @@ use super::common::{Decision, OpenOrder, PlannedOrder, StrategyContext};
 use crate::types::{OrderType, Outcome, Side};
 
 // ─────────────────────────────────────────────
-// Sabitler (config'den geçersiz kılınabilir)
-// ─────────────────────────────────────────────
-
-/// Hedge tick offset sırası: bid - N*TICK.
-/// Analiz: bid-3tick başlangıcı fill hızını DCA'nın çok gerisinde bırakıyordu
-/// (100 market: hedge 0% fill → 10L, hedge tam fill → 0L).
-/// Tüm adımlar bid-1tick ile hedge DCA ile aynı hızda doluyor.
-const HEDGE_TICK_OFFSETS: [i32; 3] = [1, 1, 1];
-
-// ─────────────────────────────────────────────
 // Veri yapıları
 // ─────────────────────────────────────────────
-
-/// Tek bir DCA fill'inin ardından açılan kademeli hedge denemesi.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct HedgeJob {
-    /// DCA fill olan taraf (pahalı taraf).
-    pub main_outcome: Outcome,
-    /// Hedge gönderilecek taraf (ucuz taraf).
-    pub hedge_outcome: Outcome,
-    /// Sonraki deneme adımı indeksi (0 = bid-3t, 1 = bid-2t, 2 = bid-1t).
-    /// Sonraki deneme adımı (0, 1, 2). Hepsi bid-1tick kullanır; fill olmazsa yenilenir.
-    pub step: usize,
-    /// Mevcut adımın başlangıç timestamp'i (ms).
-    pub step_start_ms: u64,
-    /// Mevcut aktif hedge emrinin fiyatı.
-    pub order_price: Option<f64>,
-    /// Hedge emri en az bir tick'te `open_orders`'da görüldü mü?
-    pub order_confirmed: bool,
-    /// Bu görev tamamlandı (fill veya tüketildi) mi?
-    pub done: bool,
-}
-
-impl HedgeJob {
-    fn new(main_outcome: Outcome, now_ms: u64) -> Self {
-        Self {
-            main_outcome,
-            hedge_outcome: main_outcome.opposite(),
-            step: 0,
-            step_start_ms: now_ms,
-            order_price: None,
-            order_confirmed: false,
-            done: false,
-        }
-    }
-
-    fn exhausted(&self) -> bool {
-        self.step >= HEDGE_TICK_OFFSETS.len()
-    }
-
-    /// Hedge emri hâlâ open_orders'da var mı?
-    fn is_order_open(&self, open_orders: &[OpenOrder]) -> bool {
-        if self.order_price.is_none() {
-            return false;
-        }
-        open_orders.iter().any(|o| {
-            o.outcome == self.hedge_outcome
-                && o.side == Side::Buy
-                && o.reason.starts_with(&format!(
-                    "aras:hedge:{}:",
-                    self.hedge_outcome.as_lowercase()
-                ))
-        })
-    }
-}
 
 /// Aras aktif pozisyon durumu.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ArasActive {
     // ── Timing ──────────────────────────────────────────────────────────────
-    /// Son DCA poll zamanı (ms) — [Outcome::Up as usize, Outcome::Down as usize]
+    /// Son poll zamanı (ms) — [Outcome::Up as usize, Outcome::Down as usize]
     pub last_poll_ms: [u64; 2],
 
     // ── Fill tracking ────────────────────────────────────────────────────────
-    /// Önceki tick'te görülen `metrics.up_filled` değeri; artış = yeni fill.
+    /// Önceki tick'te görülen `metrics.up_filled`; artış = yeni fill.
     pub seen_up_filled: f64,
-    /// Önceki tick'te görülen `metrics.down_filled` değeri.
+    /// Önceki tick'te görülen `metrics.down_filled`.
     pub seen_dn_filled: f64,
 
-    // ── Bekleyen DCA emirleri ────────────────────────────────────────────────
-    /// Şu an UP tarafında bekleyen DCA var mı?
-    pub dca_pending: [bool; 2],
-    /// Bu emrin yerleştirildiği fiyat (band ve requote kontrolü için).
-    pub dca_price: [f64; 2],
+    // ── Bekleyen emirler ─────────────────────────────────────────────────────
+    /// Şu an UP tarafında bekleyen emir var mı?
+    pub pending: [bool; 2],
+    /// Verilen emirlerin fiyatı (requote kontrolü için).
+    pub pending_price: [f64; 2],
     /// Emir `open_orders`'da en az bir kez görüldü mü? (yanlış-fill önlemi)
-    pub dca_confirmed: [bool; 2],
+    pub confirmed: [bool; 2],
 
-    // ── Hedge görevleri ─────────────────────────────────────────────────────
-    pub hedge_jobs: Vec<HedgeJob>,
-
-    // ── ARB istatistikleri ───────────────────────────────────────────────────
-    /// UP tarafındaki hedge edilmiş (pair'lenmiş) toplam share.
-    pub up_hedged: f64,
-    /// DOWN tarafındaki hedge edilmiş toplam share.
-    pub dn_hedged: f64,
-    /// Kilitlenmiş ARB sayısı (loglama için).
+    // ── ARB istatistikleri ────────────────────────────────────────────────────
+    /// Kilitlenmiş ARB güncelleme sayısı (loglama).
     pub arb_lock_count: u32,
-    /// Birikimli garantili PnL ($).
+    /// Mevcut pozisyonun garantili PnL'i ($).
     pub guaranteed_pnl: f64,
 }
 
@@ -134,12 +59,9 @@ impl Default for ArasActive {
             last_poll_ms: [0; 2],
             seen_up_filled: 0.0,
             seen_dn_filled: 0.0,
-            dca_pending: [false; 2],
-            dca_price: [0.0; 2],
-            dca_confirmed: [false; 2],
-            hedge_jobs: Vec::new(),
-            up_hedged: 0.0,
-            dn_hedged: 0.0,
+            pending: [false; 2],
+            pending_price: [0.0; 2],
+            confirmed: [false; 2],
             arb_lock_count: 0,
             guaranteed_pnl: 0.0,
         }
@@ -149,11 +71,11 @@ impl Default for ArasActive {
 /// Aras FSM durumları.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ArasState {
-    /// Kitap henüz hazır değil (her iki bid/ask = 0).
+    /// Kitap henüz hazır değil.
     Idle,
-    /// Market aktif — DCA + hedge döngüsü çalışıyor.
+    /// Market aktif — dual-side poll döngüsü çalışıyor.
     Active(Box<ArasActive>),
-    /// Piyasa kapandı (market_remaining_secs ≤ 0).
+    /// Piyasa kapandı.
     Done,
 }
 
@@ -187,28 +109,21 @@ fn round_tick(price: f64, tick: f64) -> f64 {
     (price / tick).round() * tick
 }
 
-/// DCA band kontrolü: pahalı taraf için.
+/// Bant kontrolü: mid, `band_low–band_high` aralığında mı?
 #[inline]
-fn pass_band_dca(ctx: &StrategyContext<'_>, outcome: Outcome, p: &ArasParams) -> bool {
+fn pass_band(ctx: &StrategyContext<'_>, outcome: Outcome, p: &ArasParams) -> bool {
     let m = mid(ctx, outcome);
-    m > p.cheap_threshold && m < p.band_high
+    m >= p.band_low && m <= p.band_high
 }
 
-/// Hedge band kontrolü: ucuz taraf için.
-#[inline]
-fn pass_band_hedge(ctx: &StrategyContext<'_>, outcome: Outcome, p: &ArasParams) -> bool {
-    let m = mid(ctx, outcome);
-    m >= p.band_low && m < p.cheap_threshold
+/// Emir reason etiketi.
+fn buy_reason(outcome: Outcome) -> String {
+    format!("aras:buy:{}", outcome.as_lowercase())
 }
 
-/// DCA reason etiketi.
-fn dca_reason(outcome: Outcome) -> String {
-    format!("aras:dca:{}", outcome.as_lowercase())
-}
-
-/// `open_orders`'da bu outcome için DCA emri var mı?
-fn has_open_dca(open_orders: &[OpenOrder], outcome: Outcome) -> bool {
-    let reason = dca_reason(outcome);
+/// `open_orders`'da bu outcome için Aras emri var mı?
+fn has_open_order(open_orders: &[OpenOrder], outcome: Outcome) -> bool {
+    let reason = buy_reason(outcome);
     open_orders
         .iter()
         .any(|o| o.outcome == outcome && o.side == Side::Buy && o.reason == reason)
@@ -220,13 +135,10 @@ fn has_open_dca(open_orders: &[OpenOrder], outcome: Outcome) -> bool {
 
 struct ArasParams {
     poll_ms: u64,
-    dca_min_drop: f64,
     shares: f64,
     max_usd_per_side: f64,
-    hedge_step_ms: u64,
     band_low: f64,
     band_high: f64,
-    cheap_threshold: f64,
     tick: f64,
 }
 
@@ -235,13 +147,10 @@ impl ArasParams {
         let sp = ctx.strategy_params;
         Self {
             poll_ms: (sp.aras_poll_secs() * 1000.0) as u64,
-            dca_min_drop: sp.aras_dca_min_drop(),
             shares: sp.aras_shares_per_order(),
             max_usd_per_side: sp.aras_max_usd_per_side(),
-            hedge_step_ms: (sp.aras_hedge_step_secs() * 1000.0) as u64,
             band_low: sp.aras_band_low(),
             band_high: sp.aras_band_high(),
-            cheap_threshold: sp.aras_cheap_threshold(),
             tick: ctx.tick_size.max(0.001),
         }
     }
@@ -255,14 +164,12 @@ pub struct ArasEngine;
 
 impl ArasEngine {
     pub fn decide(state: ArasState, ctx: &StrategyContext<'_>) -> (ArasState, Decision) {
-        // Piyasa kapandıysa dur
         if let Some(rem) = ctx.market_remaining_secs {
             if rem <= 0.0 {
                 return (ArasState::Done, Decision::NoOp);
             }
         }
 
-        // Kitap hazır mı?
         let book_ready = ctx.up_best_bid > 0.0
             && ctx.up_best_ask > 0.0
             && ctx.down_best_bid > 0.0
@@ -274,7 +181,6 @@ impl ArasEngine {
             ArasState::Idle => {
                 if book_ready {
                     let active = Box::new(ArasActive::default());
-                    // İlk tick'te decide_active çağır
                     Self::decide_active(active, ctx)
                 } else {
                     (ArasState::Idle, Decision::NoOp)
@@ -301,209 +207,69 @@ impl ArasEngine {
         let mut cancels: Vec<String> = Vec::new();
         let mut places: Vec<PlannedOrder> = Vec::new();
 
-        // ── 1. DCA pending emir tespiti (open_orders kontrol + fill algılama) ──
+        // ── 1. Bekleyen emir fill/iptal tespiti ──────────────────────────────
         for &outcome in &[Outcome::Up, Outcome::Down] {
             let idx = outcome_idx(outcome);
-            if !st.dca_pending[idx] {
+            if !st.pending[idx] {
                 continue;
             }
 
-            let open = has_open_dca(ctx.open_orders, outcome);
+            let open = has_open_order(ctx.open_orders, outcome);
 
-            // Emir open_orders'da göründüyse confirm et
             if open {
-                st.dca_confirmed[idx] = true;
+                st.confirmed[idx] = true;
             }
 
-            // Emir confirmed iken artık yoksa → fill (veya Polymarket iptali)
-            if st.dca_confirmed[idx] && !open {
-                st.dca_pending[idx] = false;
-                st.dca_confirmed[idx] = false;
-                st.dca_price[idx] = 0.0;
-                // Fill tespiti — metrics.up/dn_filled artışı adım 2'de ele alınır
+            // Confirmed iken artık open değilse → fill veya harici iptal
+            if st.confirmed[idx] && !open {
+                st.pending[idx] = false;
+                st.confirmed[idx] = false;
+                st.pending_price[idx] = 0.0;
             }
         }
 
-        // ── 2. Fill artışı tespiti → Hedge görevi aç ────────────────────────
+        // ── 2. Fill delta tespiti + ARB kilidi kontrol ────────────────────────
         let new_up = m.up_filled - st.seen_up_filled;
         let new_dn = m.down_filled - st.seen_dn_filled;
         st.seen_up_filled = m.up_filled;
         st.seen_dn_filled = m.down_filled;
 
-        // UP fill → DOWN için hedge job aç (DOWN ucuz bandındaysa)
-        if new_up > 0.0 && pass_band_hedge(ctx, Outcome::Down, &p) {
-            // Sadece DCA kaynaklı fill için hedge aç (ilk fill veya DCA fill)
-            // Hedge fill'leri çift saymayı önlemek için: DOWN hedge job'u sadece
-            // UP fill oluştuğunda eklenir.
-            st.hedge_jobs.push(HedgeJob::new(Outcome::Up, now));
-        }
-
-        // DOWN fill → UP için hedge job aç
-        if new_dn > 0.0 && pass_band_hedge(ctx, Outcome::Up, &p) {
-            st.hedge_jobs.push(HedgeJob::new(Outcome::Down, now));
-        }
-
-        // ── 3. Hedge görevi işleme (fill + adım geçişi) ─────────────────────
-        for job in st.hedge_jobs.iter_mut() {
-            if job.done {
-                continue;
-            }
-
-            let hedge_oc = job.hedge_outcome;
-
-            // Hedge emri open_orders'da mı?
-            let order_open = job.is_order_open(ctx.open_orders);
-            if job.order_price.is_some() && order_open {
-                job.order_confirmed = true;
-            }
-
-            // Fill tespiti: confirmed && artık açık değil
-            if job.order_confirmed && !order_open && job.order_price.is_some() {
-                // Fill gerçekleşti — ARB kontrolü
-                let avg_main = match job.main_outcome {
-                    Outcome::Up => m.avg_up,
-                    Outcome::Down => m.avg_down,
-                };
-                let avg_hedge = match hedge_oc {
-                    Outcome::Up => m.avg_up,
-                    Outcome::Down => m.avg_down,
-                };
-                let pair_cost = avg_main + avg_hedge;
-
-                let main_unhedged = match job.main_outcome {
-                    Outcome::Up => m.up_filled - st.up_hedged,
-                    Outcome::Down => m.down_filled - st.dn_hedged,
-                };
-                let hedge_unhedged = match hedge_oc {
-                    Outcome::Up => m.up_filled - st.up_hedged,
-                    Outcome::Down => m.down_filled - st.dn_hedged,
-                };
-                let hedgeable = main_unhedged.min(hedge_unhedged).min(p.shares);
-
-                if pair_cost < 1.00 && hedgeable > 0.0 {
-                    let pnl = (1.0 - pair_cost) * hedgeable;
-                    // Hedge edilen share'leri kaydet
-                    match job.main_outcome {
-                        Outcome::Up => st.up_hedged += hedgeable,
-                        Outcome::Down => st.dn_hedged += hedgeable,
-                    }
-                    match hedge_oc {
-                        Outcome::Up => st.up_hedged += hedgeable,
-                        Outcome::Down => st.dn_hedged += hedgeable,
-                    }
+        // Her yeni fill sonrası: her iki taraf da fill'liyse pair cost hesapla
+        if (new_up > 0.0 || new_dn > 0.0) && m.up_filled > 0.0 && m.down_filled > 0.0 {
+            let pair_cost = m.avg_up + m.avg_down;
+            if pair_cost < 1.00 {
+                let locked = m.up_filled.min(m.down_filled);
+                let pnl = (1.0 - pair_cost) * locked;
+                if pnl > st.guaranteed_pnl {
                     st.arb_lock_count += 1;
-                    st.guaranteed_pnl += pnl;
-
+                    st.guaranteed_pnl = pnl;
                     tracing::info!(
                         pair_cost,
                         pnl,
-                        hedgeable,
+                        locked,
+                        up_avg = m.avg_up,
+                        dn_avg = m.avg_down,
                         arb_count = st.arb_lock_count,
                         "aras: arb_lock"
                     );
                 }
-                job.done = true;
-                continue;
             }
-
-            // Adım geçişi: emir henüz konmadı veya timeout doldu
-            let step_timeout =
-                job.order_price.is_some() && (now - job.step_start_ms) >= p.hedge_step_ms;
-            let needs_new_order = job.order_price.is_none() || step_timeout;
-
-            if !needs_new_order {
-                continue;
-            }
-
-            // Önceki hedge emrini iptal et
-            if step_timeout {
-                // open_orders'daki bu job'a ait emri bul ve iptal et
-                let hedge_reason_prefix =
-                    format!("aras:hedge:{}:", hedge_oc.as_lowercase());
-                for o in ctx.open_orders.iter() {
-                    if o.outcome == hedge_oc
-                        && o.side == Side::Buy
-                        && o.reason.starts_with(&hedge_reason_prefix)
-                    {
-                        cancels.push(o.id.clone());
-                    }
-                }
-                job.order_price = None;
-                job.order_confirmed = false;
-            }
-
-            // Tüm adımlar tükendi → vazgeç
-            if job.exhausted() {
-                job.done = true;
-                tracing::debug!(
-                    hedge_side = hedge_oc.as_str(),
-                    "aras: hedge exhausted after all steps"
-                );
-                continue;
-            }
-
-            // Bant kontrolü
-            if !pass_band_hedge(ctx, hedge_oc, &p) {
-                job.done = true;
-                tracing::debug!(
-                    hedge_side = hedge_oc.as_str(),
-                    mid = mid(ctx, hedge_oc),
-                    "aras: hedge cancelled (band)"
-                );
-                continue;
-            }
-
-            // Yeni hedge emri
-            let tick_offset = HEDGE_TICK_OFFSETS[job.step];
-            let h_bid = ctx.best_bid(hedge_oc);
-            let h_price =
-                round_tick(h_bid - tick_offset as f64 * p.tick, p.tick).clamp(p.tick, 0.99);
-
-            let step_display = job.step + 1;
-            let reason = format!(
-                "aras:hedge:{}:{}",
-                hedge_oc.as_lowercase(),
-                step_display
-            );
-
-            places.push(PlannedOrder {
-                outcome: hedge_oc,
-                token_id: ctx.token_id(hedge_oc).to_string(),
-                side: Side::Buy,
-                price: h_price,
-                size: p.shares,
-                order_type: OrderType::Gtc,
-                reason,
-            });
-
-            job.order_price = Some(h_price);
-            job.step_start_ms = now;
-            job.step += 1;
-
-            tracing::debug!(
-                hedge_side = hedge_oc.as_str(),
-                step = step_display,
-                price = h_price,
-                h_bid,
-                "aras: hedge order"
-            );
         }
 
-        // Tamamlanan job'ları temizle
-        st.hedge_jobs.retain(|j| !j.done);
-
-        // ── 4. DCA POLL — her poll_ms saniyede pahalı tarafa emir ────────────
+        // ── 3. Çift Taraflı Poll ─────────────────────────────────────────────
+        // Her poll_ms'de her iki tarafa eş zamanlı emir verilir.
+        // Filtreler: bant, maliyet limiti, imbalans koruması, çift pair cost.
         for &outcome in &[Outcome::Up, Outcome::Down] {
             let idx = outcome_idx(outcome);
 
-            // Zamanlama kontrolü
+            // Zamanlama
             if now - st.last_poll_ms[idx] < p.poll_ms {
                 continue;
             }
             st.last_poll_ms[idx] = now;
 
-            // Band kontrolü (pahalı taraf)
-            if !pass_band_dca(ctx, outcome, &p) {
+            // Bant kontrolü
+            if !pass_band(ctx, outcome, &p) {
                 continue;
             }
 
@@ -516,74 +282,73 @@ impl ArasEngine {
                 continue;
             }
 
-            // İmbalans koruması: DCA tarafı hedge tarafından en fazla 1 emir
-            // kadar ileride olabilir. Fazla birikme → hedge fill olmadan zarar.
-            let dca_filled = match outcome {
+            // İmbalans koruması: bu taraf karşı taraftan > 1 emir kadar ileride olamaz
+            let this_filled = match outcome {
                 Outcome::Up => m.up_filled,
                 Outcome::Down => m.down_filled,
             };
-            let hedge_filled = match outcome {
+            let opp_filled = match outcome {
                 Outcome::Up => m.down_filled,
                 Outcome::Down => m.up_filled,
             };
-            if dca_filled > hedge_filled + p.shares {
+            if this_filled > opp_filled + p.shares {
                 tracing::debug!(
                     side = outcome.as_str(),
-                    dca_filled,
-                    hedge_filled,
-                    max_ahead = p.shares,
-                    "aras: dca skipped (imbalance guard)"
+                    this_filled,
+                    opp_filled,
+                    "aras: skipped (imbalance guard)"
                 );
                 continue;
             }
 
-            // Mevcut DCA emri varsa, daha iyi fiyat oluştuysa güncelle
+            // Emir fiyatı: bid - 1tick
             let cur_bid = ctx.best_bid(outcome);
             let entry = round_tick(cur_bid - p.tick, p.tick).clamp(p.tick, 0.99);
 
-            if st.dca_pending[idx] {
-                // Mevcut emirden > 1 tick daha iyi fiyat oluştu → iptal + yenile
-                if entry < st.dca_price[idx] - p.tick {
-                    // Eski emri iptal et
-                    let reason = dca_reason(outcome);
-                    for o in ctx.open_orders.iter() {
-                        if o.outcome == outcome && o.side == Side::Buy && o.reason == reason {
-                            cancels.push(o.id.clone());
-                        }
-                    }
-                    st.dca_pending[idx] = false;
-                    st.dca_confirmed[idx] = false;
-                } else {
-                    continue; // Mevcut emir yeterli
-                }
-            }
-
-            // DCA tetik: ilk giriş veya avg'dan yeterince düşüş
-            let avg = match outcome {
-                Outcome::Up => m.avg_up,
-                Outcome::Down => m.avg_down,
-            };
-            let filled = match outcome {
-                Outcome::Up => m.up_filled,
-                Outcome::Down => m.down_filled,
-            };
-
-            let first_entry = filled == 0.0;
-            let dca_ok = filled > 0.0 && entry < avg - p.dca_min_drop;
-
-            if !first_entry && !dca_ok {
+            // Çift pair cost filtresi: bu tarafı al + karşı tarafı al → kârlı mı?
+            // Karşı tarafın mevcut ask'ını kullan (en muhafazakâr senaryo)
+            let opp_ask = ctx.best_ask(outcome.opposite());
+            if entry + opp_ask >= 1.00 {
+                tracing::debug!(
+                    side = outcome.as_str(),
+                    entry,
+                    opp_ask,
+                    pair_cost = entry + opp_ask,
+                    "aras: skipped (pair cost >= 1.00)"
+                );
                 continue;
             }
 
-            // Emir ver
-            st.dca_pending[idx] = true;
-            st.dca_price[idx] = entry;
-            st.dca_confirmed[idx] = false;
+            // Mevcut emir varsa: fiyat > 1tick değişmediyse mevcut emri koru
+            if st.pending[idx] {
+                if entry >= st.pending_price[idx] - p.tick {
+                    continue;
+                }
+                // Daha iyi fiyat var → iptal + yenile
+                let reason = buy_reason(outcome);
+                for o in ctx.open_orders.iter() {
+                    if o.outcome == outcome && o.side == Side::Buy && o.reason == reason {
+                        cancels.push(o.id.clone());
+                    }
+                }
+                st.pending[idx] = false;
+                st.confirmed[idx] = false;
+            }
 
-            let reason = if first_entry {
-                format!("aras:dca:{}:init", outcome.as_lowercase())
+            // Emir ver
+            st.pending[idx] = true;
+            st.pending_price[idx] = entry;
+            st.confirmed[idx] = false;
+
+            let is_first = match outcome {
+                Outcome::Up => m.up_filled == 0.0,
+                Outcome::Down => m.down_filled == 0.0,
+            };
+
+            let reason = if is_first {
+                format!("aras:buy:{}:init", outcome.as_lowercase())
             } else {
-                format!("aras:dca:{}", outcome.as_lowercase())
+                buy_reason(outcome)
             };
 
             places.push(PlannedOrder {
@@ -600,14 +365,15 @@ impl ArasEngine {
                 side = outcome.as_str(),
                 price = entry,
                 cur_bid,
-                avg,
-                filled,
-                first_entry,
-                "aras: dca order"
+                opp_ask,
+                pair_cost = entry + opp_ask,
+                this_filled,
+                opp_filled,
+                "aras: buy order"
             );
         }
 
-        // ── Karar üret ───────────────────────────────────────────────────────
+        // ── Karar üret ────────────────────────────────────────────────────────
         let decision = if !cancels.is_empty() && !places.is_empty() {
             Decision::CancelAndPlace { cancels, places }
         } else if !cancels.is_empty() {
@@ -643,11 +409,8 @@ impl ArasState {
         }
     }
 
-    /// Aktif hedge görev sayısı (monitor için).
+    /// Aktif hedge görev sayısı (eski API uyumluluğu — her zaman 0).
     pub fn active_hedge_count(&self) -> usize {
-        match self {
-            Self::Active(st) => st.hedge_jobs.len(),
-            _ => 0,
-        }
+        0
     }
 }
