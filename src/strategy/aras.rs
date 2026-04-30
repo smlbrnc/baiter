@@ -324,12 +324,16 @@ impl ArasEngine {
                 continue;
             }
 
-            // Mevcut emir varsa: fiyat > 1tick değişmediyse mevcut emri koru
+            // Mevcut emir varsa: iki durumda iptal + yenile
+            //   1. Fiyat düştü (entry < pending − 1tick): daha ucuz emir imkânı
+            //   2. Fiyat yükseldi (entry > pending + 3tick): emir bayatladı, piyasa uzaklaştı
             if st.pending[idx] {
-                if entry >= st.pending_price[idx] - p.tick {
-                    continue;
+                let stale_up   = entry > st.pending_price[idx] + 3.0 * p.tick;
+                let better_dn  = entry < st.pending_price[idx] - p.tick;
+                if !stale_up && !better_dn {
+                    continue; // Mevcut emir hâlâ geçerli
                 }
-                // Daha iyi fiyat var → iptal + yenile
+                // İptal et ve güncel fiyatla yenile
                 let reason = buy_reason(outcome);
                 for o in ctx.open_orders.iter() {
                     if o.outcome == outcome && o.side == Side::Buy && o.reason == reason {
