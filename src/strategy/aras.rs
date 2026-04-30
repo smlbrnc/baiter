@@ -282,20 +282,25 @@ impl ArasEngine {
                 continue;
             }
 
-            // İmbalans koruması: bu taraf karşı taraftan > 1 emir kadar ileride olamaz
+            // İmbalans koruması: bu taraf karşı taraftan > 1 emir kadar ileride olamaz.
+            // Karşı tarafın bekleyen (henüz fill olmamış) emri de sayılır —
+            // aksi takdirde bu taraf fill alırken karşı taraf pending'de bekliyorsa
+            // imbalans koruması bypass edilmiş olur.
             let this_filled = match outcome {
                 Outcome::Up => m.up_filled,
                 Outcome::Down => m.down_filled,
             };
-            let opp_filled = match outcome {
+            let opp_idx = outcome_idx(outcome.opposite());
+            let opp_effective = match outcome {
                 Outcome::Up => m.down_filled,
                 Outcome::Down => m.up_filled,
-            };
-            if this_filled > opp_filled + p.shares {
+            } + if st.pending[opp_idx] { p.shares } else { 0.0 };
+            if this_filled > opp_effective + p.shares {
                 tracing::debug!(
                     side = outcome.as_str(),
                     this_filled,
-                    opp_filled,
+                    opp_effective,
+                    opp_pending = st.pending[opp_idx],
                     "aras: skipped (imbalance guard)"
                 );
                 continue;
@@ -368,7 +373,7 @@ impl ArasEngine {
                 opp_ask,
                 pair_cost = entry + opp_ask,
                 this_filled,
-                opp_filled,
+                opp_effective,
                 "aras: buy order"
             );
         }
