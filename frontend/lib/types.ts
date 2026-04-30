@@ -50,6 +50,34 @@ export interface StrategyParams {
    */
   pyramid_usdc?: number | null;
 
+  // ── Elis Dutch Book Spread Capture ─────────────────────────────────────
+  /**
+   * Her iki tarafın bid-ask spread'i bu eşiği aştığında emir tetiklenir.
+   * UP_spread = UP_ask − UP_bid, DOWN_spread = DOWN_ask − DOWN_bid.
+   * Default 0.02.
+   */
+  elis_spread_threshold?: number | null;
+  /**
+   * Dengeli pozisyonda batch başına maksimum emir büyüklüğü (share).
+   * Balance factor bu değer üzerinden artı/eksi uygular. Default 20.
+   */
+  elis_max_buy_order_size?: number | null;
+  /**
+   * Bir batch'ten sonra bir sonrakine kadar bekleme süresi (ms).
+   * Bu süre dolmadan yeni UP+DOWN çifti verilmez. Default 5000.
+   */
+  elis_trade_cooldown_ms?: number | null;
+  /**
+   * Envanter dengesizliğine karşı uygulanacak düzeltme çarpanı (0–1).
+   * adjustment = round(imbalance × factor × 0.5). Default 0.7.
+   */
+  elis_balance_factor?: number | null;
+  /**
+   * Market kapanışından bu kadar saniye önce yeni emir verilmez.
+   * Default 60.
+   */
+  elis_stop_before_end_secs?: number | null;
+
   // ── Aras DCA + Kademeli Hedge ──────────────────────────────────────────
   /**
    * DCA kontrol aralığı (saniye). Her bu sürede pahalı taraf bid kontrol edilir.
@@ -409,6 +437,12 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   open_delta: 0.01,
   pyramid_agg_delta: 0.015,
   pyramid_fak_delta: 0.025,
+  // Elis
+  elis_spread_threshold: 0.02,
+  elis_max_buy_order_size: 20,
+  elis_trade_cooldown_ms: 5000,
+  elis_balance_factor: 0.7,
+  elis_stop_before_end_secs: 60,
   // Aras
   aras_poll_secs: 2.0,
   aras_dca_min_drop: 0.01,

@@ -6,7 +6,7 @@ use crate::config::BotConfig;
 use crate::ipc::{self, FrontendEvent};
 use crate::strategy::alis::{AlisEngine, AlisState};
 use crate::strategy::aras::ArasEngine;
-use crate::strategy::elis::{ElisEngine, ElisState};
+use crate::strategy::elis::ElisEngine;
 use crate::strategy::metrics::{MarketPnL, StrategyMetrics};
 use crate::strategy::{Decision, OpenOrder, PlannedOrder, StrategyContext, StrategyState};
 use crate::time::{now_ms, zone_pct, MarketZone};
@@ -197,16 +197,9 @@ fn detect_alis_lock_transition(
 
 /// Elis lock latch (`profit_locked()` ilk kez true olduğu tick).
 /// `Pending` → henüz Active'e geçmemiş, lock olamaz; `Active` içinde
-/// `locked: false → true` geçişi rapor edilir (idempotent: aynı tick yine
-/// false dönerse emit etmez).
-fn detect_elis_lock_transition(prev: &StrategyState, next: &StrategyState) -> bool {
-    fn locked(s: &StrategyState) -> bool {
-        match s {
-            StrategyState::Elis(ElisState::Active(active)) => active.locked,
-            _ => false,
-        }
-    }
-    !locked(prev) && locked(next)
+/// Dutch Book stratejisinde "lock" kavramı yoktur — her zaman `false` döner.
+fn detect_elis_lock_transition(_prev: &StrategyState, _next: &StrategyState) -> bool {
+    false
 }
 
 /// Aras ARB kilidi: arb_lock_count arttıysa yeni kilit var.

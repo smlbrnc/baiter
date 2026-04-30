@@ -18,7 +18,7 @@ export function BotFormSettingsSection({ form, setForm }: Props) {
         <SectionLabel icon={Settings2} title="Risk ve emir parametreleri" />
         <p className="text-muted-foreground mt-1 text-sm">
           {isElis
-            ? "Emir boyutu ve fiyat aralığı. Elis stratejisi cooldown alanını kullanmaz (Alis avg-down kısıtıdır)."
+            ? "Emir başına USDC ve fiyat aralığı. Elis cooldown'u strategy_params üzerinden (elis_trade_cooldown_ms) yönetir; bu alandaki cooldown değeri Elis tarafından kullanılmaz."
             : "Emir boyutu, cooldown ve fiyat aralığı."}
         </p>
       </div>
@@ -30,10 +30,10 @@ export function BotFormSettingsSection({ form, setForm }: Props) {
               label="Order USDC"
               tooltip={
                 isElis
-                  ? "Elis: her outcome için GTC bid notional’ı. Yaklaşık size = order_usdc ÷ fiyat; borsa min notional (USDC) altında emir verilmez."
-                  : "Emir başına harcanacak USDC miktarı. GTC size = max(⌈order_usdc / fiyat⌉, api_min_order_size). Artırmak emir büyüklüğünü doğrudan artırır."
+                  ? "Elis: her batch'te UP ve DOWN emirleri için temel notional. Balance factor bu degeri arti/eksi ayarlar; gercek emir boyutu = round(order_usdc / fiyat). Min 1 USDC."
+                  : "Emir basina harcanacak USDC miktari. GTC size = max(order_usdc / fiyat, api_min_order_size). Artirmak emir buyuklugunu dogrudan arttirir."
               }
-              hint={isElis ? "Maker bid başına notional; min 1 USDC." : "Minimum 1 USDC."}
+              hint={isElis ? "Her outcome basina notional; min 1 USDC." : "Minimum 1 USDC."}
             >
               <Input
                 type="number"
@@ -49,8 +49,8 @@ export function BotFormSettingsSection({ form, setForm }: Props) {
           {!isElis && (
             <Field
               label="Cooldown (ms)"
-              tooltip="İki averaging GTC emri arasındaki minimum bekleme süresi (milisaniye). Fiyat düştükten sonra bot bu süre dolmadan yeni averaging emri göndermez. Varsayılan: 30 000 ms = 30 sn."
-              hint="Varsayılan 30 000 ms."
+              tooltip="Iki averaging GTC emri arasindaki minimum bekleme suresi (milisaniye). Fiyat dustukten sonra bot bu sure dolmadan yeni averaging emri gondermez. Varsayilan: 30 000 ms = 30 sn."
+              hint="Varsayilan 30 000 ms."
             >
               <Input
                 type="number"
@@ -71,8 +71,8 @@ export function BotFormSettingsSection({ form, setForm }: Props) {
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field
             label="Min price"
-            tooltip="Emirlerin kabul edildiği minimum fiyat eşiği (0.01–0.50 USDC/share). Bu değerin altındaki fiyatlarda emir gönderilmez; aşırı düşük likiditeye karşı koruma sağlar."
-            hint="0.01 – 0.50; emirler bu fiyatın altında olamaz."
+            tooltip="Emirlerin kabul edildigi minimum fiyat esigi (0.01-0.50 USDC/share). Bu degerin altindaki fiyatlarda emir gonderilmez; asiri dusuk likiditeye karsi koruma saglar."
+            hint="0.01 – 0.50; emirler bu fiyatin altinda olamaz."
           >
             <Input
               type="number"
@@ -87,8 +87,8 @@ export function BotFormSettingsSection({ form, setForm }: Props) {
           </Field>
           <Field
             label="Max price"
-            tooltip="Emirlerin kabul edildiği maksimum fiyat eşiği (0.50–0.99 USDC/share). Bu değerin üzerindeki fiyatlarda emir gönderilmez; çok pahalı pozisyon almayı önler."
-            hint="0.50 – 0.99; emirler bu fiyatın üstünde olamaz."
+            tooltip="Emirlerin kabul edildigi maksimum fiyat esigi (0.50-0.99 USDC/share). Bu degerin uzerindeki fiyatlarda emir gonderilmez; cok pahali pozisyon almayi onler."
+            hint="0.50 – 0.99; emirler bu fiyatin ustunde olamaz."
           >
             <Input
               type="number"

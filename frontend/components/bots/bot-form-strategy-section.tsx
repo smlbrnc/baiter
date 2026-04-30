@@ -1,5 +1,5 @@
 import type { Dispatch, SetStateAction } from "react";
-import { Sliders, TrendingUp } from "lucide-react";
+import { Sliders, TrendingUp, Zap } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import type { CreateBotReq, StrategyParams } from "@/lib/types";
 import { STRATEGY_PARAMS_DEFAULTS } from "@/lib/types";
@@ -27,145 +27,264 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
     });
   };
 
+  // ── Alis / ortak sinyal ──────────────────────────────────────────────
   const rtdsEnabled = params.rtds_enabled ?? STRATEGY_PARAMS_DEFAULTS.rtds_enabled;
   const windowWeight =
     params.window_delta_weight ?? STRATEGY_PARAMS_DEFAULTS.window_delta_weight;
   const profitLockPct =
-    params.profit_lock_pct ??
-    STRATEGY_PARAMS_DEFAULTS.profit_lock_pct;
+    params.profit_lock_pct ?? STRATEGY_PARAMS_DEFAULTS.profit_lock_pct;
   const lookaheadSecs =
-    params.signal_lookahead_secs ??
-    STRATEGY_PARAMS_DEFAULTS.signal_lookahead_secs;
-  const openDelta =
-    params.open_delta ?? STRATEGY_PARAMS_DEFAULTS.open_delta;
+    params.signal_lookahead_secs ?? STRATEGY_PARAMS_DEFAULTS.signal_lookahead_secs;
+  const openDelta = params.open_delta ?? STRATEGY_PARAMS_DEFAULTS.open_delta;
   const pyramidAggDelta =
     params.pyramid_agg_delta ?? STRATEGY_PARAMS_DEFAULTS.pyramid_agg_delta;
   const pyramidFakDelta =
     params.pyramid_fak_delta ?? STRATEGY_PARAMS_DEFAULTS.pyramid_fak_delta;
   const pyramidUsdc = params.pyramid_usdc ?? null;
 
+  // ── Elis Dutch Book ───────────────────────────────────────────────────
+  const elisSpreadThreshold =
+    params.elis_spread_threshold ?? STRATEGY_PARAMS_DEFAULTS.elis_spread_threshold;
+  const elisMaxBuyOrderSize =
+    params.elis_max_buy_order_size ?? STRATEGY_PARAMS_DEFAULTS.elis_max_buy_order_size;
+  const elisTradeCooldownMs =
+    params.elis_trade_cooldown_ms ?? STRATEGY_PARAMS_DEFAULTS.elis_trade_cooldown_ms;
+  const elisBalanceFactor =
+    params.elis_balance_factor ?? STRATEGY_PARAMS_DEFAULTS.elis_balance_factor;
+  const elisStopBeforeEndSecs =
+    params.elis_stop_before_end_secs ?? STRATEGY_PARAMS_DEFAULTS.elis_stop_before_end_secs;
+
   // ── Aras defaults ─────────────────────────────────────────────────────
   const arasPollSecs =
     params.aras_poll_secs ?? STRATEGY_PARAMS_DEFAULTS.aras_poll_secs;
   const arasSharesPerOrder =
-    params.aras_shares_per_order ??
-    STRATEGY_PARAMS_DEFAULTS.aras_shares_per_order;
+    params.aras_shares_per_order ?? STRATEGY_PARAMS_DEFAULTS.aras_shares_per_order;
   const arasMaxUsdPerSide =
-    params.aras_max_usd_per_side ??
-    STRATEGY_PARAMS_DEFAULTS.aras_max_usd_per_side;
+    params.aras_max_usd_per_side ?? STRATEGY_PARAMS_DEFAULTS.aras_max_usd_per_side;
   const arasBandLow =
     params.aras_band_low ?? STRATEGY_PARAMS_DEFAULTS.aras_band_low;
   const arasBandHigh =
     params.aras_band_high ?? STRATEGY_PARAMS_DEFAULTS.aras_band_high;
   const arasRisingSharesMult =
-    params.aras_rising_shares_mult ??
-    STRATEGY_PARAMS_DEFAULTS.aras_rising_shares_mult;
+    params.aras_rising_shares_mult ?? STRATEGY_PARAMS_DEFAULTS.aras_rising_shares_mult;
 
   return (
     <div className="space-y-3">
-      <div>
-        <SectionLabel icon={Sliders} title="Strateji parametreleri" />
-        <p className="text-muted-foreground mt-1 text-sm">
-          {isElis
-            ? "Elis maker bid ile spread arbitrajı. Aşağıdaki RTDS ve ağırlıklar composite skoru besler; Elis bunu yalnızca momentum (ani hareket) filtresi için kullanır. Profit-lock kar kilidi eşiğidir."
-            : "RTDS Chainlink sinyali ve strateji ince ayarları."}
-        </p>
-      </div>
 
-      <div className="bg-muted/25 space-y-4 rounded-md border border-border/40 p-3">
-        <ToggleRow
-          checked={rtdsEnabled}
-          onChange={(v) => patch({ rtds_enabled: v })}
-          title="RTDS Chainlink window delta sinyali"
-          description="Polymarket Real-Time Data Socket üzerinden anlık Chainlink fiyatı; pencere açılışından bu yana bps cinsinden fiyat sapmasını skora çevirir."
-          tooltip="Açıkken bot, tek bir bağlantı üzerinden Chainlink BTC/ETH/SOL/XRP fiyat akışını dinler ve pencere boyunca biriken yön bilgisini composite skora yansıtır. Kapalıyken window skoru sabit 5.0 (nötr) kalır; composite doğal olarak Binance sinyaline düşer. Default: açık."
-        />
-
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field
-            label="Window delta ağırlığı"
-            tooltip="Composite skoru = w·window_delta_score + (1−w)·binance_score. 0.70 → window_delta dominant; 0.00 → yalnız Binance; 1.00 → yalnız RTDS. RTDS kapalı ya da feed kopuk ise window skoru 5.0 (nötr) döner ve composite Binance ağırlığına kayar."
-            hint="0.00 – 1.00 (default 0.70)."
-          >
-            <Input
-              type="number"
-              step="0.05"
-              min="0"
-              max="1"
-              value={windowWeight}
-              onChange={(e) =>
-                patch({ window_delta_weight: Number(e.target.value) })
-              }
-              disabled={!rtdsEnabled}
-            />
-          </Field>
-          <Field
-            label="Sinyal ileri-bakış (sn)"
-            tooltip="RTDS son 5 sn'lik fiyat hızını (bps/sn) bu süreyle çarpıp window_delta'ya ekler → sinyal projeksiyonu. 3 sn → 'şu anki trend 3 sn sonra ne olur' tahmini. 0 → projeksiyon kapalı (eski davranış); kümülatif window_delta tek başına kullanılır. Yüksek değer (>5) gürültüye duyarlılık artırır."
-            hint="0 – 30 sn (default 3.0). RTDS kapalı ise etkisiz."
-          >
-            <Input
-              type="number"
-              step="0.5"
-              min="0"
-              max="30"
-              value={lookaheadSecs}
-              onChange={(e) =>
-                patch({ signal_lookahead_secs: Number(e.target.value) })
-              }
-              disabled={!rtdsEnabled}
-            />
-          </Field>
-        </div>
-
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field
-            label="Profit-lock oranı"
-            tooltip={
-              isElis
-                ? "Elis: avg_up + avg_down ≤ avg_threshold olduğunda kilit modu; avg_threshold = 1 − pct. Doküman önerisi ~0.975 için pct ≈ 0.025. Alis hedge formülünden farklı olarak Elis VWAP + envanter mantığıyla çalışır."
-                : "Hedge hedef fiyatı için kullanılan eşik. avg_threshold = 1 − pct (örn. 0.02 → 0.98); hedge emir fiyatı = avg_threshold − avg_filled_side olarak türetilir. Düşük tutmak hedge'i avg'ye yakın, yüksek tutmak ise daha karlı (ama daha az dolgun) konuma yerleştirir. Default: 0.02."
-            }
-            hint={
-              isElis
-                ? "0.00 – 0.50 (default 0.02 → avg_threshold 0.98). Elis önerisi: 0.025 → 0.975 (doküman §8)."
-                : "0.00 – 0.50 (default 0.02 → avg_threshold 0.98)."
-            }
-          >
-            <Input
-              type="number"
-              step="0.01"
-              min="0"
-              max="0.5"
-              value={profitLockPct}
-              onChange={(e) =>
-                patch({ profit_lock_pct: Number(e.target.value) })
-              }
-            />
-          </Field>
-        </div>
-      </div>
-
+      {/* ── Elis Dutch Book parametreleri ─────────────────────────────── */}
       {isElis && (
-        <div className="space-y-2 rounded-md border border-border/40 bg-muted/10 px-3 py-2.5 text-xs leading-relaxed text-muted-foreground">
-          <p className="font-medium text-foreground">Elis — kısa özet</p>
-          <ul className="list-disc space-y-1 pl-4">
-            <li>
-              Giriş: UP ve DOWN best bid toplamı 0.985 altında (sabit eşik);
-              çift tarafta maker bid.
-            </li>
-            <li>
-              Envanter: dengesizlikte ağır taraf iptal, hafif taraf hedge bid;
-              pencere sonu fazında yeni çift taraf yok, yalnızca denge hedge.
-            </li>
-            <li>
-              RTDS kapalıysa composite skor nötre yakın kalır; momentum filtresi
-              gevşer — kapalı RTDS ile davranışı göz önünde bulundur.
-            </li>
-          </ul>
+        <div className="space-y-3">
+          <div>
+            <SectionLabel icon={Zap} title="Elis — Dutch Book parametreleri" />
+            <p className="text-muted-foreground mt-1 text-sm">
+              Her iki tarafın bid-ask spread'i geniş olduğunda UP+DOWN çift
+              taraflı maker bid emri verilir. Balance factor envanter dengesini
+              korur; cooldown ardışık batch'ler arasındaki beklemeyi belirler.
+            </p>
+          </div>
+
+          <div className="bg-muted/25 space-y-4 rounded-md border border-border/40 p-3">
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Field
+                label="Spread eşiği"
+                tooltip="Her tick'te UP_spread = UP_ask − UP_bid ve DOWN_spread = DOWN_ask − DOWN_bid hesaplanır. Her iki değer bu eşiğe ulaştığında batch emri tetiklenir. Geniş spread = yeterli likidite sinyali."
+                hint={`0.01 – 0.20 (default ${STRATEGY_PARAMS_DEFAULTS.elis_spread_threshold}).`}
+              >
+                <Input
+                  type="number"
+                  step="0.005"
+                  min="0.01"
+                  max="0.20"
+                  value={elisSpreadThreshold}
+                  onChange={(e) =>
+                    patch({ elis_spread_threshold: Number(e.target.value) })
+                  }
+                />
+              </Field>
+              <Field
+                label="Maks emir boyutu (share)"
+                tooltip="Dengeli pozisyonda UP ve DOWN taraflarına verilecek maksimum share miktarı. Balance factor bu tavan üzerinden artı/eksi uygular. Artırmak sermayeyi büyütür, azaltmak riski sınırlar."
+                hint={`1 – 1000 share (default ${STRATEGY_PARAMS_DEFAULTS.elis_max_buy_order_size}).`}
+              >
+                <Input
+                  type="number"
+                  step="5"
+                  min="1"
+                  max="1000"
+                  value={elisMaxBuyOrderSize}
+                  onChange={(e) =>
+                    patch({ elis_max_buy_order_size: Number(e.target.value) })
+                  }
+                />
+              </Field>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Field
+                label="Trade cooldown (ms)"
+                tooltip="Bir batch yerleştirildikten sonra bu süre dolmadan yeni UP+DOWN çifti verilmez. Cooldown dolduğunda açık emirler iptal edilir ve Idle'a dönülür. Artırmak batch sıklığını düşürür."
+                hint={`1 000 – 30 000 ms (default ${STRATEGY_PARAMS_DEFAULTS.elis_trade_cooldown_ms}).`}
+              >
+                <Input
+                  type="number"
+                  step="500"
+                  min="1000"
+                  max="30000"
+                  value={elisTradeCooldownMs}
+                  onChange={(e) =>
+                    patch({ elis_trade_cooldown_ms: Number(e.target.value) })
+                  }
+                />
+              </Field>
+              <Field
+                label="Balance factor"
+                tooltip="Envanter dengesizliğine karşı uygulanacak düzeltme çarpanı. adjustment = round(imbalance × factor × 0.5). 0 = denge kapalı (her batch sabit boyut); 1.0 = tam agresif denge. Default 0.7 doküman önerisidir."
+                hint="0.00 – 1.00 (default 0.70)."
+              >
+                <Input
+                  type="number"
+                  step="0.05"
+                  min="0"
+                  max="1"
+                  value={elisBalanceFactor}
+                  onChange={(e) =>
+                    patch({ elis_balance_factor: Number(e.target.value) })
+                  }
+                />
+              </Field>
+            </div>
+
+            <Field
+              label="Pencere stop (sn)"
+              tooltip="Market kapanışından bu kadar saniye önce yeni emir verilmez; açık emirler iptal edilir ve strateji Done durumuna geçer. Kapanış volatilitesinden korunmak için kullanılır."
+              hint={`10 – 120 sn (default ${STRATEGY_PARAMS_DEFAULTS.elis_stop_before_end_secs}).`}
+            >
+              <Input
+                type="number"
+                step="5"
+                min="10"
+                max="120"
+                value={elisStopBeforeEndSecs}
+                onChange={(e) =>
+                  patch({ elis_stop_before_end_secs: Number(e.target.value) })
+                }
+              />
+            </Field>
+          </div>
+
+          {/* Elis özet kartı */}
+          <div className="space-y-2 rounded-md border border-border/40 bg-muted/10 px-3 py-2.5 text-xs leading-relaxed text-muted-foreground">
+            <p className="font-medium text-foreground">Elis — nasıl çalışır?</p>
+            <ul className="list-disc space-y-1 pl-4">
+              <li>
+                <strong>Spread tespiti:</strong> Her tick'te UP_ask − UP_bid ve
+                DOWN_ask − DOWN_bid hesaplanır. Her ikisi de{" "}
+                <code>spread_threshold</code>'u aşarsa batch tetiklenir.
+              </li>
+              <li>
+                <strong>Maker bid emri:</strong> UP ve DOWN taraflarına{" "}
+                <em>bid fiyatından</em> GTC limit emir verilir. UP_bid +
+                DOWN_bid {"<"} $1.00 olduğundan fill olursa garantili kâr.
+              </li>
+              <li>
+                <strong>Balance factor:</strong> UP ve DOWN dolum miktarı
+                arasındaki fark varsa <code>balance_factor</code> ile düzeltme
+                yapılır: geride kalan tarafa daha büyük emir verilir.
+              </li>
+              <li>
+                <strong>Cooldown döngüsü:</strong> Batch yerleştikten sonra{" "}
+                <code>trade_cooldown_ms</code> beklenir, açık emirler iptal
+                edilir, Idle'a dönülür ve spread kontrolü yeniden başlar.
+              </li>
+              <li>
+                <strong>Pencere stop:</strong> Kapanıştan{" "}
+                <code>stop_before_end_secs</code> önce tüm yeni emirler durur;
+                mevcut emirler iptal edilerek Done'a geçilir.
+              </li>
+            </ul>
+          </div>
         </div>
       )}
 
+      {/* ── Alis / ortak RTDS + profit-lock (Elis'te gizli) ──────────── */}
+      {!isElis && (
+        <div className="space-y-3">
+          <div>
+            <SectionLabel icon={Sliders} title="Strateji parametreleri" />
+            <p className="text-muted-foreground mt-1 text-sm">
+              RTDS Chainlink sinyali ve strateji ince ayarları.
+            </p>
+          </div>
+
+          <div className="bg-muted/25 space-y-4 rounded-md border border-border/40 p-3">
+            <ToggleRow
+              checked={rtdsEnabled}
+              onChange={(v) => patch({ rtds_enabled: v })}
+              title="RTDS Chainlink window delta sinyali"
+              description="Polymarket Real-Time Data Socket üzerinden anlık Chainlink fiyatı; pencere açılışından bu yana bps cinsinden fiyat sapmasını skora çevirir."
+              tooltip="Açıkken bot, tek bir bağlantı üzerinden Chainlink BTC/ETH/SOL/XRP fiyat akışını dinler ve pencere boyunca biriken yön bilgisini composite skora yansıtır. Kapalıyken window skoru sabit 5.0 (nötr) kalır; composite doğal olarak Binance sinyaline düşer. Default: açık."
+            />
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Field
+                label="Window delta ağırlığı"
+                tooltip="Composite skoru = w·window_delta_score + (1−w)·binance_score. 0.70 → window_delta dominant; 0.00 → yalnız Binance; 1.00 → yalnız RTDS. RTDS kapalı ya da feed kopuk ise window skoru 5.0 (nötr) döner ve composite Binance ağırlığına kayar."
+                hint="0.00 – 1.00 (default 0.70)."
+              >
+                <Input
+                  type="number"
+                  step="0.05"
+                  min="0"
+                  max="1"
+                  value={windowWeight}
+                  onChange={(e) =>
+                    patch({ window_delta_weight: Number(e.target.value) })
+                  }
+                  disabled={!rtdsEnabled}
+                />
+              </Field>
+              <Field
+                label="Sinyal ileri-bakış (sn)"
+                tooltip="RTDS son 5 sn'lik fiyat hızını (bps/sn) bu süreyle çarpıp window_delta'ya ekler → sinyal projeksiyonu. 3 sn → 'şu anki trend 3 sn sonra ne olur' tahmini. 0 → projeksiyon kapalı (eski davranış); kümülatif window_delta tek başına kullanılır. Yüksek değer (>5) gürültüye duyarlılık artırır."
+                hint="0 – 30 sn (default 3.0). RTDS kapalı ise etkisiz."
+              >
+                <Input
+                  type="number"
+                  step="0.5"
+                  min="0"
+                  max="30"
+                  value={lookaheadSecs}
+                  onChange={(e) =>
+                    patch({ signal_lookahead_secs: Number(e.target.value) })
+                  }
+                  disabled={!rtdsEnabled}
+                />
+              </Field>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Field
+                label="Profit-lock oranı"
+                tooltip="Hedge hedef fiyatı için kullanılan eşik. avg_threshold = 1 − pct (örn. 0.02 → 0.98); hedge emir fiyatı = avg_threshold − avg_filled_side olarak türetilir. Düşük tutmak hedge'i avg'ye yakın, yüksek tutmak ise daha karlı (ama daha az dolgun) konuma yerleştirir. Default: 0.02."
+                hint="0.00 – 0.50 (default 0.02 → avg_threshold 0.98)."
+              >
+                <Input
+                  type="number"
+                  step="0.01"
+                  min="0"
+                  max="0.5"
+                  value={profitLockPct}
+                  onChange={(e) =>
+                    patch({ profit_lock_pct: Number(e.target.value) })
+                  }
+                />
+              </Field>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Alis özel parametreleri ───────────────────────────────────── */}
       {isAlis && (
         <div className="space-y-3">
           <div>
@@ -252,6 +371,7 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
         </div>
       )}
 
+      {/* ── Aras parametreleri ────────────────────────────────────────── */}
       {isAras && (
         <div className="space-y-3">
           <div>

@@ -1,312 +1,355 @@
-//! Elis stratejisi 24-market integration testi (v4b).
+//! Elis (Dutch Book) stratejisi entegrasyon testleri.
 //!
-//! Tick dosyaları: `exports/bot14-ticks-20260429/` (16 market) +
-//! `exports/bot15-ticks-20260429/` (8 market). `ElisEngine`'in:
-//!  1. **20 tick boyunca Pending** kalıp emir vermediğini,
-//!  2. **t=20'de open_pair** ürettiğini ve composite opener intent'in
-//!     beklenen yönde olduğunu (Python sim ile %100 paralellik),
-//!  3. **Final tickte resolve olmuş** marketlerde yön doğruluğunun (flip dahil)
-//!     v4b parametreleriyle %85 (17/20) seviyesinde olduğunu doğrular.
+//! Dokümandan: `docs/elis.md`
 //!
-//! Backtest detayı: `exports/backtest-final-24-markets.md`
-
-use std::fs;
-use std::path::PathBuf;
+//! Bu testler Dutch Book spread capture döngüsünü uçtan uca doğrular:
+//!  1. Dar spreadde NoOp
+//!  2. Geniş spreadde UP+DOWN batch emri
+//!  3. Cooldown süresince NoOp
+//!  4. Cooldown sonrası iptal + Idle'a dönüş
+//!  5. Balance factor mekanizması (dok §7 örneği)
+//!  6. Pencere stop (stop_before_end_secs)
+//!  7. Fiyat aralığı koruması (min_price / max_price)
+//!  8. Tam döngü simülasyonu: Idle → BatchPending → Idle → ... → Done
 
 use baiter_pro::config::{ElisParams, StrategyParams};
-use baiter_pro::strategy::common::{Decision, StrategyContext};
+use baiter_pro::strategy::common::{Decision, OpenOrder, StrategyContext};
 use baiter_pro::strategy::elis::{ElisEngine, ElisState};
 use baiter_pro::strategy::metrics::StrategyMetrics;
 use baiter_pro::time::MarketZone;
-use baiter_pro::types::Outcome;
+use baiter_pro::types::{Outcome, Side};
 
-#[derive(Debug, Clone, serde::Deserialize)]
-struct Tick {
-    up_best_bid: f64,
-    up_best_ask: f64,
-    down_best_bid: f64,
-    down_best_ask: f64,
-    signal_score: f64,
-    bsi: f64,
-    ofi: f64,
-    cvd: f64,
-    ts_ms: u64,
-}
-
-fn exports_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("exports")
-}
-
-fn load_ticks(slug: &str) -> Vec<Tick> {
-    // bot14-ticks-* veya bot15-ticks-* (veya yenileri) — slug hangi klasörde varsa ondan oku.
-    for entry in fs::read_dir(exports_dir()).expect("exports dir") {
-        let entry = entry.unwrap();
-        let name = entry.file_name();
-        let name_s = name.to_string_lossy();
-        if !name_s.starts_with("bot") || !name_s.contains("-ticks-") {
-            continue;
-        }
-        let p = entry.path().join(format!("{}_ticks.json", slug));
-        if p.exists() {
-            let raw = fs::read_to_string(&p)
-                .unwrap_or_else(|e| panic!("tick dosyası okunamadı {:?}: {}", p, e));
-            return serde_json::from_str(&raw)
-                .unwrap_or_else(|e| panic!("JSON parse hatası {:?}: {}", p, e));
-        }
-    }
-    panic!("tick dosyası bulunamadı: {}", slug);
-}
-
-/// Resolved marketler için "true winner" — final tick `up_best_bid >= 0.95` → Up,
-/// `down_best_bid >= 0.95` → Down. 24 marketin 20'si net resolve, 4'ü belirsiz.
-/// Tablo: `exports/backtest-final-24-markets.md` §3.1
-fn expected_winner(slug: &str) -> Option<Outcome> {
-    match slug {
-        // bot14 (16 market)
-        "btc-updown-5m-1777467000" => Some(Outcome::Up),
-        "btc-updown-5m-1777467300" => Some(Outcome::Down),
-        "btc-updown-5m-1777467600" => None,            // belirsiz
-        "btc-updown-5m-1777467900" => Some(Outcome::Down),
-        "btc-updown-5m-1777468200" => Some(Outcome::Up),
-        "btc-updown-5m-1777468500" => None,            // belirsiz
-        "btc-updown-5m-1777471200" => Some(Outcome::Down),
-        "btc-updown-5m-1777471800" => None,            // belirsiz
-        "btc-updown-5m-1777472100" => Some(Outcome::Up),
-        "btc-updown-5m-1777473000" => Some(Outcome::Down),
-        "btc-updown-5m-1777473900" => Some(Outcome::Down),
-        "btc-updown-5m-1777474500" => Some(Outcome::Down),
-        "btc-updown-5m-1777474800" => Some(Outcome::Down),
-        "btc-updown-5m-1777475100" => Some(Outcome::Down),
-        "btc-updown-5m-1777476300" => Some(Outcome::Down),
-        "btc-updown-5m-1777476600" => Some(Outcome::Up),
-        // bot15 (8 market)
-        "btc-updown-5m-1777479000" => Some(Outcome::Down),
-        "btc-updown-5m-1777479300" => Some(Outcome::Down),
-        "btc-updown-5m-1777479600" => Some(Outcome::Down),
-        "btc-updown-5m-1777479900" => Some(Outcome::Up),
-        "btc-updown-5m-1777480200" => Some(Outcome::Up),
-        "btc-updown-5m-1777480500" => Some(Outcome::Up),
-        "btc-updown-5m-1777480800" => Some(Outcome::Up),
-        "btc-updown-5m-1777481100" => None,            // belirsiz
-        _ => None,
-    }
-}
-
-/// `signal_score = 5.0` artı bsi/ofi/cvd alanlarıyla `StrategyContext` üretir.
 fn make_ctx<'a>(
-    metrics: &'a StrategyMetrics,
-    params: &'a StrategyParams,
-    open_orders: &'a [baiter_pro::strategy::common::OpenOrder],
-    tick: &Tick,
-    market_end_ms: u64,
+    m: &'a StrategyMetrics,
+    p: &'a StrategyParams,
+    oo: &'a [OpenOrder],
+    up_bid: f64,
+    up_ask: f64,
+    dn_bid: f64,
+    dn_ask: f64,
+    rem_secs: Option<f64>,
+    now_ms: u64,
 ) -> StrategyContext<'a> {
-    let remaining_secs = (market_end_ms.saturating_sub(tick.ts_ms)) as f64 / 1000.0;
     StrategyContext {
-        metrics,
+        metrics: m,
         up_token_id: "UP_TOKEN",
-        down_token_id: "DOWN_TOKEN",
-        up_best_bid: tick.up_best_bid,
-        up_best_ask: tick.up_best_ask,
-        down_best_bid: tick.down_best_bid,
-        down_best_ask: tick.down_best_ask,
+        down_token_id: "DN_TOKEN",
+        up_best_bid: up_bid,
+        up_best_ask: up_ask,
+        down_best_bid: dn_bid,
+        down_best_ask: dn_ask,
         api_min_order_size: 1.0,
-        order_usdc: 10.0,
-        effective_score: tick.signal_score,
+        order_usdc: 20.0,
+        effective_score: 5.0,
         zone: MarketZone::DeepTrade,
-        now_ms: tick.ts_ms,
+        now_ms,
         last_averaging_ms: 0,
         tick_size: 0.01,
-        open_orders,
-        min_price: 0.01,
-        max_price: 0.99,
+        open_orders: oo,
+        min_price: 0.15,
+        max_price: 0.89,
         cooldown_threshold: 0,
         avg_threshold: 0.98,
         signal_ready: true,
-        strategy_params: params,
-        bsi: Some(tick.bsi),
-        ofi: Some(tick.ofi),
-        cvd: Some(tick.cvd),
-        market_remaining_secs: Some(remaining_secs),
+        strategy_params: p,
+        bsi: None,
+        ofi: None,
+        cvd: None,
+        market_remaining_secs: rem_secs,
     }
 }
 
-/// Tek market simülasyonu: 20 tick Pending, sonra tek open_pair, sonra
-/// her tick'te decide_active. Trade sayısı + opener intent + final intent döner.
-struct SimResult {
-    opener_intent: Outcome,
-    final_intent: Outcome,
-    trade_count: usize,
-    flipped: bool,
+/// Geniş spread senaryosu: UP $0.38/$0.40, DOWN $0.59/$0.61
+/// UP_spread=0.02 ✓, DOWN_spread=0.02 ✓ — arb marjının işareti önemli değil.
+fn ctx_good_spread<'a>(
+    m: &'a StrategyMetrics,
+    p: &'a StrategyParams,
+    oo: &'a [OpenOrder],
+    rem: Option<f64>,
+    now_ms: u64,
+) -> StrategyContext<'a> {
+    make_ctx(m, p, oo, 0.38, 0.40, 0.59, 0.61, rem, now_ms)
 }
 
-fn simulate_market(slug: &str) -> SimResult {
-    let ticks = load_ticks(slug);
-    assert!(ticks.len() >= 30, "{} az tick içeriyor: {}", slug, ticks.len());
+// ──────────────────────────────────────────────────────────────────────────────
+// 1. Dar spread → NoOp
+// ──────────────────────────────────────────────────────────────────────────────
+#[test]
+fn narrow_spread_returns_noop() {
+    let m = StrategyMetrics::default();
+    let p = StrategyParams::default();
+    // UP_spread=0.01 < 0.02 → engellenmeli.
+    let c = make_ctx(&m, &p, &[], 0.49, 0.50, 0.49, 0.51, Some(200.0), 1000);
+    let (s, d) = ElisEngine::decide(ElisState::Idle, &c);
+    assert!(matches!(s, ElisState::Idle));
+    assert!(matches!(d, Decision::NoOp));
+}
 
-    let market_end_ms = ticks.last().unwrap().ts_ms + 1000;
-    let metrics = StrategyMetrics::default();
-    let params = StrategyParams::default();
-    let open_orders = vec![];
+// ──────────────────────────────────────────────────────────────────────────────
+// 2. Geniş spread → UP+DOWN batch emri ask fiyatından
+// ──────────────────────────────────────────────────────────────────────────────
+#[test]
+fn wide_spread_places_batch_at_ask() {
+    let m = StrategyMetrics::default();
+    let p = StrategyParams::default();
+    // UP_spread=0.02 ✓, DOWN_spread=0.02 ✓
+    let c = ctx_good_spread(&m, &p, &[], Some(200.0), 5000);
+    let (s, d) = ElisEngine::decide(ElisState::Idle, &c);
+    assert!(matches!(s, ElisState::BatchPending { placed_at_ms: 5000 }));
+    match d {
+        Decision::PlaceOrders(orders) => {
+            assert_eq!(orders.len(), 2, "UP + DOWN iki emir beklendi");
+            let up_o = orders.iter().find(|o| o.outcome == Outcome::Up).unwrap();
+            let dn_o = orders.iter().find(|o| o.outcome == Outcome::Down).unwrap();
+        // Fiyatlar bid'den alınmalı (maker limit).
+            assert!((up_o.price - 0.38).abs() < 1e-9, "UP bid fiyatı hatalı");
+            assert!((dn_o.price - 0.59).abs() < 1e-9, "DOWN bid fiyatı hatalı");
+            // Sıfır pozisyonda her iki taraf eşit: max_buy_order_size = 20.
+            let ep = ElisParams::default();
+            assert!(
+                (up_o.size - ep.max_buy_order_size).abs() < 1e-9,
+                "UP size hatalı: {}",
+                up_o.size
+            );
+            assert!(
+                (dn_o.size - ep.max_buy_order_size).abs() < 1e-9,
+                "DOWN size hatalı: {}",
+                dn_o.size
+            );
+        }
+        other => panic!("PlaceOrders beklendi, gelen {:?}", other),
+    }
+}
 
-    let mut state = ElisState::default();
-    let mut opener_intent: Option<Outcome> = None;
-    let mut trade_count = 0usize;
+// ──────────────────────────────────────────────────────────────────────────────
+// 3. Cooldown süresinde BatchPending → NoOp
+// ──────────────────────────────────────────────────────────────────────────────
+#[test]
+fn batch_pending_noop_during_cooldown() {
+    let m = StrategyMetrics::default();
+    let p = StrategyParams::default();
+    // placed_at=0, now=2000ms → 5000ms dolmadı.
+    let c = ctx_good_spread(&m, &p, &[], Some(200.0), 2000);
+    let state = ElisState::BatchPending { placed_at_ms: 0 };
+    let (s, d) = ElisEngine::decide(state, &c);
+    assert!(matches!(s, ElisState::BatchPending { .. }));
+    assert!(matches!(d, Decision::NoOp));
+}
 
-    for tick in &ticks {
-        let ctx = make_ctx(&metrics, &params, &open_orders, tick, market_end_ms);
-        let (next_state, decision) = ElisEngine::decide(state, &ctx);
-        match &decision {
-            Decision::PlaceOrders(orders) => trade_count += orders.len(),
-            Decision::CancelAndPlace { places, .. } => trade_count += places.len(),
+// ──────────────────────────────────────────────────────────────────────────────
+// 4. Cooldown sonrası CancelOrders + Idle
+// ──────────────────────────────────────────────────────────────────────────────
+#[test]
+fn cooldown_triggers_cancel_and_idle() {
+    let m = StrategyMetrics::default();
+    let p = StrategyParams::default();
+    let ep = ElisParams::default();
+    let orders = vec![
+        OpenOrder {
+            id: "up-order".into(),
+            outcome: Outcome::Up,
+            side: Side::Buy,
+            price: 0.37,
+            size: 20.0,
+            reason: "elis:dutch:up".into(),
+            placed_at_ms: 0,
+            size_matched: 0.0,
+        },
+        OpenOrder {
+            id: "dn-order".into(),
+            outcome: Outcome::Down,
+            side: Side::Buy,
+            price: 0.61,
+            size: 20.0,
+            reason: "elis:dutch:down".into(),
+            placed_at_ms: 0,
+            size_matched: 0.0,
+        },
+    ];
+    // Tam cooldown eşiği: now = trade_cooldown_ms.
+    let c = ctx_good_spread(&m, &p, &orders, Some(200.0), ep.trade_cooldown_ms);
+    let state = ElisState::BatchPending { placed_at_ms: 0 };
+    let (s, d) = ElisEngine::decide(state, &c);
+    assert!(matches!(s, ElisState::Idle));
+    match d {
+        Decision::CancelOrders(ids) => {
+            assert!(ids.contains(&"up-order".to_string()));
+            assert!(ids.contains(&"dn-order".to_string()));
+        }
+        other => panic!("CancelOrders beklendi, gelen {:?}", other),
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// 5. Balance factor — doküman §7 örneği
+// ──────────────────────────────────────────────────────────────────────────────
+#[test]
+fn balance_factor_doc_example_cycle9() {
+    // Doküman §7 — Döngü #9:
+    // UP=54, DOWN=78 → imbalance=24, adjustment=round(24×0.7×0.5)=round(8.4)=8
+    // UP emir = 20+8 = 28, DOWN emir = 20-8 = 12
+    // arb = 1 - 0.37 - 0.61 = 0.02 ✓
+    let mut m = StrategyMetrics::default();
+    m.up_filled = 54.0;
+    m.down_filled = 78.0;
+
+    let p = StrategyParams::default();
+    let c = ctx_good_spread(&m, &p, &[], Some(200.0), 1000);
+    let (s, d) = ElisEngine::decide(ElisState::Idle, &c);
+    assert!(matches!(s, ElisState::BatchPending { .. }));
+    match d {
+        Decision::PlaceOrders(orders) => {
+            let up_o = orders.iter().find(|o| o.outcome == Outcome::Up).unwrap();
+            let dn_o = orders.iter().find(|o| o.outcome == Outcome::Down).unwrap();
+            assert!((up_o.size - 28.0).abs() < 1e-9, "UP size: {} (beklenen 28)", up_o.size);
+            assert!((dn_o.size - 12.0).abs() < 1e-9, "DOWN size: {} (beklenen 12)", dn_o.size);
+        }
+        other => panic!("PlaceOrders beklendi, gelen {:?}", other),
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// 6. Pencere stop — Idle'dan Done'a geç
+// ──────────────────────────────────────────────────────────────────────────────
+#[test]
+fn idle_stops_before_window_end() {
+    let m = StrategyMetrics::default();
+    let p = StrategyParams::default();
+    // Kalan 50s < stop_before_end_secs (60s). arb=0.02 olsa da stop tetiklenir.
+    let c = ctx_good_spread(&m, &p, &[], Some(50.0), 1000);
+    let (s, d) = ElisEngine::decide(ElisState::Idle, &c);
+    assert!(matches!(s, ElisState::Done));
+    assert!(matches!(d, Decision::NoOp));
+}
+
+#[test]
+fn batch_pending_stops_and_cancels_before_window_end() {
+    let m = StrategyMetrics::default();
+    let p = StrategyParams::default();
+    let orders = vec![OpenOrder {
+        id: "o1".into(),
+        outcome: Outcome::Up,
+        side: Side::Buy,
+        price: 0.37,
+        size: 20.0,
+        reason: "elis:dutch:up".into(),
+        placed_at_ms: 0,
+        size_matched: 0.0,
+    }];
+    // Kalan 30s < 60s → stop tetikle, emirleri iptal et.
+    let c = make_ctx(&m, &p, &orders, 0.36, 0.37, 0.60, 0.61, Some(30.0), 1000);
+    let state = ElisState::BatchPending { placed_at_ms: 0 };
+    let (s, d) = ElisEngine::decide(state, &c);
+    assert!(matches!(s, ElisState::Done));
+    match d {
+        Decision::CancelOrders(ids) => assert!(ids.contains(&"o1".to_string())),
+        other => panic!("CancelOrders beklendi, gelen {:?}", other),
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// 7. Fiyat aralığı koruması
+// ──────────────────────────────────────────────────────────────────────────────
+#[test]
+fn price_above_max_blocks_batch() {
+    let m = StrategyMetrics::default();
+    let p = StrategyParams::default();
+    // Spread ✓ ama UP_ask=0.91 > max_price(0.89) → price range engeller.
+    // UP_spread=0.04 ✓, DOWN_spread=0.02 ✓
+    let c = make_ctx(&m, &p, &[], 0.87, 0.91, 0.06, 0.08, Some(200.0), 1000);
+    let (s, d) = ElisEngine::decide(ElisState::Idle, &c);
+    assert!(matches!(s, ElisState::Idle));
+    assert!(matches!(d, Decision::NoOp));
+}
+
+#[test]
+fn price_below_min_blocks_batch() {
+    let m = StrategyMetrics::default();
+    let p = StrategyParams::default();
+    // Spread ✓ ama DOWN_ask=0.10 < min_price(0.15) → price range engeller.
+    // UP_spread=0.04 ✓, DOWN_spread=0.02 ✓
+    let c = make_ctx(&m, &p, &[], 0.83, 0.87, 0.08, 0.10, Some(200.0), 1000);
+    let (s, d) = ElisEngine::decide(ElisState::Idle, &c);
+    assert!(matches!(s, ElisState::Idle));
+    assert!(matches!(d, Decision::NoOp));
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// 8. Done state her zaman NoOp döner
+// ──────────────────────────────────────────────────────────────────────────────
+#[test]
+fn done_state_always_noop() {
+    let m = StrategyMetrics::default();
+    let p = StrategyParams::default();
+    let c = ctx_good_spread(&m, &p, &[], Some(0.0), 999_999);
+    let (s, d) = ElisEngine::decide(ElisState::Done, &c);
+    assert!(matches!(s, ElisState::Done));
+    assert!(matches!(d, Decision::NoOp));
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// 9. Tek taraf dar spread → emir yok
+// ──────────────────────────────────────────────────────────────────────────────
+#[test]
+fn one_side_narrow_spread_blocks() {
+    let m = StrategyMetrics::default();
+    let p = StrategyParams::default();
+    // UP_spread=0.02 ✓ ama DOWN_spread=0.01 < 0.02 → engellenmeli.
+    let c = make_ctx(&m, &p, &[], 0.38, 0.40, 0.60, 0.61, Some(200.0), 1000);
+    let (s, d) = ElisEngine::decide(ElisState::Idle, &c);
+    assert!(matches!(s, ElisState::Idle));
+    assert!(matches!(d, Decision::NoOp));
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// 10. Tam döngü: Idle → Batch → (cooldown) → Idle → ... → Done
+// ──────────────────────────────────────────────────────────────────────────────
+#[test]
+fn full_cycle_simulation() {
+    let mut m = StrategyMetrics::default();
+    let p = StrategyParams::default();
+    let ep = ElisParams::default();
+    let mut state = ElisState::Idle;
+
+    // Market 300 saniye; her tick 1 saniye ilerleme.
+    // arb = 1 - 0.37 - 0.61 = 0.02 ✓ her tick.
+    let market_end_secs = 300u64;
+    let mut batch_count = 0usize;
+
+    for t in 0u64..market_end_secs {
+        let rem = (market_end_secs - t) as f64;
+        let now_ms = t * 1000;
+        // UP_spread=0.02 ✓, DOWN_spread=0.02 ✓ her tick.
+        let c = make_ctx(&m, &p, &[], 0.38, 0.40, 0.59, 0.61, Some(rem), now_ms);
+        let (next_state, d) = ElisEngine::decide(state, &c);
+
+        match &d {
+            Decision::PlaceOrders(_) => batch_count += 1,
+            Decision::CancelOrders(_) => {
+                m.up_filled += ep.max_buy_order_size;
+                m.down_filled += ep.max_buy_order_size;
+            }
             _ => {}
         }
-        // Opener intent'i ilk Active geçişte yakala
-        if opener_intent.is_none() {
-            if let ElisState::Active(active) = &next_state {
-                opener_intent = Some(active.intent);
-            }
-        }
         state = next_state;
     }
 
-    let opener = opener_intent.expect("opener intent t=20'de yakalanmalı");
-    let (final_intent, flipped) = match &state {
-        ElisState::Active(a) => (a.intent, a.flip_count > 0),
-        ElisState::Done => (opener, false),
-        ElisState::Pending { .. } => (opener, false),
-    };
-
-    SimResult {
-        opener_intent: opener,
-        final_intent,
-        trade_count,
-        flipped,
-    }
+    assert!(matches!(state, ElisState::Done | ElisState::BatchPending { .. } | ElisState::Idle));
+    assert!(batch_count >= 20, "Döngü sayısı yetersiz: {}", batch_count);
+    let imbalance = (m.up_filled - m.down_filled).abs();
+    assert!(imbalance <= 1.0, "Final imbalance: {}", imbalance);
 }
 
-const ALL_SLUGS: &[&str] = &[
-    // bot14 (16 market)
-    "btc-updown-5m-1777467000",
-    "btc-updown-5m-1777467300",
-    "btc-updown-5m-1777467600",
-    "btc-updown-5m-1777467900",
-    "btc-updown-5m-1777468200",
-    "btc-updown-5m-1777468500",
-    "btc-updown-5m-1777471200",
-    "btc-updown-5m-1777471800",
-    "btc-updown-5m-1777472100",
-    "btc-updown-5m-1777473000",
-    "btc-updown-5m-1777473900",
-    "btc-updown-5m-1777474500",
-    "btc-updown-5m-1777474800",
-    "btc-updown-5m-1777475100",
-    "btc-updown-5m-1777476300",
-    "btc-updown-5m-1777476600",
-    // bot15 (8 market)
-    "btc-updown-5m-1777479000",
-    "btc-updown-5m-1777479300",
-    "btc-updown-5m-1777479600",
-    "btc-updown-5m-1777479900",
-    "btc-updown-5m-1777480200",
-    "btc-updown-5m-1777480500",
-    "btc-updown-5m-1777480800",
-    "btc-updown-5m-1777481100",
-];
-
+// ──────────────────────────────────────────────────────────────────────────────
+// 11. market_remaining_secs = None → stop koşulu tetiklenmez
+// ──────────────────────────────────────────────────────────────────────────────
 #[test]
-fn pre_opener_pending_for_first_19_ticks() {
-    // İlk 19 tickte Pending kalmalı, opener t=20'de oluşmalı (default config).
-    let slug = "btc-updown-5m-1777467000";
-    let ticks = load_ticks(slug);
-    let market_end_ms = ticks.last().unwrap().ts_ms + 1000;
-    let metrics = StrategyMetrics::default();
-    let params = StrategyParams::default();
-    let open_orders = vec![];
-    let p = ElisParams::default();
-
-    let mut state = ElisState::default();
-    for (i, tick) in ticks.iter().enumerate().take(p.pre_opener_ticks) {
-        let ctx = make_ctx(&metrics, &params, &open_orders, tick, market_end_ms);
-        let (next_state, decision) = ElisEngine::decide(state, &ctx);
-        if i < p.pre_opener_ticks - 1 {
-            assert!(
-                matches!(next_state, ElisState::Pending { .. }),
-                "tick {} hâlâ Pending olmalı",
-                i
-            );
-            assert!(matches!(decision, Decision::NoOp), "tick {}: NoOp beklendi", i);
-        } else {
-            assert!(
-                matches!(next_state, ElisState::Active(_)),
-                "tick {} (=pre_opener_ticks-1) Active'e geçmeli",
-                i
-            );
-            assert!(
-                matches!(decision, Decision::PlaceOrders(_)),
-                "tick {}: open_pair PlaceOrders beklendi",
-                i
-            );
-        }
-        state = next_state;
-    }
-}
-
-#[test]
-fn all_16_markets_simulate_without_panic() {
-    // En temel sanity: 16 marketin hepsi panic atmadan baştan sona çalışmalı.
-    for slug in ALL_SLUGS {
-        let r = simulate_market(slug);
-        assert!(
-            r.trade_count > 0,
-            "{}: en az 1 trade beklendi (open_pair) — gelen 0",
-            slug
-        );
-    }
-}
-
-#[test]
-fn opener_direction_accuracy_meets_85pct() {
-    // 24-market combined: 20 resolved. Final intent (flip dahil) gerçek winner
-    // ile ≥%80 eşleşmeli. v4b parametreleriyle Python sim 17/20 = %85 veriyor;
-    // Rust impl en az %80 (16/20) tutturmalı.
-    let mut correct = 0usize;
-    let mut total = 0usize;
-    let mut log: Vec<String> = Vec::new();
-
-    for slug in ALL_SLUGS {
-        let Some(winner) = expected_winner(slug) else {
-            continue;
-        };
-        total += 1;
-        let r = simulate_market(slug);
-        let ok = r.final_intent == winner;
-        if ok {
-            correct += 1;
-        }
-        log.push(format!(
-            "  {} → opener={:?} final={:?} flipped={} winner={:?} {}",
-            slug,
-            r.opener_intent,
-            r.final_intent,
-            r.flipped,
-            winner,
-            if ok { "✓" } else { "✗" }
-        ));
-    }
-
-    let pct = correct as f64 / total as f64 * 100.0;
-    println!(
-        "\nOpener direction accuracy: {}/{} = {:.0}%\n{}",
-        correct,
-        total,
-        pct,
-        log.join("\n")
-    );
-    assert!(
-        pct >= 80.0,
-        "Yön doğruluğu %80 altında: {}/{} = {:.0}%",
-        correct,
-        total,
-        pct
-    );
+fn no_remaining_secs_does_not_stop() {
+    let m = StrategyMetrics::default();
+    let p = StrategyParams::default();
+    // remaining = None → is_window_stop = false → normal arb kontrolüne geç. arb=0.02 ✓
+    let c = ctx_good_spread(&m, &p, &[], None, 1000);
+    let (s, d) = ElisEngine::decide(ElisState::Idle, &c);
+    assert!(matches!(s, ElisState::BatchPending { .. }));
+    assert!(matches!(d, Decision::PlaceOrders(_)));
 }

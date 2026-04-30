@@ -19,7 +19,7 @@ export const STRATEGY_OPTIONS: {
     id: "elis",
     label: "Elis",
     description:
-      "UP/DOWN maker bid ile spread arbitrajı; envanter dengesi, profit-lock, momentum (composite skor) ve StopTrade’de sadece hedge.",
+      "Dutch Book spread capture: UP+DOWN bid'den çift taraflı maker limit; spread geniş tick'te emir, balance factor ile envanter dengesi, pencere sonuna kadar cooldown döngüsü.",
   },
   {
     id: "aras",
