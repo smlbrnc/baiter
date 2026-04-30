@@ -377,9 +377,15 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                 Fiyat yükselse de, düşse de alım devam eder.
               </li>
               <li>
+                <strong>Pasif emir:</strong> Her iki tarafa da{" "}
+                <em>bid−1tick</em> GTC emir verilir. Bu marketlerde spread
+                genelde 1-tick olduğundan directional ayrım pratik fark
+                yaratmaz; sabit bid−1tick imbalansı en aza indirir.
+              </li>
+              <li>
                 <strong>Çift pair cost filtresi:</strong>{" "}
-                <code>entry_taraf + ask_karşıtaraf &lt; 1.00</code> koşulu
-                sağlanmayan taraflar atlanır (kârsız pair alımı engellenir).
+                <code>entry + opp_ask &lt; 1.00</code> koşulu sağlanmayan
+                taraflar atlanır (kârsız pair alımı engellenir).
               </li>
               <li>
                 <strong>İmbalans koruması:</strong> Bir taraf diğerinden{" "}

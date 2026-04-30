@@ -306,12 +306,20 @@ impl ArasEngine {
                 continue;
             }
 
-            // Emir fiyatı: bid - 1tick
+            // Emir fiyatı: bid − 1tick (her iki taraf için pasif maker alımı)
+            // Not: bu marketlerde spread 1-tick olduğundan ask-1tick = bid oluyor,
+            // dolayısıyla directional ayrım pratikte fark yaratmıyor.
             let cur_bid = ctx.best_bid(outcome);
             let entry = round_tick(cur_bid - p.tick, p.tick).clamp(p.tick, 0.99);
 
-            // Çift pair cost filtresi: bu tarafı al + karşı tarafı al → kârlı mı?
-            // Karşı tarafın mevcut ask'ını kullan (en muhafazakâr senaryo)
+            // Çift pair cost filtresi — iki katmanlı:
+            //
+            // 1. Anlık kontrol: entry + opp_ask < 1.00
+            //    Yeni emir + karşı tarafın şu anki ask'ı pair kârlılığını bozmayacak mı?
+            //
+            // 2. Kümülatif kontrol: new_avg_this + opp_avg < 1.00
+            //    Bu emir eklendikten sonra toplam pozisyonun ortalama pair maliyeti < 1.00 kalacak mı?
+            //    Karşı taraf henüz fill almamışsa bu kontrol atlanır (cold-start güvenliği).
             let opp_ask = ctx.best_ask(outcome.opposite());
             if entry + opp_ask >= 1.00 {
                 tracing::debug!(
@@ -322,6 +330,24 @@ impl ArasEngine {
                     "aras: skipped (pair cost >= 1.00)"
                 );
                 continue;
+            }
+            let (this_filled, this_avg, opp_filled, opp_avg) = match outcome {
+                Outcome::Up => (m.up_filled, m.avg_up, m.down_filled, m.avg_down),
+                Outcome::Down => (m.down_filled, m.avg_down, m.up_filled, m.avg_up),
+            };
+            if opp_filled > 0.0 {
+                let new_avg_this =
+                    (this_avg * this_filled + entry * p.shares) / (this_filled + p.shares);
+                if new_avg_this + opp_avg >= 1.00 {
+                    tracing::debug!(
+                        side = outcome.as_str(),
+                        new_avg_this,
+                        opp_avg,
+                        cum_pair_cost = new_avg_this + opp_avg,
+                        "aras: skipped (cumulative pair cost >= 1.00)"
+                    );
+                    continue;
+                }
             }
 
             // Mevcut emir varsa: iki durumda iptal + yenile
