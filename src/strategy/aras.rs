@@ -1,4 +1,4 @@
-//! Aras stratejisi — DCA + Kademeli Hedge Arbitrajı
+//! Aras stratejisi — DCA + Agresif Hedge Arbitrajı
 //!
 //! Doküman: `docs/aras.md`
 //! Backtest: `scripts/arb_dca_v3.py` (16 market, +$88.15, +6.22% ROI, 13W/3L)
@@ -8,10 +8,11 @@
 //! - **DCA tarafı** (`mid > CHEAP_THRESHOLD && mid < BAND_HIGH`): Pahalı/kazanan taraf.
 //!   Her `poll_secs` saniyede bir, bid fiyatı `dca_min_drop` kadar düştüyse `bid-1tick`
 //!   fiyatına GTC emir verilir.
+//!   **İmbalans koruması**: hedge_shares + 1 emir sınırını aşan DCA atlanır.
 //!
 //! - **Hedge tarafı** (`BAND_LOW < mid < CHEAP_THRESHOLD`): Ucuz/kaybeden taraf.
-//!   DCA fill oluşunca 3-adım kademeli hedge emri açılır:
-//!   `bid-3tick → (step_secs bekle) → bid-2tick → (step_secs bekle) → bid-1tick`
+//!   DCA fill oluşunca her adımda `bid-1tick` agresif hedge emri açılır.
+//!   Fill olmazsa `hedge_step_secs` sonra yenilenir (aynı fiyat hedefe doğru düştükçe).
 //!
 //! - **ARB kilidi**: Hedge fill'inde `avg_up + avg_down < 1.00` → garantili kâr.
 //!
@@ -29,8 +30,11 @@ use crate::types::{OrderType, Outcome, Side};
 // Sabitler (config'den geçersiz kılınabilir)
 // ─────────────────────────────────────────────
 
-/// Hedge tick offset sırası: bid - N*TICK
-const HEDGE_TICK_OFFSETS: [i32; 3] = [3, 2, 1];
+/// Hedge tick offset sırası: bid - N*TICK.
+/// Analiz: bid-3tick başlangıcı fill hızını DCA'nın çok gerisinde bırakıyordu
+/// (100 market: hedge 0% fill → 10L, hedge tam fill → 0L).
+/// Tüm adımlar bid-1tick ile hedge DCA ile aynı hızda doluyor.
+const HEDGE_TICK_OFFSETS: [i32; 3] = [1, 1, 1];
 
 // ─────────────────────────────────────────────
 // Veri yapıları
@@ -44,6 +48,7 @@ pub struct HedgeJob {
     /// Hedge gönderilecek taraf (ucuz taraf).
     pub hedge_outcome: Outcome,
     /// Sonraki deneme adımı indeksi (0 = bid-3t, 1 = bid-2t, 2 = bid-1t).
+    /// Sonraki deneme adımı (0, 1, 2). Hepsi bid-1tick kullanır; fill olmazsa yenilenir.
     pub step: usize,
     /// Mevcut adımın başlangıç timestamp'i (ms).
     pub step_start_ms: u64,
@@ -508,6 +513,27 @@ impl ArasEngine {
                 Outcome::Down => m.avg_down * m.down_filled,
             };
             if side_cost >= p.max_usd_per_side {
+                continue;
+            }
+
+            // İmbalans koruması: DCA tarafı hedge tarafından en fazla 1 emir
+            // kadar ileride olabilir. Fazla birikme → hedge fill olmadan zarar.
+            let dca_filled = match outcome {
+                Outcome::Up => m.up_filled,
+                Outcome::Down => m.down_filled,
+            };
+            let hedge_filled = match outcome {
+                Outcome::Up => m.down_filled,
+                Outcome::Down => m.up_filled,
+            };
+            if dca_filled > hedge_filled + p.shares {
+                tracing::debug!(
+                    side = outcome.as_str(),
+                    dca_filled,
+                    hedge_filled,
+                    max_ahead = p.shares,
+                    "aras: dca skipped (imbalance guard)"
+                );
                 continue;
             }
 
