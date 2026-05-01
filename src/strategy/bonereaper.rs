@@ -169,11 +169,13 @@ impl BonereaperEngine {
                 let imbalance = m.up_filled - m.down_filled;
                 if imbalance.abs() >= REBALANCE_MIN {
                     let deficit_side = if imbalance > 0.0 { Outcome::Down } else { Outcome::Up };
-                    let lot = rebalance_lot(imbalance);
                     let price = ctx.best_bid(deficit_side);
-                    if let Some(order) = make_buy(ctx, deficit_side, price, lot,
-                        &format!("bonereaper:rebalance:{}", deficit_side.as_lowercase())) {
-                        return (BonereaperState::Active(st), Decision::PlaceOrders(vec![order]));
+                    if pair_cost_ok(ctx, deficit_side, price) {
+                        let lot = rebalance_lot(imbalance);
+                        if let Some(order) = make_buy(ctx, deficit_side, price, lot,
+                            &format!("bonereaper:rebalance:{}", deficit_side.as_lowercase())) {
+                            return (BonereaperState::Active(st), Decision::PlaceOrders(vec![order]));
+                        }
                     }
                 }
 
@@ -196,7 +198,7 @@ impl BonereaperEngine {
                     false
                 };
 
-                if should_build {
+                if should_build && pair_cost_ok(ctx, dom, dom_bid) {
                     let lot = init_lot(ctx.now_ms);
                     let reason = format!("bonereaper:build:{}", dom.as_lowercase());
                     if let Some(order) = make_buy(ctx, dom, dom_bid, lot, &reason) {
@@ -226,16 +228,23 @@ impl BonereaperEngine {
         // Opener: dominant tarafa bid'den emir (resting bid)
         let opener_price = ctx.best_bid(direction);
         let opener_reason = format!("bonereaper:opener:{}", direction.as_lowercase());
-        if let Some(o) = make_buy(ctx, direction, opener_price, lot, &opener_reason) {
-            orders.push(o);
+        if pair_cost_ok(ctx, direction, opener_price) {
+            if let Some(o) = make_buy(ctx, direction, opener_price, lot, &opener_reason) {
+                orders.push(o);
+            }
         }
 
         // Opening grid: her iki tarafa mevcut ask'tan emir (Dutch Book tetikleyici)
-        for &side in &[Outcome::Up, Outcome::Down] {
-            let price = ctx.best_ask(side);
-            let reason = format!("bonereaper:grid:{}", side.as_lowercase());
-            if let Some(o) = make_buy(ctx, side, price, lot, &reason) {
-                orders.push(o);
+        // up_ask + dn_ask < 1.00 ise her ikisi de eklenir; değilse sadece karlı olan.
+        let up_ask = ctx.best_ask(Outcome::Up);
+        let dn_ask = ctx.best_ask(Outcome::Down);
+        if up_ask + dn_ask < 1.00 {
+            for &side in &[Outcome::Up, Outcome::Down] {
+                let price = ctx.best_ask(side);
+                let reason = format!("bonereaper:grid:{}", side.as_lowercase());
+                if let Some(o) = make_buy(ctx, side, price, lot, &reason) {
+                    orders.push(o);
+                }
             }
         }
 
@@ -302,6 +311,31 @@ fn scoop_lot(opp_ask: f64) -> f64 {
 }
 
 // ─────────────────────────────────────────────
+// Pair cost guard
+// ─────────────────────────────────────────────
+
+/// `side` tarafını `price`'tan almak pair cost'u $1.00 altında tutar mı?
+///
+/// Karşı tarafın referans fiyatı:
+///   - Karşı tarafta fill varsa → `avg_karşı` (gerçek maliyet)
+///   - Yoksa → `best_ask_karşı` (en kötü anlık fiyat)
+///
+/// `price + ref_karşı < 1.00` sağlanmıyorsa `false` döner → emir verilmez.
+#[inline]
+fn pair_cost_ok(ctx: &StrategyContext<'_>, side: Outcome, price: f64) -> bool {
+    let m = ctx.metrics;
+    let opp_ref = match side.opposite() {
+        Outcome::Up => {
+            if m.up_filled > 0.0 { m.avg_up } else { ctx.up_best_ask }
+        }
+        Outcome::Down => {
+            if m.down_filled > 0.0 { m.avg_down } else { ctx.down_best_ask }
+        }
+    };
+    price + opp_ref < 1.00
+}
+
+// ─────────────────────────────────────────────
 // Phase checker'ları
 // ─────────────────────────────────────────────
 
@@ -309,7 +343,7 @@ fn scoop_lot(opp_ask: f64) -> f64 {
 fn check_lottery(ctx: &StrategyContext<'_>) -> Option<PlannedOrder> {
     for &side in &[Outcome::Up, Outcome::Down] {
         let ask = ctx.best_ask(side);
-        if ask <= LOTTERY_THRESHOLD && ask > 0.0 {
+        if ask <= LOTTERY_THRESHOLD && ask > 0.0 && pair_cost_ok(ctx, side, ask) {
             let reason = format!("bonereaper:lottery:{}", side.as_lowercase());
             return make_buy(ctx, side, ask, LOTTERY_LOT, &reason);
         }
@@ -322,16 +356,12 @@ fn check_scoop(ctx: &StrategyContext<'_>, p: &Params) -> Option<PlannedOrder> {
     for &other in &[Outcome::Up, Outcome::Down] {
         let other_ask = ctx.best_ask(other);
         if other_ask <= p.scoop_threshold && other_ask > 0.0 {
-            // Dominant taraftan alım: scoop edilen taraf değil, dominant taraf
-            // Doc Bölüm 7: `for side in ["UP","DOWN"]: other_side = karşı; 
-            // if ob[other_side].ask <= threshold → place on side`
-            // Yani dominant taraftan scoop emri verilir (bu tarafı büyüt).
-            // Ama aslında dok'ta scoop buy yapılan taraf dominant taraf.
             let lot = scoop_lot(other_ask);
-            // Scoop emrini other'ın karşısına değil, dominant'a veriyoruz
-            // Doc: "return side, ob[side].ask, lot" — side = dominant
             let dom_side = other.opposite();
             let dom_ask = ctx.best_ask(dom_side);
+            if !pair_cost_ok(ctx, dom_side, dom_ask) {
+                continue;
+            }
             let reason = format!("bonereaper:scoop:{}", dom_side.as_lowercase());
             return make_buy(ctx, dom_side, dom_ask, lot, &reason);
         }
@@ -343,6 +373,7 @@ fn check_scoop(ctx: &StrategyContext<'_>, p: &Params) -> Option<PlannedOrder> {
 fn check_dutch_book(ctx: &StrategyContext<'_>) -> Option<Vec<PlannedOrder>> {
     let up_ask = ctx.up_best_ask;
     let dn_ask = ctx.down_best_ask;
+    // Dutch Book zaten up_ask + dn_ask < 1.00 kontrolü yapıyor — pair_cost_ok ile örtüşür.
     if up_ask + dn_ask >= 1.0 || up_ask <= 0.0 || dn_ask <= 0.0 {
         return None;
     }
