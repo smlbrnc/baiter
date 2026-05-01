@@ -16,18 +16,9 @@ import {
   Workflow,
 } from "lucide-react";
 import type { BotRow } from "@/lib/types";
-import { STRATEGY_PARAMS_DEFAULTS } from "@/lib/types";
 
 /** Bot ayarlarını yan yana özet kartları (bot detay / market detay sayfaları). */
 export function BotSettingsCards({ bot }: { bot: BotRow }) {
-  const sp = bot.strategy_params ?? {};
-  const rtdsEnabled = sp.rtds_enabled ?? STRATEGY_PARAMS_DEFAULTS.rtds_enabled;
-  const windowWeight =
-    sp.window_delta_weight ?? STRATEGY_PARAMS_DEFAULTS.window_delta_weight;
-  const rtdsLabel = rtdsEnabled
-    ? `On · w=${windowWeight.toFixed(2)}`
-    : "Off";
-
   const cards: { label: string; value: string; icon: LucideIcon }[] = [
     {
       label: "Strategy",
@@ -40,8 +31,8 @@ export function BotSettingsCards({ bot }: { bot: BotRow }) {
       icon: CircleDollarSign,
     },
     {
-      label: "RTDS",
-      value: rtdsLabel,
+      label: "Signal",
+      value: "CVD + OKX EMA",
       icon: Radio,
     },
     {

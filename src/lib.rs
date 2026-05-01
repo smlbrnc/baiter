@@ -13,6 +13,7 @@ pub mod db;
 pub mod engine;
 pub mod error;
 pub mod ipc;
+pub mod okx;
 pub mod polymarket;
 pub mod rtds;
 pub mod slug;

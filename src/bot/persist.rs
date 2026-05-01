@@ -77,7 +77,7 @@ fn build_pnl_event(
     }
 }
 
-/// 1 sn cadence: `market_ticks` insert (BBA + composite + RTDS alt sinyalleri).
+/// 1 sn cadence: `market_ticks` insert (BBA + sinyal snapshot).
 pub fn snapshot_tick(ctx: &Ctx, sess: &MarketSession, sig: &SignalSnapshot) {
     if sess.market_session_id == 0 {
         return;
@@ -88,9 +88,9 @@ pub fn snapshot_tick(ctx: &Ctx, sess: &MarketSession, sig: &SignalSnapshot) {
         down_best_bid: sess.down_best_bid,
         down_best_ask: sess.down_best_ask,
         signal_score: sig.composite,
-        bsi: sig.bsi,
-        ofi: sig.ofi,
-        cvd: sig.cvd,
+        imbalance: sig.imbalance,
+        momentum_bps: sig.momentum_bps,
+        skor: sig.skor,
         ts_ms: now_ms() as i64,
     };
     db::ticks::persist_tick(

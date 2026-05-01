@@ -284,9 +284,9 @@ export default function MarketDetailPage() {
         down_best_bid: ev.down_best_bid,
         down_best_ask: ev.down_best_ask,
         signal_score: ev.signal_score,
-        bsi: ev.bsi,
-        ofi: ev.ofi,
-        cvd: ev.cvd,
+        imbalance: ev.imbalance,
+        momentum_bps: ev.momentum_bps,
+        skor: ev.skor,
         ts_ms: ev.ts_ms,
       };
     },

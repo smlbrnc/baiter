@@ -1,7 +1,10 @@
-//! `market_ticks` tablosu — 1 sn cadence BBA + Binance signal snapshot'ları.
+//! `market_ticks` tablosu — 1 sn cadence BBA + sinyal snapshot'ları.
 //!
 //! Yazım: `bot/persist.rs::snapshot_tick` fire-and-forget (`spawn_db`).
 //! Okuma: `api.rs::session_ticks` history endpoint'i.
+//!
+//! DB sütunları (`bsi`, `ofi`, `cvd`) eski adlarıyla korunur;
+//! Rust struct alanları yeni sinyal anlamlarını yansıtır.
 
 use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqlitePool};
@@ -16,10 +19,14 @@ pub struct MarketTick {
     pub up_best_ask: f64,
     pub down_best_bid: f64,
     pub down_best_ask: f64,
+    /// `skor × 5 + 5 ∈ [0, 10]`; 5.0 = nötr.
     pub signal_score: f64,
-    pub bsi: f64,
-    pub ofi: f64,
-    pub cvd: f64,
+    /// Binance CVD imbalance ∈ [−1, +1] — DB sütun adı: `bsi`.
+    pub imbalance: f64,
+    /// OKX EMA momentum (bps, kırpılmamış) — DB sütun adı: `ofi`.
+    pub momentum_bps: f64,
+    /// Birleşik sinyal skoru ∈ [−1, +1] — DB sütun adı: `cvd`.
+    pub skor: f64,
     pub ts_ms: i64,
 }
 
@@ -42,9 +49,9 @@ pub async fn insert_market_tick(
     .bind(tick.down_best_bid)
     .bind(tick.down_best_ask)
     .bind(tick.signal_score)
-    .bind(tick.bsi)
-    .bind(tick.ofi)
-    .bind(tick.cvd)
+    .bind(tick.imbalance)
+    .bind(tick.momentum_bps)
+    .bind(tick.skor)
     .bind(tick.ts_ms)
     .execute(pool)
     .await?;
@@ -94,9 +101,9 @@ pub async fn ticks_for_session(
             down_best_bid: r.get("down_best_bid"),
             down_best_ask: r.get("down_best_ask"),
             signal_score: r.get("signal_score"),
-            bsi: r.get("bsi"),
-            ofi: r.get("ofi"),
-            cvd: r.get("cvd"),
+            imbalance: r.get("bsi"),
+            momentum_bps: r.get("ofi"),
+            skor: r.get("cvd"),
             ts_ms: r.get("ts_ms"),
         })
         .collect())

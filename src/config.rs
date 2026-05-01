@@ -158,16 +158,9 @@ impl StrategyParams {
             .unwrap_or(0.98)
     }
 
+    /// RTDS Chainlink task'ını başlatmak için kontrol (sinyal hesabında kullanılmaz).
     pub fn rtds_enabled_or_default(&self) -> bool {
         self.rtds_enabled.unwrap_or(true)
-    }
-
-    pub fn window_delta_weight_or_default(&self) -> f64 {
-        self.window_delta_weight.unwrap_or(0.70).clamp(0.0, 1.0)
-    }
-
-    pub fn signal_lookahead_secs_or_default(&self) -> f64 {
-        self.signal_lookahead_secs.unwrap_or(3.0).clamp(0.0, 30.0)
     }
 
     pub fn open_delta_or_default(&self) -> f64 {

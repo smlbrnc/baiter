@@ -11,6 +11,7 @@ use crate::config::{BotConfig, Credentials, RuntimeEnv};
 use crate::db;
 use crate::engine::{Executor, LiveExecutor, Simulator};
 use crate::error::AppError;
+use crate::okx::{self, SharedOkxState};
 use crate::polymarket::{shared_http_client, ClobClient, GammaClient};
 use crate::rtds::{self, SharedRtdsState};
 use crate::slug::{parse_slug_or_prefix, SlugInfo};
@@ -28,7 +29,11 @@ pub struct Ctx {
     pub gamma: GammaClient,
     pub creds: Option<Credentials>,
     pub executor: Executor,
+    /// Binance CVD sinyal durumu.
     pub signal_state: SharedSignalState,
+    /// OKX EMA momentum sinyal durumu.
+    pub okx_state: SharedOkxState,
+    /// RTDS Chainlink durumu — pencere açılışı DB kaydı için tutulur.
     pub rtds_state: SharedRtdsState,
 }
 
@@ -76,12 +81,15 @@ pub async fn load(bot_id: i64) -> Result<(Ctx, SlugInfo, Signal, Signal), AppErr
     let (executor, clob) = build_executor(&http, &env_, &cfg, creds.as_ref())?;
 
     let signal_state = new_shared_state();
+    let okx_state = okx::new_shared_state();
     let rtds_state = rtds::new_shared_state();
+
     spawn_background_tasks(BackgroundTasksArgs {
         bot_id,
         slug,
         heartbeat_dir: env_.heartbeat_dir.clone(),
         signal_state: signal_state.clone(),
+        okx_state: okx_state.clone(),
         rtds_state: rtds_state.clone(),
         clob: clob.as_ref(),
         cfg: &cfg,
@@ -103,6 +111,7 @@ pub async fn load(bot_id: i64) -> Result<(Ctx, SlugInfo, Signal, Signal), AppErr
             creds,
             executor,
             signal_state,
+            okx_state,
             rtds_state,
         },
         slug,
@@ -184,28 +193,40 @@ struct BackgroundTasksArgs<'a> {
     slug: SlugInfo,
     heartbeat_dir: String,
     signal_state: SharedSignalState,
+    okx_state: SharedOkxState,
     rtds_state: SharedRtdsState,
     clob: Option<&'a Arc<ClobClient>>,
     cfg: &'a BotConfig,
     env_: &'a RuntimeEnv,
 }
 
-/// Binance signal + (opsiyonel) RTDS + heartbeat + (Live'da) CLOB ping task'larını spawn eder.
+/// Binance CVD + OKX EMA + RTDS + heartbeat + (Live'da) CLOB ping task'larını spawn eder.
 fn spawn_background_tasks(args: BackgroundTasksArgs<'_>) {
     let BackgroundTasksArgs {
         bot_id,
         slug,
         heartbeat_dir,
         signal_state,
+        okx_state,
         rtds_state,
         clob,
         cfg,
         env_,
     } = args;
+
+    // Binance CVD sinyal task'ı
     let symbol = slug.asset.binance_symbol().to_string();
     tokio::spawn(async move {
-        binance::run_binance_signal(&symbol, slug.interval, signal_state, bot_id).await;
+        binance::run_binance_signal(&symbol, signal_state, bot_id).await;
     });
+
+    // OKX EMA momentum task'ı
+    let okx_inst_id = slug.asset.okx_inst_id().to_string();
+    tokio::spawn(async move {
+        okx::run_okx_signal(&okx_inst_id, okx_state, bot_id).await;
+    });
+
+    // RTDS Chainlink — pencere açılışı DB kaydı için (sinyal hesabında kullanılmaz)
     if cfg.strategy_params.rtds_enabled_or_default() {
         let rtds_symbol = slug.asset.rtds_symbol().to_string();
         let ws_url = env_.rtds_ws_url.clone();
@@ -223,6 +244,7 @@ fn spawn_background_tasks(args: BackgroundTasksArgs<'_>) {
             .await;
         });
     }
+
     tokio::spawn(tasks::heartbeat_task(tasks::heartbeat_path(
         &heartbeat_dir,
         bot_id,

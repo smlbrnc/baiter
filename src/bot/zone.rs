@@ -1,4 +1,4 @@
-//! 1 sn cadence frontend emit: `TickSnapshot` + opsiyonel `RtdsUpdate`.
+//! 1 sn cadence frontend emit: `TickSnapshot`.
 
 use crate::engine::MarketSession;
 use crate::ipc::{self, FrontendEvent};
@@ -7,7 +7,7 @@ use crate::time::now_ms;
 use super::ctx::Ctx;
 use super::signal::SignalSnapshot;
 
-/// `TickSnapshot` (book + composite) + `RtdsUpdate` (varsa) emit'i; cadence caller'da.
+/// `TickSnapshot` (book + sinyal) emit'i; cadence caller'da.
 pub fn emit_frontend_snapshot(ctx: &Ctx, sess: &MarketSession, sig: &SignalSnapshot) {
     let ts_ms = now_ms();
 
@@ -19,19 +19,9 @@ pub fn emit_frontend_snapshot(ctx: &Ctx, sess: &MarketSession, sig: &SignalSnaps
         down_best_bid: sess.down_best_bid,
         down_best_ask: sess.down_best_ask,
         signal_score: sig.composite,
-        bsi: sig.bsi,
-        ofi: sig.ofi,
-        cvd: sig.cvd,
+        imbalance: sig.imbalance,
+        momentum_bps: sig.momentum_bps,
+        skor: sig.skor,
         ts_ms,
     });
-
-    if let Some(rtds_snap) = sig.rtds {
-        ipc::emit(&FrontendEvent::RtdsUpdate {
-            bot_id: ctx.bot_id,
-            current_price: rtds_snap.current_price,
-            window_open_price: rtds_snap.window_open_price,
-            window_delta_bps: rtds_snap.window_delta_bps,
-            ts_ms,
-        });
-    }
 }

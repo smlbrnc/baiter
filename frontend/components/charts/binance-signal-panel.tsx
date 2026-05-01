@@ -9,7 +9,6 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import type { MarketTick, StrategyParams } from "@/lib/types";
-import { STRATEGY_PARAMS_DEFAULTS } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import {
   SECTION_LABEL_CLASS,
@@ -18,20 +17,11 @@ import {
   SIGNAL_PAIR_HEADER_CLASS,
 } from "@/lib/chart-utils";
 
-/* ─── Signal formula (mirrors src/bot/tick.rs + src/strategy/harvest/dual.rs) ───
+/* ─── Signal formula (signal.md Katman 3) ───────────────────────────────────
  *
- *   DB'deki signal_score = composite (backend hesaplar):
- *     composite = w_window × window_delta_score + (1−w_window) × binance_score
- *     (w_window = strategy_params.window_delta_weight, default 0.70)
- *
- *   OpenDual fiyatı composite'i doğrudan hedef olasılığa eşler (orderbook bağımsız):
- *     up_price   = clamp(snap(composite / 10),       MIN, MAX)
- *     down_price = clamp(snap(1 − composite / 10),   MIN, MAX)
- *
- *   composite=5 → 0.50/0.50; composite=10 → 0.95/0.05; composite=0 → 0.05/0.95.
- *
- *   Averaging size çarpanı (`HarvestContext::signal_multiplier`) da composite'e
- *   göre tier seçer; ek bir gate yok.
+ *   skor = (imbalance × 0.6) + (clip(momentum_bps, −5, +5) / 5 × 0.4)
+ *   signal_score = skor × 5 + 5  ∈ [0, 10]  (5.0 = nötr)
+ *   skor > 0 → UP, skor ≤ 0 → DOWN
  */
 const TICK = 0.01;
 const MIN_PRICE = 0.05;
@@ -140,15 +130,10 @@ function PriceRow({
 }
 
 /* ─── Panel ─────────────────────────────────────────────── */
-export function BinanceSignalPanel({ data, strategyParams }: Props) {
-  const sp = strategyParams ?? {};
-  const rtdsEnabled = sp.rtds_enabled ?? STRATEGY_PARAMS_DEFAULTS.rtds_enabled;
-  const windowWeight = sp.window_delta_weight ?? STRATEGY_PARAMS_DEFAULTS.window_delta_weight;
-
+export function BinanceSignalPanel({ data, strategyParams: _strategyParams }: Props) {
   const d = useMemo(() => {
     if (!data.length) return null;
     const last = data[data.length - 1]!;
-    // signal_score in DB = composite (backend: w×window_delta + (1-w)×binance)
     const composite = last.signal_score;
     const { upBid, downBid, delta } = dualPrices(composite);
     const bar = (composite - 5) * 2; // [0,10] → [-10,+10] for display
@@ -163,6 +148,9 @@ export function BinanceSignalPanel({ data, strategyParams }: Props) {
       delta,
       upAsk: last.up_best_ask,
       downAsk: last.down_best_ask,
+      imbalance: last.imbalance ?? 0,
+      momentum_bps: last.momentum_bps ?? 0,
+      skor: last.skor ?? 0,
     };
   }, [data]);
 
@@ -228,11 +216,17 @@ export function BinanceSignalPanel({ data, strategyParams }: Props) {
               </div>
             </div>
 
-            {/* Meta — composite + δ (OpenDual fiyatına direkt yansır) */}
+            {/* Meta — composite + skor + δ */}
             <div className="text-muted-foreground/60 flex items-center justify-between font-mono text-[9px] tabular-nums">
               <span>
                 cmp{" "}
                 <span className="text-muted-foreground">{d.composite.toFixed(2)}</span>
+              </span>
+              <span>
+                skor{" "}
+                <span className={d.skor > 0 ? "text-emerald-400" : "text-rose-400"}>
+                  {d.skor >= 0 ? "+" : ""}{d.skor.toFixed(3)}
+                </span>
               </span>
               <span>
                 δ{" "}
@@ -240,21 +234,19 @@ export function BinanceSignalPanel({ data, strategyParams }: Props) {
               </span>
             </div>
 
-            {/* RTDS config row */}
+            {/* Sinyal kaynakları: Binance imbalance + OKX momentum */}
             <div className="text-muted-foreground/50 flex items-center justify-between font-mono text-[9px] tabular-nums">
               <span>
-                rtds{" "}
-                <span className={rtdsEnabled ? "text-emerald-400/80" : "text-muted-foreground"}>
-                  {rtdsEnabled ? "on" : "off"}
+                imb{" "}
+                <span className={d.imbalance >= 0 ? "text-emerald-400/80" : "text-rose-400/80"}>
+                  {d.imbalance >= 0 ? "+" : ""}{d.imbalance.toFixed(3)}
                 </span>
               </span>
               <span>
-                w_δ{" "}
-                <span className="text-muted-foreground">{windowWeight.toFixed(2)}</span>
-              </span>
-              <span>
-                w_bn{" "}
-                <span className="text-muted-foreground">{(1 - windowWeight).toFixed(2)}</span>
+                mom{" "}
+                <span className={d.momentum_bps >= 0 ? "text-emerald-400/80" : "text-rose-400/80"}>
+                  {d.momentum_bps >= 0 ? "+" : ""}{d.momentum_bps.toFixed(1)}bps
+                </span>
               </span>
             </div>
 

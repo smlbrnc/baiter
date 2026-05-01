@@ -176,16 +176,20 @@ export interface SessionDetail {
   image: string | null;
 }
 
-/** `/api/bots/:id/sessions/:slug/ticks` — 1 sn cadence BBA + Binance signal. */
+/** `/api/bots/:id/sessions/:slug/ticks` — 1 sn cadence BBA + sinyal snapshot. */
 export interface MarketTick {
   up_best_bid: number;
   up_best_ask: number;
   down_best_bid: number;
   down_best_ask: number;
+  /** `skor × 5 + 5 ∈ [0, 10]`; 5.0 = nötr. */
   signal_score: number;
-  bsi: number;
-  ofi: number;
-  cvd: number;
+  /** Binance CVD imbalance ∈ [−1, +1]. */
+  imbalance: number;
+  /** OKX EMA momentum (bps, kırpılmamış). */
+  momentum_bps: number;
+  /** Birleşik sinyal skoru ∈ [−1, +1]; + = UP, − = DOWN. */
+  skor: number;
   ts_ms: number;
 }
 
@@ -285,7 +289,7 @@ export type FrontendEvent =
       ts_ms: number;
     }
   | {
-      /** 1 sn cadence book + composite sinyal snapshot'ı; session slug ile eşleştirilir. */
+      /** 1 sn cadence book + sinyal snapshot'ı; session slug ile eşleştirilir. */
       kind: "TickSnapshot";
       bot_id: number;
       slug: string;
@@ -293,10 +297,14 @@ export type FrontendEvent =
       up_best_ask: number;
       down_best_bid: number;
       down_best_ask: number;
+      /** `skor × 5 + 5 ∈ [0, 10]`; 5.0 = nötr. */
       signal_score: number;
-      bsi: number;
-      ofi: number;
-      cvd: number;
+      /** Binance CVD imbalance ∈ [−1, +1]. */
+      imbalance: number;
+      /** OKX EMA momentum (bps, kırpılmamış). */
+      momentum_bps: number;
+      /** Birleşik sinyal skoru ∈ [−1, +1]; + = UP, − = DOWN. */
+      skor: number;
       ts_ms: number;
     }
   | {
@@ -403,9 +411,6 @@ export interface GlobalCredentials {
 /** `StrategyParams` default'ları (`config::StrategyParams::*_or_default`). */
 export const STRATEGY_PARAMS_DEFAULTS = {
   profit_lock_pct: 0.02,
-  rtds_enabled: true,
-  window_delta_weight: 0.7,
-  signal_lookahead_secs: 3.0,
   open_delta: 0.01,
   pyramid_agg_delta: 0.015,
   pyramid_fak_delta: 0.025,

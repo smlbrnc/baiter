@@ -1,6 +1,6 @@
-//! Binance Spot aggTrade sinyal katmanı (§14): sliding-window CVD +
-//! Hawkes BSI + OFI → `signal_score` ∈ [0, 10]. Warmup ve bağlantı koptuğunda
-//! nötr `5.0`.
+//! Binance Spot aggTrade sinyal katmanı — 3 saniyelik kayan CVD penceresi.
+//! `imbalance = (buy_vol − sell_vol) / (buy_vol + sell_vol)` ∈ [−1, +1].
+//! Warmup tamamlanana kadar `imbalance = 0.0`, `warmup = true`.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -13,24 +13,28 @@ use tokio::time::{sleep, timeout};
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::ipc;
-use crate::slug::Interval;
+
+/// Minimum işlem adedi; bu sayıya ulaşmadan `warmup = true`.
+const WARMUP_TRADES: usize = 5;
+/// CVD kayan pencere (saniye) — signal.md WINDOW_S.
+const WINDOW_S: f64 = 3.0;
+/// 60 sn frame yoksa WS ölü sayılır.
+const FRAME_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BinanceSignalState {
+    /// `(buy_vol − sell_vol) / (buy_vol + sell_vol)` ∈ [−1, +1]; 0 = nötr.
+    pub imbalance: f64,
+    /// Ham CVD: `buy_vol − sell_vol` (lot cinsinden, pencere dahilinde).
     pub cvd: f64,
-    pub bsi: f64,
-    pub ofi: f64,
-    pub signal_score: f64,
+    /// `true` = warmup tamamlanmadı, sinyal güvenilmez.
+    pub warmup: bool,
 }
 
 impl Default for BinanceSignalState {
     fn default() -> Self {
-        Self {
-            cvd: 0.0,
-            bsi: 0.0,
-            ofi: 0.0,
-            signal_score: 5.0,
-        }
+        Self { imbalance: 0.0, cvd: 0.0, warmup: true }
     }
 }
 
@@ -40,199 +44,86 @@ pub fn new_shared_state() -> SharedSignalState {
     Arc::new(RwLock::new(BinanceSignalState::default()))
 }
 
-/// CVD kayan penceresi (§14.2).
-fn cvd_window_secs(interval: Interval) -> u64 {
-    match interval {
-        Interval::M5 => 60,
-        Interval::M15 => 180,
-        Interval::H1 => 600,
-        Interval::H4 => 1800,
-    }
-}
-
 /// Binance USD-M Futures aggTrade payload (yalnızca tüketilen alanlar).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Deserialize)]
 struct AggTrade {
     #[serde(rename = "E")]
     event_time_ms: u64,
     #[serde(rename = "q")]
     qty: String,
+    /// `true` = satıcı agresif (satış baskısı), `false` = alıcı agresif (alım baskısı).
     #[serde(rename = "m")]
     is_buyer_maker: bool,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Copy)]
 struct TradeEntry {
     ts_ms: u64,
-    delta: f64,
+    qty: f64,
     is_buy: bool,
 }
 
-const NEUTRAL: f64 = 5.0;
-const MAX_STATS: usize = 300;
-const WARMUP_TRADES: usize = 30;
-const HAWKES_KAPPA: f64 = 0.1;
-
-pub struct SignalComputer {
+/// 3 saniyelik kayan CVD hesaplayıcısı.
+struct CvdEngine {
     window_ms: u64,
-    window_trades: VecDeque<TradeEntry>,
-    cvd: f64,
-    /// Penceredeki BUY işlem hacmi (lot); hacim-ağırlıklı OFI için.
+    trades: VecDeque<TradeEntry>,
     buy_vol: f64,
-    /// Penceredeki SELL işlem hacmi (lot); hacim-ağırlıklı OFI için.
     sell_vol: f64,
-    bsi: f64,
-    last_ts_ms: Option<u64>,
-    ofi_history: VecDeque<f64>,
+    total_count: usize,
 }
 
-impl SignalComputer {
-    pub fn new(interval: Interval) -> Self {
+impl CvdEngine {
+    fn new() -> Self {
         Self {
-            window_ms: cvd_window_secs(interval) * 1000,
-            window_trades: VecDeque::new(),
-            cvd: 0.0,
+            window_ms: (WINDOW_S * 1000.0) as u64,
+            trades: VecDeque::new(),
             buy_vol: 0.0,
             sell_vol: 0.0,
-            bsi: 0.0,
-            last_ts_ms: None,
-            ofi_history: VecDeque::with_capacity(MAX_STATS),
+            total_count: 0,
         }
     }
 
-    pub fn ingest(&mut self, ts_ms: u64, qty: f64, is_buy: bool) {
-        let delta = if is_buy { qty } else { -qty };
-
-        self.window_trades.push_back(TradeEntry { ts_ms, delta, is_buy });
-        self.cvd += delta;
-        if is_buy {
-            self.buy_vol += qty;
-        } else {
-            self.sell_vol += qty;
-        }
+    fn ingest(&mut self, ts_ms: u64, qty: f64, is_buy: bool) {
+        self.trades.push_back(TradeEntry { ts_ms, qty, is_buy });
+        if is_buy { self.buy_vol += qty; } else { self.sell_vol += qty; }
+        self.total_count += 1;
 
         let cutoff = ts_ms.saturating_sub(self.window_ms);
-        while let Some(front) = self.window_trades.front() {
-            if front.ts_ms >= cutoff {
-                break;
-            }
-            let entry = self.window_trades.pop_front().unwrap();
-            self.cvd -= entry.delta;
-            let evicted_qty = entry.delta.abs();
-            if entry.is_buy {
-                self.buy_vol = (self.buy_vol - evicted_qty).max(0.0);
-            } else {
-                self.sell_vol = (self.sell_vol - evicted_qty).max(0.0);
-            }
-        }
-
-        // Hawkes BSI: önceki BSI üstel bozunum + yeni delta.
-        self.bsi = match self.last_ts_ms {
-            Some(prev) => {
-                let dt = ts_ms.saturating_sub(prev) as f64 / 1000.0;
-                self.bsi * (-HAWKES_KAPPA * dt).exp() + delta
-            }
-            None => delta,
-        };
-        self.last_ts_ms = Some(ts_ms);
-
-        self.ofi_history.push_back(self.current_ofi());
-        if self.ofi_history.len() > MAX_STATS {
-            self.ofi_history.pop_front();
+        while let Some(front) = self.trades.front() {
+            if front.ts_ms >= cutoff { break; }
+            let e = self.trades.pop_front().unwrap();
+            if e.is_buy { self.buy_vol = (self.buy_vol - e.qty).max(0.0); }
+            else        { self.sell_vol = (self.sell_vol - e.qty).max(0.0); }
         }
     }
 
-    /// Hacim-ağırlıklı OFI: `(buy_vol - sell_vol) / (buy_vol + sell_vol)` ∈ [-1, +1].
-    /// Balina işlemlerini küçük retail emirlerden ayırt eder.
-    fn current_ofi(&self) -> f64 {
+    fn snapshot(&self) -> (f64, f64, bool) {
         let total = self.buy_vol + self.sell_vol;
-        if total > 0.0 {
-            (self.buy_vol - self.sell_vol) / total
-        } else {
-            0.0
-        }
-    }
-
-    pub fn snapshot(&self) -> (f64, f64, f64, f64, bool) {
-        let ofi = self.current_ofi();
-        let warmup = self.ofi_history.len() < WARMUP_TRADES;
-        let signal_score = if warmup {
-            NEUTRAL
-        } else {
-            // OFI (hacim-ağırlıklı anlık oran) + CVD (pencere birikimli yön)
-            // 60/40 harmanlama: OFI daha anlık, CVD daha trende duyarlı.
-            let ofi_score = ofi_to_score(ofi);
-            let cvd_score = cvd_ratio_to_score(self.cvd, self.buy_vol, self.sell_vol);
-            (0.6 * ofi_score + 0.4 * cvd_score).clamp(0.0, 10.0)
-        };
-        (self.cvd, self.bsi, ofi, signal_score, warmup)
+        let imbalance = if total > 0.0 { (self.buy_vol - self.sell_vol) / total } else { 0.0 };
+        let cvd = self.buy_vol - self.sell_vol;
+        let warmup = self.total_count < WARMUP_TRADES;
+        (imbalance, cvd, warmup)
     }
 }
-
-/// OFI (`[−1, +1]`) → `[0, 10]` skoru (5.0 = nötr). Piecewise-linear, absolute
-/// kalibrasyon; BTC/ETH spot dağılımına göre (|ofi|≈0.30 güçlü, ≈0.50 ekstrem).
-#[inline]
-pub fn ofi_to_score(ofi: f64) -> f64 {
-    let d = ofi.abs().min(1.0);
-    let sgn = ofi.signum();
-    let score_delta = if d < 0.05 {
-        d * 8.0
-    } else if d < 0.15 {
-        0.40 + (d - 0.05) * 11.0
-    } else if d < 0.30 {
-        1.50 + (d - 0.15) * 10.0
-    } else if d < 0.50 {
-        3.00 + (d - 0.30) * 9.0
-    } else {
-        4.80 + (d - 0.50) * 0.4
-    };
-    (5.0 + sgn * score_delta).clamp(0.0, 10.0)
-}
-
-/// CVD oranı (`cvd / total_vol`) → `[0, 10]` skoru.
-/// `cvd_ratio ∈ [-1, +1]`; aynı piecewise eğri OFI ile tutarlı kalibrasyon sağlar.
-#[inline]
-pub fn cvd_ratio_to_score(cvd: f64, buy_vol: f64, sell_vol: f64) -> f64 {
-    let total = buy_vol + sell_vol;
-    if total <= 0.0 {
-        return 5.0;
-    }
-    ofi_to_score(cvd / total)
-}
-
-/// 60 sn frame yoksa WS ölü sayılır (BTC/ETH'de saniyede onlarca trade akar).
-const FRAME_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Binance aggTrade WS görevi; kopuşta exponential backoff ile yeniden bağlanır,
-/// disconnect süresince `signal_score = 5.0`.
-pub async fn run_binance_signal(
-    symbol: &str,
-    interval: Interval,
-    state: SharedSignalState,
-    bot_id: i64,
-) {
+/// disconnect süresince `imbalance = 0.0`, `warmup = true`.
+pub async fn run_binance_signal(symbol: &str, state: SharedSignalState, bot_id: i64) {
     let url = format!("wss://stream.binance.com:9443/ws/{symbol}@aggTrade");
     let label = bot_id.to_string();
     let mut backoff = 1u64;
     loop {
         ipc::log_line(
             &label,
-            format!("🛰️  Binance ws connecting (symbol={symbol}, interval={interval:?}) → {url}"),
+            format!("🛰️  Binance CVD ws bağlanıyor (symbol={symbol}) → {url}"),
         );
-        match connect_stream(&url, interval, &state, &label).await {
-            Ok(()) => ipc::log_line(
-                &label,
-                format!("⚠️  Binance ws closed, reconnect in {backoff}s"),
-            ),
-            Err(e) => ipc::log_line(
-                &label,
-                format!("❌ Binance ws error: {e} (reconnect in {backoff}s)"),
-            ),
+        match connect_stream(&url, &state, &label).await {
+            Ok(()) => ipc::log_line(&label, format!("⚠️  Binance ws kapandı, {backoff}s içinde yeniden bağlanılacak")),
+            Err(e) => ipc::log_line(&label, format!("❌ Binance ws hatası: {e} ({backoff}s içinde yeniden)")),
         }
         {
             let mut s = state.write().await;
-            s.signal_score = NEUTRAL;
+            *s = BinanceSignalState::default();
         }
         sleep(Duration::from_secs(backoff)).await;
         backoff = (backoff * 2).min(60);
@@ -241,34 +132,29 @@ pub async fn run_binance_signal(
 
 async fn connect_stream(
     url: &str,
-    interval: Interval,
     state: &SharedSignalState,
     label: &str,
 ) -> Result<(), anyhow::Error> {
-    let (ws_stream, _) = match timeout(CONNECT_TIMEOUT, tokio_tungstenite::connect_async(url)).await
-    {
-        Ok(res) => res?,
-        Err(_) => return Err(anyhow::anyhow!("connect_async timeout (10s)")),
-    };
+    let (ws_stream, _) =
+        match timeout(CONNECT_TIMEOUT, tokio_tungstenite::connect_async(url)).await {
+            Ok(res) => res?,
+            Err(_) => return Err(anyhow::anyhow!("connect_async timeout (10s)")),
+        };
     let (mut write, mut read) = ws_stream.split();
-    let mut computer = SignalComputer::new(interval);
+    let mut engine = CvdEngine::new();
     let mut prev_warmup = true;
+
     loop {
         let next = match timeout(FRAME_IDLE_TIMEOUT, read.next()).await {
             Ok(Some(msg)) => msg,
             Ok(None) => return Ok(()),
-            Err(_) => {
-                return Err(anyhow::anyhow!(
-                    "binance ws idle > {}s (no aggTrade frames)",
-                    FRAME_IDLE_TIMEOUT.as_secs()
-                ));
-            }
+            Err(_) => return Err(anyhow::anyhow!(
+                "binance ws idle > {}s (aggTrade frame yok)",
+                FRAME_IDLE_TIMEOUT.as_secs()
+            )),
         };
         let text = match next? {
-            Message::Ping(payload) => {
-                let _ = write.send(Message::Pong(payload)).await;
-                continue;
-            }
+            Message::Ping(payload) => { let _ = write.send(Message::Pong(payload)).await; continue; }
             Message::Close(_) => return Ok(()),
             Message::Text(t) => t,
             _ => continue,
@@ -281,28 +167,26 @@ async fn connect_stream(
         let qty: f64 = match trade.qty.parse() {
             Ok(v) => v,
             Err(e) => {
-                tracing::warn!(error=%e, qty=%trade.qty, "binance aggTrade qty parse failed");
+                tracing::warn!(error=%e, qty=%trade.qty, "binance aggTrade qty parse başarısız");
                 continue;
             }
         };
 
-        computer.ingest(trade.event_time_ms, qty, !trade.is_buyer_maker);
-        let (cvd, bsi, ofi, score, warmup) = computer.snapshot();
+        // is_buyer_maker = true → satıcı agresif → SELL baskısı
+        engine.ingest(trade.event_time_ms, qty, !trade.is_buyer_maker);
+        let (imbalance, cvd, warmup) = engine.snapshot();
         {
             let mut s = state.write().await;
+            s.imbalance = imbalance;
             s.cvd = cvd;
-            s.bsi = bsi;
-            s.ofi = ofi;
-            s.signal_score = score;
+            s.warmup = warmup;
         }
 
         if prev_warmup && !warmup {
             prev_warmup = false;
             ipc::log_line(
                 label,
-                format!(
-                    "🟢 Binance warmup complete → signal_score={score:.2} cvd={cvd:.3} bsi={bsi:.3} ofi={ofi:+.3}"
-                ),
+                format!("🟢 Binance CVD warmup tamamlandı → imbalance={imbalance:+.3} cvd={cvd:.3}"),
             );
         }
     }

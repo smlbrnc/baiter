@@ -32,6 +32,16 @@ impl Asset {
         }
     }
 
+    /// OKX spot trades channel instrument ID formatı.
+    pub fn okx_inst_id(self) -> &'static str {
+        match self {
+            Self::Btc => "BTC-USDT",
+            Self::Eth => "ETH-USDT",
+            Self::Sol => "SOL-USDT",
+            Self::Xrp => "XRP-USDT",
+        }
+    }
+
     /// Polymarket RTDS `crypto_prices_chainlink` filter formatı.
     pub fn rtds_symbol(self) -> &'static str {
         match self {

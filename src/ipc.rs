@@ -126,13 +126,6 @@ pub enum FrontendEvent {
         status: String,
         ts_ms: u64,
     },
-    RtdsUpdate {
-        bot_id: i64,
-        current_price: f64,
-        window_open_price: Option<f64>,
-        window_delta_bps: f64,
-        ts_ms: u64,
-    },
     TickSnapshot {
         bot_id: i64,
         slug: String,
@@ -140,10 +133,14 @@ pub enum FrontendEvent {
         up_best_ask: f64,
         down_best_bid: f64,
         down_best_ask: f64,
+        /// `skor × 5 + 5 ∈ [0, 10]`; 5.0 = nötr.
         signal_score: f64,
-        bsi: f64,
-        ofi: f64,
-        cvd: f64,
+        /// Binance CVD imbalance ∈ [−1, +1].
+        imbalance: f64,
+        /// OKX EMA momentum (bps, kırpılmamış).
+        momentum_bps: f64,
+        /// Birleşik sinyal skoru ∈ [−1, +1]; + = UP, − = DOWN.
+        skor: f64,
         ts_ms: u64,
     },
     PnlUpdate {
