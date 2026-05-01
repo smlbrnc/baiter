@@ -102,7 +102,7 @@ pub struct BotConfig {
 }
 
 /// Strateji-spesifik parametreler; `bots.strategy_params` JSON sütunundan
-/// parse edilir, tüm stratejiler (Alis/Elis/Aras) buradan okur.
+/// parse edilir, tüm stratejiler (Alis/Elis) buradan okur.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StrategyParams {
     #[serde(default)]
@@ -139,35 +139,16 @@ pub struct StrategyParams {
     #[serde(default)]
     pub elis_stop_before_end_secs: Option<f64>,
 
-    // === Aras DCA + Kademeli Hedge parametreleri ===
-    /// DCA kontrol aralığı (saniye). Default: 2.0
+    // === Bonereaper parametreleri ===
+    /// BSI mutlak değer eşiği — yön kararı için primer sinyal. Default: 0.30
     #[serde(default)]
-    pub aras_poll_secs: Option<f64>,
-    /// Ortalama maliyetten min düşüş tetik (1 tick = 0.01). Default: 0.01
+    pub bonereaper_bsi_threshold: Option<f64>,
+    /// Scoop tetikleyici — karşı tarafın ask fiyatı bu eşiğin altında ise scoop. Default: 0.25
     #[serde(default)]
-    pub aras_dca_min_drop: Option<f64>,
-    /// Her emir kaç share. Default: 40.0
+    pub bonereaper_scoop_threshold: Option<f64>,
+    /// Lottery tail emri aktif mi? Default: false (yüksek risk — opt-in)
     #[serde(default)]
-    pub aras_shares_per_order: Option<f64>,
-    /// Taraf başına maks USDC. Default: 500.0
-    #[serde(default)]
-    pub aras_max_usd_per_side: Option<f64>,
-    /// Hedge adım arası bekleme (saniye). Default: 6.0
-    #[serde(default)]
-    pub aras_hedge_step_secs: Option<f64>,
-    /// Alt işlem bandı — bu altında işlem yapma. Default: 0.10
-    #[serde(default)]
-    pub aras_band_low: Option<f64>,
-    /// Üst işlem bandı — DCA için bu üstünde işlem yapma. Default: 0.90
-    #[serde(default)]
-    pub aras_band_high: Option<f64>,
-    /// Pahalı/ucuz sınırı. Default: 0.50
-    #[serde(default)]
-    pub aras_cheap_threshold: Option<f64>,
-    /// Yükselen (pahalı, mid >= 0.50) taraf emir büyüklüğü çarpanı. Default: 1.25
-    /// 1.0 = simetrik; 1.25 = yükselen tarafa %25 fazla share; >1.5 arbitraj garantisini bozabilir.
-    #[serde(default)]
-    pub aras_rising_shares_mult: Option<f64>,
+    pub bonereaper_lottery_enabled: Option<bool>,
 }
 
 impl StrategyParams {
@@ -205,33 +186,15 @@ impl StrategyParams {
         self.pyramid_usdc.unwrap_or(fallback).max(0.0)
     }
 
-    // === Aras accessors ===
-    pub fn aras_poll_secs(&self) -> f64 {
-        self.aras_poll_secs.unwrap_or(2.0).max(0.5)
+    // === Bonereaper accessors ===
+    pub fn bonereaper_bsi_threshold(&self) -> f64 {
+        self.bonereaper_bsi_threshold.unwrap_or(0.30).clamp(0.05, 2.0)
     }
-    pub fn aras_dca_min_drop(&self) -> f64 {
-        self.aras_dca_min_drop.unwrap_or(0.01).max(0.001)
+    pub fn bonereaper_scoop_threshold(&self) -> f64 {
+        self.bonereaper_scoop_threshold.unwrap_or(0.25).clamp(0.05, 0.50)
     }
-    pub fn aras_shares_per_order(&self) -> f64 {
-        self.aras_shares_per_order.unwrap_or(40.0).max(5.0)
-    }
-    pub fn aras_max_usd_per_side(&self) -> f64 {
-        self.aras_max_usd_per_side.unwrap_or(500.0).max(10.0)
-    }
-    pub fn aras_hedge_step_secs(&self) -> f64 {
-        self.aras_hedge_step_secs.unwrap_or(6.0).max(1.0)
-    }
-    pub fn aras_band_low(&self) -> f64 {
-        self.aras_band_low.unwrap_or(0.10).clamp(0.01, 0.49)
-    }
-    pub fn aras_band_high(&self) -> f64 {
-        self.aras_band_high.unwrap_or(0.90).clamp(0.51, 0.99)
-    }
-    pub fn aras_cheap_threshold(&self) -> f64 {
-        self.aras_cheap_threshold.unwrap_or(0.50).clamp(0.10, 0.90)
-    }
-    pub fn aras_rising_shares_mult(&self) -> f64 {
-        self.aras_rising_shares_mult.unwrap_or(1.25).clamp(1.0, 2.0)
+    pub fn bonereaper_lottery_enabled(&self) -> bool {
+        self.bonereaper_lottery_enabled.unwrap_or(false)
     }
 }
 

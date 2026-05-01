@@ -5,7 +5,7 @@ export type Outcome = "UP" | "DOWN";
 export type Side = "BUY" | "SELL";
 
 export type RunMode = "live" | "dryrun";
-export type Strategy = "alis" | "elis" | "aras";
+export type Strategy = "alis" | "elis" | "bonereaper";
 
 /**
  * `bots.strategy_params` JSON sütunu — backend `config::StrategyParams`.
@@ -78,53 +78,25 @@ export interface StrategyParams {
    */
   elis_stop_before_end_secs?: number | null;
 
-  // ── Aras DCA + Kademeli Hedge ──────────────────────────────────────────
+  // ── Bonereaper ───────────────────────────────────────────────────────────
   /**
-   * DCA kontrol aralığı (saniye). Her bu sürede pahalı taraf bid kontrol edilir.
-   * Default 2.0.
+   * BSI mutlak değer eşiği — primer yön kararı sinyali.
+   * |BSI| >= threshold → BSI yönü; aksi halde bid karşılaştırması.
+   * Default 0.30.
    */
-  aras_poll_secs?: number | null;
+  bonereaper_bsi_threshold?: number | null;
   /**
-   * Ortalama maliyetten minimum düşüş tetikleyici (fiyat birimi).
-   * `entry < avg - min_drop` koşulunu sağlamadan DCA emri verilmez.
-   * Default 0.01 (1 tick).
+   * Scoop tetikleyici — kapanışa ≤100s kaldığında karşı tarafın ask'ı
+   * bu eşiğin altına düşerse büyük lot scoop emri verilir.
+   * Default 0.25.
    */
-  aras_dca_min_drop?: number | null;
+  bonereaper_scoop_threshold?: number | null;
   /**
-   * Her emir için share miktarı. Default 40.
+   * Lottery tail emri aktif mi? Kapanışa ≤15s kaldığında
+   * herhangi bir tarafın ask ≤ $0.02 ise 10 000sh emir verilir.
+   * Yüksek risk — opt-in, default false.
    */
-  aras_shares_per_order?: number | null;
-  /**
-   * Taraf başına maksimum USDC harcama limiti. Default 500.
-   */
-  aras_max_usd_per_side?: number | null;
-  /**
-   * Hedge kademesi arasındaki bekleme süresi (saniye).
-   * bid-3t → (step_secs) → bid-2t → (step_secs) → bid-1t.
-   * Default 6.0.
-   */
-  aras_hedge_step_secs?: number | null;
-  /**
-   * Alt işlem bandı. Bu fiyatın altında hem DCA hem hedge yapılmaz.
-   * Default 0.10.
-   */
-  aras_band_low?: number | null;
-  /**
-   * Üst işlem bandı. DCA için bu fiyatın üstüne çıkmaz.
-   * Default 0.90.
-   */
-  aras_band_high?: number | null;
-  /**
-   * Pahalı / ucuz taraf sınırı. Bu eşiğin üstündeki taraf DCA hedefi,
-   * altındaki taraf hedge hedefidir. Default 0.50.
-   */
-  aras_cheap_threshold?: number | null;
-  /**
-   * Yükselen (pahalı, mid >= 0.50) taraf emir büyüklüğü çarpanı.
-   * 1.0 = simetrik; 1.25 = yükselen tarafa %25 fazla share.
-   * >1.5 arbitraj garantisini bozabilir. Default 1.25.
-   */
-  aras_rising_shares_mult?: number | null;
+  bonereaper_lottery_enabled?: boolean | null;
 }
 
 export interface BotRow {
@@ -443,14 +415,8 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   elis_trade_cooldown_ms: 5000,
   elis_balance_factor: 0.7,
   elis_stop_before_end_secs: 60,
-  // Aras
-  aras_poll_secs: 2.0,
-  aras_dca_min_drop: 0.01,
-  aras_shares_per_order: 40,
-  aras_max_usd_per_side: 500,
-  aras_hedge_step_secs: 6.0,
-  aras_band_low: 0.10,
-  aras_band_high: 0.90,
-  aras_cheap_threshold: 0.50,
-  aras_rising_shares_mult: 1.25,
+  // Bonereaper
+  bonereaper_bsi_threshold: 0.30,
+  bonereaper_scoop_threshold: 0.25,
+  bonereaper_lottery_enabled: false,
 } as const;

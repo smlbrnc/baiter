@@ -1,5 +1,5 @@
 import type { Dispatch, SetStateAction } from "react";
-import { Sliders, TrendingUp, Zap } from "lucide-react";
+import { Sliders, Target, Zap } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import type { CreateBotReq, StrategyParams } from "@/lib/types";
 import { STRATEGY_PARAMS_DEFAULTS } from "@/lib/types";
@@ -18,7 +18,7 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const params: StrategyParams = form.strategy_params ?? {};
   const isAlis = form.strategy === "alis";
   const isElis = form.strategy === "elis";
-  const isAras = form.strategy === "aras";
+  const isBonereaper = form.strategy === "bonereaper";
 
   const patch = (next: Partial<StrategyParams>) => {
     setForm({
@@ -54,19 +54,13 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const elisStopBeforeEndSecs =
     params.elis_stop_before_end_secs ?? STRATEGY_PARAMS_DEFAULTS.elis_stop_before_end_secs;
 
-  // ── Aras defaults ─────────────────────────────────────────────────────
-  const arasPollSecs =
-    params.aras_poll_secs ?? STRATEGY_PARAMS_DEFAULTS.aras_poll_secs;
-  const arasSharesPerOrder =
-    params.aras_shares_per_order ?? STRATEGY_PARAMS_DEFAULTS.aras_shares_per_order;
-  const arasMaxUsdPerSide =
-    params.aras_max_usd_per_side ?? STRATEGY_PARAMS_DEFAULTS.aras_max_usd_per_side;
-  const arasBandLow =
-    params.aras_band_low ?? STRATEGY_PARAMS_DEFAULTS.aras_band_low;
-  const arasBandHigh =
-    params.aras_band_high ?? STRATEGY_PARAMS_DEFAULTS.aras_band_high;
-  const arasRisingSharesMult =
-    params.aras_rising_shares_mult ?? STRATEGY_PARAMS_DEFAULTS.aras_rising_shares_mult;
+  // ── Bonereaper ────────────────────────────────────────────────────────
+  const bonereaperBsiThreshold =
+    params.bonereaper_bsi_threshold ?? STRATEGY_PARAMS_DEFAULTS.bonereaper_bsi_threshold;
+  const bonereaperScoopThreshold =
+    params.bonereaper_scoop_threshold ?? STRATEGY_PARAMS_DEFAULTS.bonereaper_scoop_threshold;
+  const bonereaperLotteryEnabled =
+    params.bonereaper_lottery_enabled ?? STRATEGY_PARAMS_DEFAULTS.bonereaper_lottery_enabled;
 
   return (
     <div className="space-y-3">
@@ -371,179 +365,97 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
         </div>
       )}
 
-      {/* ── Aras parametreleri ────────────────────────────────────────── */}
-      {isAras && (
+      {/* ── Bonereaper parametreleri ───────────────────────────────────── */}
+      {isBonereaper && (
         <div className="space-y-3">
           <div>
-            <SectionLabel icon={TrendingUp} title="Aras parametreleri" />
+            <SectionLabel icon={Target} title="Bonereaper parametreleri" />
             <p className="text-muted-foreground mt-1 text-sm">
-              Çift Taraflı Eş Zamanlı Alım Arbitrajı. Her{" "}
-              <code>poll_secs</code> saniyede UP <strong>ve</strong> DOWN
-              taraflarına aynı anda bid−1tick GTC emir verilir. Fiyat yükselince
-              de, düşünce de alım devam eder; tek filtre{" "}
-              <code>entry_a + ask_b &lt; 1.00</code> (pair kârlı olmalı).
+              5 dakikalık BTC-updown marketi için 2 saniyelik decision loop.
+              BUY-only; çıkış REDEEM ile kapanışta gerçekleşir.
             </p>
           </div>
 
-          {/* Zamanlama */}
           <div className="bg-muted/25 space-y-4 rounded-md border border-border/40 p-3">
-            <p className="text-muted-foreground text-xs font-semibold uppercase tracking-wider">
-              Zamanlama
-            </p>
-            <Field
-              label="Poll aralığı (sn)"
-              tooltip="Her iki taraf için emir kontrolü bu sıklıkla yapılır. Koşullar uygunsa her tarafa bid−1tick GTC emir gönderilir. Default: 2.0 sn."
-              hint="0.5 – 60 sn (default 2.0)."
-            >
-              <Input
-                type="number"
-                step="0.5"
-                min="0.5"
-                max="60"
-                value={arasPollSecs}
-                onChange={(e) =>
-                  patch({ aras_poll_secs: Number(e.target.value) })
-                }
-              />
-            </Field>
-          </div>
-
-          {/* Emir boyutu ve limit */}
-          <div className="bg-muted/25 space-y-4 rounded-md border border-border/40 p-3">
-            <p className="text-muted-foreground text-xs font-semibold uppercase tracking-wider">
-              Emir boyutu &amp; limit
-            </p>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Field
-                label="Emir başı share"
-                tooltip="Her emir için share miktarı. İmbalans koruması: bir taraf diğerinden > 1 emir (bu miktarda share) fazla olamaz. Default: 40."
-                hint="5 – 1000 share (default 40)."
-              >
-                <Input
-                  type="number"
-                  step="5"
-                  min="5"
-                  max="1000"
-                  value={arasSharesPerOrder}
-                  onChange={(e) =>
-                    patch({ aras_shares_per_order: Number(e.target.value) })
-                  }
-                />
-              </Field>
-              <Field
-                label="Taraf başı maks USDC"
-                tooltip="Tek bir tarafın (UP veya DOWN) toplam maliyet tavanı. Bu eşik aşıldığında o taraf için emir gönderilmez. Default: 500 USDC."
-                hint="50 – 10 000 USDC (default 500)."
-              >
-                <Input
-                  type="number"
-                  step="50"
-                  min="50"
-                  max="10000"
-                  value={arasMaxUsdPerSide}
-                  onChange={(e) =>
-                    patch({ aras_max_usd_per_side: Number(e.target.value) })
-                  }
-                />
-              </Field>
-            </div>
-          </div>
-
-          {/* Bant ve yükselen ağırlık */}
-          <div className="bg-muted/25 space-y-4 rounded-md border border-border/40 p-3">
-            <p className="text-muted-foreground text-xs font-semibold uppercase tracking-wider">
-              İşlem bandı &amp; yükselen ağırlık
-            </p>
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <Field
-                label="Alt bant (band_low)"
-                tooltip="Mid fiyatı bu eşiğin altındaki taraf için emir verilmez. Settle yakını aşırı riskten korur. Default: 0.10."
-                hint="0.01 – 0.49 (default 0.10)."
-              >
-                <Input
-                  type="number"
-                  step="0.01"
-                  min="0.01"
-                  max="0.49"
-                  value={arasBandLow}
-                  onChange={(e) =>
-                    patch({ aras_band_low: Number(e.target.value) })
-                  }
-                />
-              </Field>
-              <Field
-                label="Üst bant (band_high)"
-                tooltip="Mid fiyatı bu eşiğin üstündeki taraf için emir verilmez. Settle yakını aşırı riskten korur. Default: 0.90."
-                hint="0.51 – 0.99 (default 0.90)."
-              >
-                <Input
-                  type="number"
-                  step="0.01"
-                  min="0.51"
-                  max="0.99"
-                  value={arasBandHigh}
-                  onChange={(e) =>
-                    patch({ aras_band_high: Number(e.target.value) })
-                  }
-                />
-              </Field>
-              <Field
-                label="Yükselen taraf çarpanı"
-                tooltip="Pahalı taraf (mid ≥ 0.50) için emir büyüklüğü çarpanı. 1.25 = %25 fazla share. Simülasyon: 1.25x en iyi ROI, >1.5 arbitraj garantisini bozabilir. Default: 1.25."
-                hint="1.00 – 1.50 (default 1.25)."
+                label="BSI eşiği"
+                tooltip="Binance BSI (Buy-Side Imbalance) mutlak değeri bu eşiği aşarsa BSI yönünde pozisyon kurulur (BSI > 0 → UP, BSI < 0 → DOWN). Eşiği aşmazsa best-bid karşılaştırması kullanılır. Default 0.30."
+                hint="0.05 – 2.00 (default 0.30)."
               >
                 <Input
                   type="number"
                   step="0.05"
-                  min="1.00"
-                  max="1.50"
-                  value={arasRisingSharesMult}
+                  min="0.05"
+                  max="2.00"
+                  value={bonereaperBsiThreshold}
                   onChange={(e) =>
-                    patch({ aras_rising_shares_mult: Number(e.target.value) })
+                    patch({ bonereaper_bsi_threshold: Number(e.target.value) })
+                  }
+                />
+              </Field>
+              <Field
+                label="Scoop eşiği"
+                tooltip="Kapanışa ≤100s kaldığında karşı tarafın ask fiyatı bu eşiğin altına düşerse büyük lot scoop emri verilir. Karşı taraf settle'a yaklaşınca ucuzlar — scoop bu fırsatı yakalar. Default 0.25."
+                hint="0.05 – 0.50 (default 0.25)."
+              >
+                <Input
+                  type="number"
+                  step="0.01"
+                  min="0.05"
+                  max="0.50"
+                  value={bonereaperScoopThreshold}
+                  onChange={(e) =>
+                    patch({ bonereaper_scoop_threshold: Number(e.target.value) })
                   }
                 />
               </Field>
             </div>
+
+            <ToggleRow
+              checked={bonereaperLotteryEnabled}
+              onChange={(v) => patch({ bonereaper_lottery_enabled: v })}
+              title="Lottery tail emri (riskli)"
+              description="Kapanışa ≤15s kaldığında herhangi bir tarafın ask ≤ $0.02 ise 10 000sh emir verilir. Beklenen değer teoride pozitif (100× ödül) ancak pratik başarı oranı düşük."
+              tooltip="Gözlemlenen tek örnekte 10 101sh @ $0.01 emri verildi, DOWN kazandı → −$101. Opt-in — bilinçli açın."
+            />
           </div>
 
-          {/* Bilgi özeti */}
           <div className="space-y-2 rounded-md border border-border/40 bg-muted/10 px-3 py-2.5 text-xs leading-relaxed text-muted-foreground">
-            <p className="font-medium text-foreground">Aras — nasıl çalışır?</p>
+            <p className="font-medium text-foreground">Bonereaper — nasıl çalışır?</p>
             <ul className="list-disc space-y-1 pl-4">
               <li>
-                <strong>Eş zamanlı alım:</strong> Her poll_secs&apos;te UP{" "}
-                <em>ve</em> DOWN taraflarına bid−1tick GTC emir verilir.
-                Fiyat yükselse de, düşse de alım devam eder.
+                <strong>2 saniyelik döngü:</strong> Her çift saniyede bir karar
+                verilir; tek saniye tick'leri atlanır.
               </li>
               <li>
-                <strong>Pasif emir:</strong> Her iki tarafa{" "}
-                <em>bid−spread</em> GTC emir verilir. Spread geniş anlarda
-                daha ucuz fiyat yakalanır.
+                <strong>Yön kararı (tek seferlik):</strong> İlk OB snapshot'ında
+                BSI (|BSI| ≥ eşik) veya bid karşılaştırmasıyla UP/DOWN seçilir;
+                market boyunca değişmez.
               </li>
               <li>
-                <strong>Yükselen ağırlık:</strong> Pahalı taraf (mid ≥ 0.50)
-                emirleri{" "}
-                <em>rising_shares_mult</em> çarpanıyla büyütülür. 1.25x
-                simülasyonda en iyi W/L ve ROI dengesi: baseline +300.8 →{" "}
-                <strong>+352.1 USDC</strong>.
+                <strong>Opening grid:</strong> Her iki tarafa mevcut ask'tan
+                GTC limit emir — Dutch Book tetikleyici. Piyasa hareket edince
+                stale emirler fill olur.
               </li>
               <li>
-                <strong>Çift pair cost filtresi:</strong>{" "}
-                <code>entry + opp_ask &lt; 1.00</code> koşulu sağlanmayan
-                taraflar atlanır (kârsız pair alımı engellenir).
+                <strong>Rebalance:</strong> UP/DOWN pozisyon farkı ≥ 50 share
+                olunca açık tarafa telafi emri verilir.
               </li>
               <li>
-                <strong>İmbalans koruması:</strong> Bir taraf diğerinden{" "}
-                <code>shares</code> kadar fazla fill almışsa yeni emir bekler.
+                <strong>Scoop:</strong> Kapanışa ≤100s, karşı ask ≤{" "}
+                <code>scoop_threshold</code> → tiered lot (ask ne kadar
+                ucuzsa o kadar büyük).
               </li>
               <li>
-                <strong>ARB kilidi:</strong> avg_up + avg_down &lt; 1.00 ise
-                garantili kâr loglanır.
+                <strong>Dutch Book:</strong> up_ask + dn_ask &lt; $1.00 →
+                her iki tarafa eş zamanlı 40-45sh emir → garantili kâr marjı.
               </li>
             </ul>
           </div>
         </div>
       )}
+
     </div>
   );
 }

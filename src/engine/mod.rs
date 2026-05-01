@@ -5,7 +5,7 @@ use std::sync::Arc;
 use crate::config::BotConfig;
 use crate::ipc::{self, FrontendEvent};
 use crate::strategy::alis::{AlisEngine, AlisState};
-use crate::strategy::aras::ArasEngine;
+use crate::strategy::bonereaper::BonereaperEngine;
 use crate::strategy::elis::ElisEngine;
 use crate::strategy::metrics::{MarketPnL, StrategyMetrics};
 use crate::strategy::{Decision, OpenOrder, PlannedOrder, StrategyContext, StrategyState};
@@ -135,6 +135,7 @@ impl MarketSession {
             effective_score,
             zone,
             now_ms: now_ms_v,
+            start_ts: self.start_ts,
             last_averaging_ms: self.last_averaging_ms,
             tick_size: self.tick_size,
             open_orders: &self.open_orders,
@@ -159,9 +160,9 @@ impl MarketSession {
                 let (ns, d) = ElisEngine::decide(s, &ctx);
                 (StrategyState::Elis(ns), d)
             }
-            StrategyState::Aras(s) => {
-                let (ns, d) = ArasEngine::decide(s, &ctx);
-                (StrategyState::Aras(ns), d)
+            StrategyState::Bonereaper(s) => {
+                let (ns, d) = BonereaperEngine::decide(s, &ctx);
+                (StrategyState::Bonereaper(ns), d)
             }
         };
         if let Some(method) = detect_alis_lock_transition(&prev_state, &next_state) {
@@ -169,9 +170,6 @@ impl MarketSession {
         }
         if detect_elis_lock_transition(&prev_state, &next_state) {
             emit_profit_locked(self, "elis_avg", now_ms_v);
-        }
-        if let Some(pnl) = detect_aras_lock_transition(&prev_state, &next_state) {
-            emit_aras_arb_lock(self, pnl, now_ms_v);
         }
         self.state = next_state;
         decision
@@ -200,33 +198,6 @@ fn detect_alis_lock_transition(
 /// Dutch Book stratejisinde "lock" kavramı yoktur — her zaman `false` döner.
 fn detect_elis_lock_transition(_prev: &StrategyState, _next: &StrategyState) -> bool {
     false
-}
-
-/// Aras ARB kilidi: arb_lock_count arttıysa yeni kilit var.
-fn detect_aras_lock_transition(
-    prev: &StrategyState,
-    next: &StrategyState,
-) -> Option<f64> {
-    let StrategyState::Aras(prev_a) = prev else { return None };
-    let StrategyState::Aras(next_a) = next else { return None };
-    if next_a.arb_lock_count() > prev_a.arb_lock_count() {
-        Some(next_a.guaranteed_pnl())
-    } else {
-        None
-    }
-}
-
-fn emit_aras_arb_lock(session: &MarketSession, guaranteed_pnl: f64, ts_ms: u64) {
-    let StrategyState::Aras(ref aras) = session.state else { return };
-    tracing::info!(
-        bot_id = session.bot_id,
-        slug = %session.slug,
-        arb_count = aras.arb_lock_count(),
-        guaranteed_pnl,
-        ts_ms,
-        "aras: arb_lock_event"
-    );
-    // İleride FrontendEvent::ArasArbLock eklenebilir; şimdilik log yeterli.
 }
 
 fn emit_profit_locked(session: &MarketSession, method: &str, ts_ms: u64) {

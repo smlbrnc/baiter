@@ -22,10 +22,10 @@ export const STRATEGY_OPTIONS: {
       "Dutch Book spread capture: UP+DOWN bid'den çift taraflı maker limit; spread geniş tick'te emir, balance factor ile envanter dengesi, pencere sonuna kadar cooldown döngüsü.",
   },
   {
-    id: "aras",
-    label: "Aras",
+    id: "bonereaper",
+    label: "Bonereaper",
     description:
-      "DCA + Kademeli Hedge Arbitrajı: pahalı tarafı (>0.50) 2 sn'de bir DCA ile ortalar, fill'de ucuz tarafa bid-3t→bid-2t→bid-1t kademeli GTC hedge açar; avg_up+avg_down<1.00 → garantili kâr kilidi.",
+      "5dk btc-updown için 2sn decision loop; BSI yön kararı, opening grid + Dutch Book + rebalance + scoop; opt-in lottery tail. BUY-only, çıkış REDEEM.",
   },
 ];
 

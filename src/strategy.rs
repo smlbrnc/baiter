@@ -1,8 +1,8 @@
-//! Strateji modülü: `metrics`, ortak tipler ve 3 aktif strateji (Alis, Elis,
-//! Aras). Engine dispatch'i `StrategyState` discriminated union üzerinden gider.
+//! Strateji modülü: `metrics`, ortak tipler ve aktif stratejiler (Alis, Elis, Bonereaper).
+//! Engine dispatch'i `StrategyState` discriminated union üzerinden gider.
 
 pub mod alis;
-pub mod aras;
+pub mod bonereaper;
 pub mod common;
 pub mod elis;
 pub mod metrics;
@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::types::Strategy;
 
 use alis::AlisState;
-use aras::ArasState;
+use bonereaper::BonereaperState;
 use elis::ElisState;
 
 /// `MarketSession` FSM state'i — aktif stratejinin discriminated union'ı.
@@ -25,7 +25,7 @@ use elis::ElisState;
 pub enum StrategyState {
     Alis(AlisState),
     Elis(ElisState),
-    Aras(ArasState),
+    Bonereaper(BonereaperState),
 }
 
 impl StrategyState {
@@ -33,7 +33,7 @@ impl StrategyState {
         match strategy {
             Strategy::Alis => Self::Alis(AlisState::default()),
             Strategy::Elis => Self::Elis(ElisState::default()),
-            Strategy::Aras => Self::Aras(ArasState::default()),
+            Strategy::Bonereaper => Self::Bonereaper(BonereaperState::default()),
         }
     }
 
@@ -41,7 +41,7 @@ impl StrategyState {
         match self {
             Self::Alis(_) => "Alis",
             Self::Elis(_) => "Elis",
-            Self::Aras(_) => "Aras",
+            Self::Bonereaper(_) => "Bonereaper",
         }
     }
 }

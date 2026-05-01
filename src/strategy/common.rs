@@ -74,6 +74,8 @@ pub struct StrategyContext<'a> {
     pub effective_score: f64,
     pub zone: MarketZone,
     pub now_ms: u64,
+    /// Market başlangıç zamanı (Unix saniye). Bonereaper rel_t hesabı için.
+    pub start_ts: u64,
     pub last_averaging_ms: u64,
     pub tick_size: f64,
     pub open_orders: &'a [OpenOrder],

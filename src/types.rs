@@ -118,5 +118,5 @@ pub enum RunMode {
 pub enum Strategy {
     Alis,
     Elis,
-    Aras,
+    Bonereaper,
 }
