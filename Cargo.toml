@@ -14,6 +14,10 @@ path = "src/bin/supervisor.rs"
 name = "bot"
 path = "src/bin/bot.rs"
 
+[[bin]]
+name = "reset-db"
+path = "src/bin/reset-db.rs"
+
 [lib]
 path = "src/lib.rs"
 
