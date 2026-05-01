@@ -92,15 +92,21 @@ impl ElisEngine {
                 }
 
                 // Bid-ask spread koşulu: her iki tarafta spread ≥ threshold.
-                let up_spread = ctx.up_best_ask - ctx.up_best_bid;
-                let dn_spread = ctx.down_best_ask - ctx.down_best_bid;
+                let up_bid = ctx.up_best_bid;
+                let dn_bid = ctx.down_best_bid;
+                let up_spread = ctx.up_best_ask - up_bid;
+                let dn_spread = ctx.down_best_ask - dn_bid;
                 if up_spread < p.spread_threshold || dn_spread < p.spread_threshold {
                     return (ElisState::Idle, Decision::NoOp);
                 }
 
+                // Kârlılık koşulu: up_bid + dn_bid < $1.00 olmalı.
+                // Spread ≥ threshold yeterli değil; combined bid > 1.00 → guaranteed loss.
+                if up_bid + dn_bid >= 1.0 {
+                    return (ElisState::Idle, Decision::NoOp);
+                }
+
                 // Fiyat aralığı (bid fiyatına göre — maker emirler bid'den girer).
-                let up_bid = ctx.up_best_bid;
-                let dn_bid = ctx.down_best_bid;
                 if up_bid < ctx.min_price
                     || up_bid > ctx.max_price
                     || dn_bid < ctx.min_price
