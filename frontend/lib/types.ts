@@ -109,8 +109,9 @@ export interface StrategyParams {
   bonereaper_rebalance_taker?: boolean | null;
   /**
    * Rebalance tetiklenme eşiği (share). |UP_filled - DOWN_filled| ≥ bu değer
-   * olunca rebalance devreye girer. Eski sabit 5'ti — çok düşük olduğu için
-   * sürekli karşı tarafa pozisyon yığıyordu. Default 20.
+   * olunca rebalance devreye girer. Eski sabit 5'ti — çok düşük, her tick
+   * tetiklenip signal'a karşı çalışıyordu. Default 50: 24 market grid search
+   * optimum (50→+$628, 20→+$513, 200→+$743 ama riskli).
    */
   bonereaper_rebalance_trigger?: number | null;
   /**
@@ -138,9 +139,10 @@ export interface StrategyParams {
    */
   bonereaper_signal_w_market?: number | null;
   /**
-   * Composite skor EMA smoothing α ∈ (0, 1]. 1.0 = smoothing yok (mevcut anlık);
-   * 0.10 (default) = yumuşak (~10 tick lag). Binance imbalance ±1 bimodal
-   * gürültüsünü filtreler. α=0.05 daha pürüzsüz, lag artar.
+   * Composite skor EMA smoothing α ∈ (0, 1]. 1.0 (default) = smoothing yok —
+   * persistence K=2 zaten gürültü filtresi, EMA üst üste lag yaratıp kayıp veriyor.
+   * 24 market grid search optimum α=1.0, K=2 (+$530 vs α=0.10 +$465).
+   * 0.10-0.30 daha pürüzsüz ama yön değişiminde geç kalır.
    */
   bonereaper_signal_ema_alpha?: number | null;
 }
@@ -472,10 +474,10 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   bonereaper_lottery_enabled: false,
   bonereaper_signal_taker: true,
   bonereaper_rebalance_taker: true,
-  bonereaper_rebalance_trigger: 20,
+  bonereaper_rebalance_trigger: 50,
   bonereaper_rebalance_when_signal_strong: false,
   bonereaper_signal_persistence_k: 2,
   bonereaper_conv_guard_window: 5,
   bonereaper_signal_w_market: 0.7,
-  bonereaper_signal_ema_alpha: 0.10,
+  bonereaper_signal_ema_alpha: 1.0,
 } as const;

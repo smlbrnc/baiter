@@ -408,12 +408,12 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Field
                 label="Rebalance trigger (share)"
-                tooltip="|UP_filled - DOWN_filled| ≥ bu değer olunca rebalance devreye girer. Eski sabit 5'ti — çok düşük olduğu için her tick tetiklenip karşı tarafa yığma yapıyordu. 20-30 daha sağlıklı; çok küçük dengesizlikleri yok sayar."
-                hint={`5 – 100 share (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_rebalance_trigger}).`}
+                tooltip="|UP_filled - DOWN_filled| ≥ bu değer olunca rebalance devreye girer. Eski sabit 5'ti — çok düşük, her tick tetiklenip karşı tarafa yığma yapıyordu. 24 market grid search'te trigger ne kadar yüksekse PnL o kadar iyi (rebalance signal'a karşı çalışıyordu). Default 50: dengeli — büyük dengesizliklerde devreye girer, küçükleri yok sayar. Aşırı yüksek (200+) rebalance'ı pratik olarak kapatır."
+                hint={`1 – 200 share (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_rebalance_trigger}).`}
               >
                 <Input
                   type="number"
-                  step="5"
+                  step="1"
                   min="1"
                   max="200"
                   value={bonereaperRebalanceTrigger}
@@ -490,7 +490,7 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
               </Field>
               <Field
                 label="Sinyal EMA smoothing α"
-                tooltip="Composite skoru EMA filtreden geçirir. ema = α×hybrid + (1-α)×prev_ema. α=1.0 anlık karar (smoothing yok), α=0.10 (default) ~10 tick yumuşak takip. Binance imbalance ±1 bimodal gürültüsünü filtreler. α=0.05 daha pürüzsüz, ama lag artar."
+                tooltip="Composite skoru EMA filtreden geçirir: ema = α×hybrid + (1-α)×prev_ema. α=1.0 (default) smoothing yok — persistence K zaten gürültü filtresi yaptığı için EMA üst üste lag yaratıyor. 24 market grid search'te en iyi PnL α=1.0, K=2 (+$530 vs α=0.10 +$465). 0.10-0.30 daha pürüzsüz ama yön değişiminde geç kalır."
                 hint={`0.01 – 1.0 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_signal_ema_alpha}).`}
               >
                 <Input

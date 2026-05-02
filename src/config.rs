@@ -158,7 +158,8 @@ pub struct StrategyParams {
     #[serde(default)]
     pub bonereaper_rebalance_taker: Option<bool>,
     /// Rebalance tetiklenme eşiği (share). Bu kadar imbalance oluşunca devreye girer.
-    /// Default: 20.0 (eski sabit değer 5'ti — çok düşük, her tick tetikleniyordu).
+    /// Default 50.0 — 24 market grid search optimum; rebalance signal'a karşı çalıştığı
+    /// için yüksek trigger (=daha az tetik) daha iyi PnL veriyor (50: +$628, 20: +$513).
     #[serde(default)]
     pub bonereaper_rebalance_trigger: Option<f64>,
     /// Signal güçlü iken (|effective_score - 5| > 2.5) rebalance pasif mi?
@@ -179,8 +180,10 @@ pub struct StrategyParams {
     /// 0.7 (default) = Polymarket dominant — 82 market analizinde %55→%76 doğruluk.
     #[serde(default)]
     pub bonereaper_signal_w_market: Option<f64>,
-    /// Composite skor EMA smoothing α ∈ (0, 1]. 1.0 = smoothing yok (anlık karar);
-    /// 0.10 (default) = yumuşak (~10 tick takip). Bimodal score bias'ı yumuşatır.
+    /// Composite skor EMA smoothing α ∈ (0, 1]. 1.0 (default) = smoothing yok
+    /// — 24 market grid search'te en yüksek PnL veren değer (persistence K zaten
+    /// gürültü filtreliyor, EMA üst üste fazla → lag yaratıp kayıp). 0.10-0.30
+    /// arası daha pürüzsüz ama yön değişiminde geç kalır.
     #[serde(default)]
     pub bonereaper_signal_ema_alpha: Option<f64>,
 }
@@ -230,7 +233,7 @@ impl StrategyParams {
         self.bonereaper_rebalance_taker.unwrap_or(true)
     }
     pub fn bonereaper_rebalance_trigger(&self) -> f64 {
-        self.bonereaper_rebalance_trigger.unwrap_or(20.0).clamp(1.0, 200.0)
+        self.bonereaper_rebalance_trigger.unwrap_or(50.0).clamp(1.0, 200.0)
     }
     pub fn bonereaper_rebalance_when_signal_strong(&self) -> bool {
         self.bonereaper_rebalance_when_signal_strong.unwrap_or(false)
@@ -245,7 +248,7 @@ impl StrategyParams {
         self.bonereaper_signal_w_market.unwrap_or(0.7).clamp(0.0, 1.0)
     }
     pub fn bonereaper_signal_ema_alpha(&self) -> f64 {
-        self.bonereaper_signal_ema_alpha.unwrap_or(0.10).clamp(0.01, 1.0)
+        self.bonereaper_signal_ema_alpha.unwrap_or(1.0).clamp(0.01, 1.0)
     }
 }
 
