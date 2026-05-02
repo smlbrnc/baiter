@@ -315,12 +315,20 @@ fn signal_direction_persistent(
 ) -> Outcome {
     // Hibrit skor: composite (Binance/OKX) + Polymarket UP_bid trendi.
     let signal_skor = ((ctx.effective_score - 5.0) / 5.0).clamp(-1.0, 1.0);
-    let market_skor = ((ctx.up_best_bid - 0.5) * 2.0).clamp(-1.0, 1.0);
+    // KRİTİK: Book hazır değilse market_skor = 0 (nötr).
+    // Aksi halde UP_bid=0 → market_skor=-1 → EMA aşırı DN bias.
+    let market_skor = if ctx.up_best_bid <= 0.0 || ctx.down_best_bid <= 0.0 {
+        0.0
+    } else {
+        ((ctx.up_best_bid - 0.5) * 2.0).clamp(-1.0, 1.0)
+    };
     let w_market = ctx.strategy_params.bonereaper_signal_w_market();
     let w_signal = 1.0 - w_market;
     let hybrid_skor = signal_skor * w_signal + market_skor * w_market;
 
-    // EMA smoothing.
+    // EMA smoothing. İlk tick'te EMA = ham hibrit (warm-start).
+    // market_skor book hazır olmadan 0 döndüğü için ilk tick'te ekstrem değer
+    // alma riski ortadan kalkar — bias yok.
     let alpha = ctx.strategy_params.bonereaper_signal_ema_alpha();
     let smoothed = match st.signal_ema {
         Some(prev) => alpha * hybrid_skor + (1.0 - alpha) * prev,
