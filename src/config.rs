@@ -149,6 +149,14 @@ pub struct StrategyParams {
     /// Lottery tail emri aktif mi? Default: false (yüksek risk — opt-in)
     #[serde(default)]
     pub bonereaper_lottery_enabled: Option<bool>,
+    /// Signal emirlerinde dominant taraf (bid > 0.50) için taker (ask) kullanılsın mı?
+    /// Default: true (live'da anında fill).
+    #[serde(default)]
+    pub bonereaper_signal_taker: Option<bool>,
+    /// Rebalance emirlerinde dominant taraf (bid > 0.50) için taker (ask) kullanılsın mı?
+    /// Default: true (kritik imbalance düzeltmesinde anında fill).
+    #[serde(default)]
+    pub bonereaper_rebalance_taker: Option<bool>,
 }
 
 impl StrategyParams {
@@ -188,6 +196,12 @@ impl StrategyParams {
     }
     pub fn bonereaper_lottery_enabled(&self) -> bool {
         self.bonereaper_lottery_enabled.unwrap_or(false)
+    }
+    pub fn bonereaper_signal_taker(&self) -> bool {
+        self.bonereaper_signal_taker.unwrap_or(true)
+    }
+    pub fn bonereaper_rebalance_taker(&self) -> bool {
+        self.bonereaper_rebalance_taker.unwrap_or(true)
     }
 }
 

@@ -97,6 +97,16 @@ export interface StrategyParams {
    * Yüksek risk — opt-in, default false.
    */
   bonereaper_lottery_enabled?: boolean | null;
+  /**
+   * Signal emirlerinde dominant taraf (bid > 0.50) için taker (ask) kullanılsın mı?
+   * Default true — live'da anında fill.
+   */
+  bonereaper_signal_taker?: boolean | null;
+  /**
+   * Rebalance emirlerinde dominant taraf (bid > 0.50) için taker (ask) kullanılsın mı?
+   * Default true — kritik imbalance düzeltmesinde anında fill.
+   */
+  bonereaper_rebalance_taker?: boolean | null;
 }
 
 export interface BotRow {
@@ -424,4 +434,6 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   bonereaper_bsi_threshold: 0.30,
   bonereaper_scoop_threshold: 0.25,
   bonereaper_lottery_enabled: false,
+  bonereaper_signal_taker: true,
+  bonereaper_rebalance_taker: true,
 } as const;

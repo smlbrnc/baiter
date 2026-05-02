@@ -56,6 +56,10 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
     params.bonereaper_scoop_threshold ?? STRATEGY_PARAMS_DEFAULTS.bonereaper_scoop_threshold;
   const bonereaperLotteryEnabled =
     params.bonereaper_lottery_enabled ?? STRATEGY_PARAMS_DEFAULTS.bonereaper_lottery_enabled;
+  const bonereaperSignalTaker =
+    params.bonereaper_signal_taker ?? STRATEGY_PARAMS_DEFAULTS.bonereaper_signal_taker;
+  const bonereaperRebalanceTaker =
+    params.bonereaper_rebalance_taker ?? STRATEGY_PARAMS_DEFAULTS.bonereaper_rebalance_taker;
 
   return (
     <div className="space-y-3">
@@ -368,6 +372,20 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
               title="Lottery tail emri (riskli)"
               description="Kapanışa ≤15s kaldığında herhangi bir tarafın ask ≤ $0.02 ise 10 000sh emir verilir. Beklenen değer teoride pozitif (100× ödül) ancak pratik başarı oranı düşük."
               tooltip="Gözlemlenen tek örnekte 10 101sh @ $0.01 emri verildi, DOWN kazandı → −$101. Opt-in — bilinçli açın."
+            />
+            <ToggleRow
+              checked={bonereaperSignalTaker}
+              onChange={(v) => patch({ bonereaper_signal_taker: v })}
+              title="Signal — dominant tarafta taker (ask)"
+              description="Sinyal yönünde fiyat > 0.50 (yükselen taraf) ise ask fiyatından taker emir verilir. Live modda anında fill; kaçan pozisyonu önler. Default: açık."
+              tooltip="bid > 0.50 ise ask fiyatı kullanılır (spread genellikle $0.01). bid ≤ 0.50 ise maker bid kullanılır."
+            />
+            <ToggleRow
+              checked={bonereaperRebalanceTaker}
+              onChange={(v) => patch({ bonereaper_rebalance_taker: v })}
+              title="Rebalance — dominant tarafta taker (ask)"
+              description="İmbalance düzeltme emirlerinde deficit taraf > 0.50 ise ask fiyatından taker emir verilir. Büyük dengesizliği hızla kapamak için kritik. Default: açık."
+              tooltip="Rebalance; UP/DOWN pozisyon farkı ≥ 5 share olunca tetiklenir. Deficit taraf yükselen ise maker bid fill'i geciktirir."
             />
           </div>
 

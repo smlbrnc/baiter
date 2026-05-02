@@ -138,7 +138,13 @@ impl BonereaperEngine {
                     // Convergence guard: karşı taraf converge ediyorsa deficit tarafa emir verme.
                     let opp_bid = ctx.best_bid(deficit.opposite());
                     if opp_bid <= CONVERGENCE_THRESHOLD {
-                        let price = ctx.best_bid(deficit);
+                        let def_bid = ctx.best_bid(deficit);
+                        // Deficit taraf dominant (yükselen) ise taker ask → anında fill (parametre ile kontrol).
+                        let price = if def_bid > 0.50 && ctx.strategy_params.bonereaper_rebalance_taker() {
+                            ctx.best_ask(deficit)
+                        } else {
+                            def_bid
+                        };
                         let lot = rebalance_lot(fill_imbalance);
                         if pair_cost_ok(ctx, deficit, price) {
                             let reason = format!("bonereaper:rebalance:{}", deficit.as_lowercase());
@@ -249,9 +255,12 @@ fn signal_order(ctx: &StrategyContext<'_>, dir: Outcome) -> Option<PlannedOrder>
     if bid <= 0.0 {
         return None;
     }
-    // Dominant (yükselen) taraf: taker ask → anında fill.
-    // Ucuz taraf: maker bid → fill beklenir, spread maliyeti gereksiz.
-    let price = if bid > 0.50 { ctx.best_ask(dir) } else { bid };
+    // Dominant (yükselen) taraf taker mı? Parametre ile kontrol edilir.
+    let price = if bid > 0.50 && ctx.strategy_params.bonereaper_signal_taker() {
+        ctx.best_ask(dir)
+    } else {
+        bid
+    };
     if price <= 0.0 {
         return None;
     }
