@@ -148,7 +148,7 @@ impl MarketSession {
             bsi,
             ofi,
             cvd,
-            market_remaining_secs: Some(self.end_ts.saturating_sub(now_ms_v / 1000) as f64),
+            market_remaining_secs: Some((self.end_ts as i64 - (now_ms_v / 1000) as i64) as f64),
         };
         let prev_state = self.state.clone();
         let (next_state, decision) = match self.state.clone() {
