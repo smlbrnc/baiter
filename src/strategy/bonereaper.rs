@@ -35,6 +35,8 @@ const REBALANCE_TRIGGER: f64 = 5.0;
 const REBALANCE_MIN_LOT: f64 = 1.0;
 /// Stale emir maksimum fiyat sapması (bid'den uzaklık).
 const STALE_SPREAD_MAX: f64 = 0.05;
+/// Convergence guard eşiği: karşı tarafın bid'i bu değeri geçerse o tarafa emir verilmez.
+const CONVERGENCE_THRESHOLD: f64 = 0.80;
 
 // ─────────────────────────────────────────────
 // FSM State
@@ -133,12 +135,16 @@ impl BonereaperEngine {
                 let fill_imbalance = m.up_filled - m.down_filled;
                 if fill_imbalance.abs() >= REBALANCE_TRIGGER {
                     let deficit = if fill_imbalance > 0.0 { Outcome::Down } else { Outcome::Up };
-                    let price = ctx.best_bid(deficit);
-                    let lot = rebalance_lot(fill_imbalance);
-                    if pair_cost_ok(ctx, deficit, price) {
-                        let reason = format!("bonereaper:rebalance:{}", deficit.as_lowercase());
-                        if let Some(order) = make_buy(ctx, deficit, price, lot, &reason) {
-                            return (BonereaperState::Active(st), Decision::PlaceOrders(vec![order]));
+                    // Convergence guard: karşı taraf converge ediyorsa deficit tarafa emir verme.
+                    let opp_bid = ctx.best_bid(deficit.opposite());
+                    if opp_bid <= CONVERGENCE_THRESHOLD {
+                        let price = ctx.best_bid(deficit);
+                        let lot = rebalance_lot(fill_imbalance);
+                        if pair_cost_ok(ctx, deficit, price) {
+                            let reason = format!("bonereaper:rebalance:{}", deficit.as_lowercase());
+                            if let Some(order) = make_buy(ctx, deficit, price, lot, &reason) {
+                                return (BonereaperState::Active(st), Decision::PlaceOrders(vec![order]));
+                            }
                         }
                     }
                 }
@@ -231,7 +237,12 @@ fn signal_direction(ctx: &StrategyContext<'_>) -> Outcome {
 /// Sinyal yönünde `best_bid`'den GTC maker emir.
 /// Boyut: `order_usdc / price` — notional ≥ min_order_size olacak şekilde ceil kullanılır.
 /// Signal emirleri tek taraflı directional bet olduğundan pair_cost_ok kontrolü uygulanmaz.
+/// Convergence guard: karşı tarafın bid'i CONVERGENCE_THRESHOLD'u geçmişse None döner.
 fn signal_order(ctx: &StrategyContext<'_>, dir: Outcome) -> Option<PlannedOrder> {
+    // Karşı taraf converge ediyorsa bu tarafa emir verme.
+    if ctx.best_bid(dir.opposite()) > CONVERGENCE_THRESHOLD {
+        return None;
+    }
     let price = ctx.best_bid(dir);
     if price <= 0.0 {
         return None;
