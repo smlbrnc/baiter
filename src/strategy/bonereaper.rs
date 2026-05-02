@@ -234,7 +234,7 @@ fn signal_direction(ctx: &StrategyContext<'_>) -> Outcome {
     }
 }
 
-/// Sinyal yönünde `best_bid`'den GTC maker emir.
+/// Sinyal yönünde `best_ask`'tan taker emir — live'da anında fill için.
 /// Boyut: `order_usdc / price` — notional ≥ min_order_size olacak şekilde ceil kullanılır.
 /// Signal emirleri tek taraflı directional bet olduğundan pair_cost_ok kontrolü uygulanmaz.
 /// Convergence guard: karşı tarafın bid'i CONVERGENCE_THRESHOLD'u geçmişse None döner.
@@ -243,11 +243,11 @@ fn signal_order(ctx: &StrategyContext<'_>, dir: Outcome) -> Option<PlannedOrder>
     if ctx.best_bid(dir.opposite()) > CONVERGENCE_THRESHOLD {
         return None;
     }
-    let price = ctx.best_bid(dir);
+    let price = ctx.best_ask(dir);
     if price <= 0.0 {
         return None;
     }
-    // ceil: $5 / $0.60 = 8.33 → 9 shares × $0.60 = $5.40 ≥ min_order_size
+    // ceil: $5 / $0.61 = 8.19 → 9 shares × $0.61 = $5.49 ≥ min_order_size
     let size = (ctx.order_usdc / price).ceil();
     let reason = format!("bonereaper:signal:{}", dir.as_lowercase());
     make_buy(ctx, dir, price, size, &reason)
