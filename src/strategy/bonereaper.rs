@@ -234,7 +234,9 @@ fn signal_direction(ctx: &StrategyContext<'_>) -> Outcome {
     }
 }
 
-/// Sinyal yönünde `best_ask`'tan taker emir — live'da anında fill için.
+/// Sinyal yönünde emir:
+///   bid > 0.50 (yükselen / dominant taraf) → `best_ask` taker, live'da anında fill.
+///   bid ≤ 0.50 (ucuz / durağan taraf)      → `best_bid` maker, hız kritik değil.
 /// Boyut: `order_usdc / price` — notional ≥ min_order_size olacak şekilde ceil kullanılır.
 /// Signal emirleri tek taraflı directional bet olduğundan pair_cost_ok kontrolü uygulanmaz.
 /// Convergence guard: karşı tarafın bid'i CONVERGENCE_THRESHOLD'u geçmişse None döner.
@@ -243,7 +245,13 @@ fn signal_order(ctx: &StrategyContext<'_>, dir: Outcome) -> Option<PlannedOrder>
     if ctx.best_bid(dir.opposite()) > CONVERGENCE_THRESHOLD {
         return None;
     }
-    let price = ctx.best_ask(dir);
+    let bid = ctx.best_bid(dir);
+    if bid <= 0.0 {
+        return None;
+    }
+    // Dominant (yükselen) taraf: taker ask → anında fill.
+    // Ucuz taraf: maker bid → fill beklenir, spread maliyeti gereksiz.
+    let price = if bid > 0.50 { ctx.best_ask(dir) } else { bid };
     if price <= 0.0 {
         return None;
     }
