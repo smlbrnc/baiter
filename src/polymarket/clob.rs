@@ -35,9 +35,18 @@ pub struct TakerFee {
 
 pub fn shared_http_client() -> Client {
     Client::builder()
+        // Connection pool — TLS handshake amortize için canlı tut.
         .pool_max_idle_per_host(16)
+        .pool_idle_timeout(Duration::from_secs(300))
+        // TCP optimizations.
         .tcp_nodelay(true)
+        .tcp_keepalive(Duration::from_secs(60))
+        // HTTP/2 zorunlu + keep-alive ping (idle bile olsa connection canlı).
+        // Polymarket Cloudflare HTTP/2 — bu sayede TLS handshake bir kez yapılır.
         .http2_prior_knowledge()
+        .http2_keep_alive_interval(Duration::from_secs(20))
+        .http2_keep_alive_timeout(Duration::from_secs(5))
+        .http2_keep_alive_while_idle(true)
         .timeout(Duration::from_secs(10))
         .user_agent("baiter-pro/0.1")
         .build()
