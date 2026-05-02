@@ -491,12 +491,12 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
               <Field
                 label="Sinyal EMA smoothing α"
                 tooltip="Composite skoru EMA filtreden geçirir: ema = α×hybrid + (1-α)×prev_ema. α=1.0 (default) smoothing yok — persistence K zaten gürültü filtresi yaptığı için EMA üst üste lag yaratıyor. 24 market grid search'te en iyi PnL α=1.0, K=2 (+$530 vs α=0.10 +$465). 0.10-0.30 daha pürüzsüz ama yön değişiminde geç kalır."
-                hint={`0.01 – 1.0 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_signal_ema_alpha}).`}
+                hint={`0.05 – 1.0 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_signal_ema_alpha}).`}
               >
                 <Input
                   type="number"
                   step="0.05"
-                  min="0.01"
+                  min="0.05"
                   max="1"
                   value={bonereaperSignalEmaAlpha}
                   onChange={(e) =>
