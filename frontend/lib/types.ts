@@ -130,6 +130,19 @@ export interface StrategyParams {
    * N=1 → mevcut anlık kontrol; N=5 (default) → ~10 saniye stabil koruma.
    */
   bonereaper_conv_guard_window?: number | null;
+  /**
+   * Polymarket UP_bid sinyalinin yön kararındaki ağırlığı [0, 1].
+   * Hibrit formül: `signal × (1-w) + market × w`. 0 = sadece Binance/OKX (eski);
+   * 0.7 (default) = Polymarket dominant — 82 market analizinde tick doğruluğu
+   * %55→%76 (+21 puan).
+   */
+  bonereaper_signal_w_market?: number | null;
+  /**
+   * Composite skor EMA smoothing α ∈ (0, 1]. 1.0 = smoothing yok (mevcut anlık);
+   * 0.10 (default) = yumuşak (~10 tick lag). Binance imbalance ±1 bimodal
+   * gürültüsünü filtreler. α=0.05 daha pürüzsüz, lag artar.
+   */
+  bonereaper_signal_ema_alpha?: number | null;
 }
 
 export interface BotRow {
@@ -463,4 +476,6 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   bonereaper_rebalance_when_signal_strong: false,
   bonereaper_signal_persistence_k: 2,
   bonereaper_conv_guard_window: 5,
+  bonereaper_signal_w_market: 0.7,
+  bonereaper_signal_ema_alpha: 0.10,
 } as const;

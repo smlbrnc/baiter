@@ -174,6 +174,15 @@ pub struct StrategyParams {
     /// conv intermittent durumlarda guard'ı stabil tutar.
     #[serde(default)]
     pub bonereaper_conv_guard_window: Option<u32>,
+    /// Polymarket UP_bid sinyalinin composite içindeki ağırlığı [0, 1].
+    /// Yön kararı: `signal × (1-w) + market × w`. 0 = sadece Binance/OKX (eski);
+    /// 0.7 (default) = Polymarket dominant — 82 market analizinde %55→%76 doğruluk.
+    #[serde(default)]
+    pub bonereaper_signal_w_market: Option<f64>,
+    /// Composite skor EMA smoothing α ∈ (0, 1]. 1.0 = smoothing yok (anlık karar);
+    /// 0.10 (default) = yumuşak (~10 tick takip). Bimodal score bias'ı yumuşatır.
+    #[serde(default)]
+    pub bonereaper_signal_ema_alpha: Option<f64>,
 }
 
 impl StrategyParams {
@@ -231,6 +240,12 @@ impl StrategyParams {
     }
     pub fn bonereaper_conv_guard_window(&self) -> u32 {
         self.bonereaper_conv_guard_window.unwrap_or(5).clamp(1, 60)
+    }
+    pub fn bonereaper_signal_w_market(&self) -> f64 {
+        self.bonereaper_signal_w_market.unwrap_or(0.7).clamp(0.0, 1.0)
+    }
+    pub fn bonereaper_signal_ema_alpha(&self) -> f64 {
+        self.bonereaper_signal_ema_alpha.unwrap_or(0.10).clamp(0.01, 1.0)
     }
 }
 

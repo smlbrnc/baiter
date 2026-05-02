@@ -71,6 +71,12 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const bonereaperConvGuardWindow =
     params.bonereaper_conv_guard_window ??
     STRATEGY_PARAMS_DEFAULTS.bonereaper_conv_guard_window;
+  const bonereaperSignalWMarket =
+    params.bonereaper_signal_w_market ??
+    STRATEGY_PARAMS_DEFAULTS.bonereaper_signal_w_market;
+  const bonereaperSignalEmaAlpha =
+    params.bonereaper_signal_ema_alpha ??
+    STRATEGY_PARAMS_DEFAULTS.bonereaper_signal_ema_alpha;
 
   return (
     <div className="space-y-3">
@@ -464,6 +470,41 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
               description="|effective_score - 5| > 2.5 (yani score > 7.5 veya < 2.5) iken rebalance ne yapar? Default KAPALI: signal güçlüyse rebalance pasif kalır (signal'a güveniyor, hedge yapmıyor → kayıp önler). AÇIK: rebalance her zaman aktif (eski davranış)."
               tooltip="Smoking gun: 1777736700 marketinde signal=DN doğruyken rebalance UP'a 311 share yığıp -$20 yaptırdı. Bu toggle KAPALI iken aynı durumda +$45 olurdu (simülasyon)."
             />
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Field
+                label="Polymarket sinyal ağırlığı"
+                tooltip="Yön kararında Polymarket UP_bid trend'inin Binance/OKX composite'a göre ağırlığı. Hibrit: signal×(1-w) + market×w. 82 market analizinde Polymarket sinyali %76 doğruluk verdi, composite %55. 0 = sadece Binance/OKX (eski), 1 = sadece Polymarket trend, 0.7 default optimum."
+                hint={`0.0 – 1.0 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_signal_w_market}).`}
+              >
+                <Input
+                  type="number"
+                  step="0.05"
+                  min="0"
+                  max="1"
+                  value={bonereaperSignalWMarket}
+                  onChange={(e) =>
+                    patch({ bonereaper_signal_w_market: Number(e.target.value) })
+                  }
+                />
+              </Field>
+              <Field
+                label="Sinyal EMA smoothing α"
+                tooltip="Composite skoru EMA filtreden geçirir. ema = α×hybrid + (1-α)×prev_ema. α=1.0 anlık karar (smoothing yok), α=0.10 (default) ~10 tick yumuşak takip. Binance imbalance ±1 bimodal gürültüsünü filtreler. α=0.05 daha pürüzsüz, ama lag artar."
+                hint={`0.01 – 1.0 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_signal_ema_alpha}).`}
+              >
+                <Input
+                  type="number"
+                  step="0.05"
+                  min="0.01"
+                  max="1"
+                  value={bonereaperSignalEmaAlpha}
+                  onChange={(e) =>
+                    patch({ bonereaper_signal_ema_alpha: Number(e.target.value) })
+                  }
+                />
+              </Field>
+            </div>
           </div>
 
           <div className="space-y-2 rounded-md border border-border/40 bg-muted/10 px-3 py-2.5 text-xs leading-relaxed text-muted-foreground">

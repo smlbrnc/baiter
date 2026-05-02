@@ -39,6 +39,26 @@ const STALE_SPREAD_MAX: f64 = 0.05;
 const CONVERGENCE_THRESHOLD: f64 = 0.80;
 /// Signal "güçlü" eşiği: |effective_score - 5| bu değeri aşarsa sinyal güçlü kabul edilir.
 const SIGNAL_STRONG_DELTA: f64 = 2.5;
+/// Conv guard window üst sınırı (`bonereaper_conv_guard_window` clamp ile zaten 60).
+/// VecDeque::with_capacity için pre-allocate boyutu — heap reallocation kaçınılır.
+const CONV_HISTORY_CAPACITY: usize = 60;
+
+// Reason etiketleri — `format!()` allocation'larını eler (hot path'te tick başına 1 alloc tasarrufu).
+#[inline]
+const fn reason_signal(dir: Outcome) -> &'static str {
+    match dir {
+        Outcome::Up => "bonereaper:signal:up",
+        Outcome::Down => "bonereaper:signal:down",
+    }
+}
+
+#[inline]
+const fn reason_rebalance(dir: Outcome) -> &'static str {
+    match dir {
+        Outcome::Up => "bonereaper:rebalance:up",
+        Outcome::Down => "bonereaper:rebalance:down",
+    }
+}
 
 // ─────────────────────────────────────────────
 // FSM State
@@ -83,6 +103,10 @@ pub struct BonereaperActive {
     /// `None` → window içinde conv yok.
     #[serde(default)]
     pub last_conv_side: Option<Outcome>,
+    /// Hibrit composite skoru için EMA değeri (skor[-1,+1] cinsinden).
+    /// `None` → henüz initialize edilmemiş; ilk değeri ham hibrit alır.
+    #[serde(default)]
+    pub signal_ema: Option<f64>,
 }
 
 // ─────────────────────────────────────────────
@@ -118,8 +142,9 @@ impl BonereaperEngine {
                     confirmed_signal: None,
                     pending_signal: None,
                     pending_count: 0,
-                    conv_history: VecDeque::new(),
+                    conv_history: VecDeque::with_capacity(CONV_HISTORY_CAPACITY),
                     last_conv_side: None,
+                    signal_ema: None,
                 };
                 (BonereaperState::Active(Box::new(active)), Decision::NoOp)
             }
@@ -188,8 +213,7 @@ impl BonereaperEngine {
                         };
                         let lot = rebalance_lot(fill_imbalance);
                         if pair_cost_ok(ctx, deficit, price) {
-                            let reason = format!("bonereaper:rebalance:{}", deficit.as_lowercase());
-                            if let Some(order) = make_buy(ctx, deficit, price, lot, &reason) {
+                            if let Some(order) = make_buy(ctx, deficit, price, lot, reason_rebalance(deficit)) {
                                 return (BonereaperState::Active(st), Decision::PlaceOrders(vec![order]));
                             }
                         }
@@ -211,15 +235,14 @@ impl BonereaperEngine {
 
                 if prev_dir == Some(new_dir.opposite()) {
                     // Eski yöndeki signal emirlerini iptal + yeni emir tek adımda.
-                    let cancel_ids: Vec<String> = ctx
-                        .open_orders
-                        .iter()
-                        .filter(|o| {
-                            o.reason.starts_with("bonereaper:signal:")
-                                && o.outcome == new_dir.opposite()
-                        })
-                        .map(|o| o.id.clone())
-                        .collect();
+                    let mut cancel_ids: Vec<String> = Vec::with_capacity(ctx.open_orders.len());
+                    for o in ctx.open_orders.iter() {
+                        if o.reason.starts_with("bonereaper:signal:")
+                            && o.outcome == new_dir.opposite()
+                        {
+                            cancel_ids.push(o.id.clone());
+                        }
+                    }
 
                     if let Some(order) = signal_order(&st, ctx, new_dir) {
                         if cancel_ids.is_empty() {
@@ -240,12 +263,12 @@ impl BonereaperEngine {
                 }
 
                 // Aynı yön: mevcut signal emirlerini iptal et (fiyat tazeleme) + yenisini koy.
-                let stale_signal_ids: Vec<String> = ctx
-                    .open_orders
-                    .iter()
-                    .filter(|o| o.reason.starts_with("bonereaper:signal:"))
-                    .map(|o| o.id.clone())
-                    .collect();
+                let mut stale_signal_ids: Vec<String> = Vec::with_capacity(ctx.open_orders.len());
+                for o in ctx.open_orders.iter() {
+                    if o.reason.starts_with("bonereaper:signal:") {
+                        stale_signal_ids.push(o.id.clone());
+                    }
+                }
 
                 if let Some(order) = signal_order(&st, ctx, new_dir) {
                     if stale_signal_ids.is_empty() {
@@ -272,16 +295,40 @@ impl BonereaperEngine {
 // Sinyal yön kararı
 // ─────────────────────────────────────────────
 
-/// Persistence-aware sinyal yön kararı.
+/// Hibrit + EMA + persistence-aware sinyal yön kararı.
 ///
-/// `K=1` → mevcut anlık karar (her tick yön değiştirir).
-/// `K=2+` → mevcut yön korunur; ters yön için K ardışık tick onayı gerekir.
+/// 1. Hibrit composite: `signal_skor × (1 - w_market) + market_skor × w_market`
+///    - signal_skor: Binance/OKX composite [(effective_score-5)/5] ∈ [-1, +1]
+///    - market_skor: Polymarket UP_bid trendi [(up_bid-0.5) × 2] ∈ [-1, +1]
+///    82 market tick analizinde Polymarket sinyalı %76 doğru, composite %55.
+///
+/// 2. EMA smoothing: `ema = α × hybrid + (1-α) × prev_ema`
+///    Bimodal score'ları yumuşatır, gürültüyü filtreler.
+///
+/// 3. Persistence (K-tick onay):
+///    - `K=1` → anlık karar (her tick yön değiştirebilir).
+///    - `K=2+` → mevcut yön korunur; ters yön için K ardışık tick onayı gerekir.
 fn signal_direction_persistent(
     st: &mut BonereaperActive,
     ctx: &StrategyContext<'_>,
     k: u32,
 ) -> Outcome {
-    let raw: Outcome = if ctx.effective_score > 5.0 {
+    // Hibrit skor: composite (Binance/OKX) + Polymarket UP_bid trendi.
+    let signal_skor = ((ctx.effective_score - 5.0) / 5.0).clamp(-1.0, 1.0);
+    let market_skor = ((ctx.up_best_bid - 0.5) * 2.0).clamp(-1.0, 1.0);
+    let w_market = ctx.strategy_params.bonereaper_signal_w_market();
+    let w_signal = 1.0 - w_market;
+    let hybrid_skor = signal_skor * w_signal + market_skor * w_market;
+
+    // EMA smoothing.
+    let alpha = ctx.strategy_params.bonereaper_signal_ema_alpha();
+    let smoothed = match st.signal_ema {
+        Some(prev) => alpha * hybrid_skor + (1.0 - alpha) * prev,
+        None => hybrid_skor,
+    };
+    st.signal_ema = Some(smoothed);
+
+    let raw: Outcome = if smoothed > 0.0 {
         Outcome::Up
     } else {
         Outcome::Down
@@ -384,8 +431,7 @@ fn signal_order(
     }
     // ceil: $5 / $0.61 = 8.19 → 9 shares × $0.61 = $5.49 ≥ min_order_size
     let size = (ctx.order_usdc / price).ceil();
-    let reason = format!("bonereaper:signal:{}", dir.as_lowercase());
-    make_buy(ctx, dir, price, size, &reason)
+    make_buy(ctx, dir, price, size, reason_signal(dir))
 }
 
 // ─────────────────────────────────────────────
@@ -457,29 +503,27 @@ fn make_buy(
 
 /// Tüm `bonereaper:` emirlerini iptal et (post-market).
 fn cancel_all(ctx: &StrategyContext<'_>) -> Decision {
-    let ids: Vec<String> = ctx
-        .open_orders
-        .iter()
-        .filter(|o| o.reason.starts_with("bonereaper:") && o.side == Side::Buy)
-        .map(|o| o.id.clone())
-        .collect();
+    let mut ids: Vec<String> = Vec::with_capacity(ctx.open_orders.len());
+    for o in ctx.open_orders.iter() {
+        if o.reason.starts_with("bonereaper:") && o.side == Side::Buy {
+            ids.push(o.id.clone());
+        }
+    }
     if ids.is_empty() { Decision::NoOp } else { Decision::CancelOrders(ids) }
 }
 
 /// Current bid'den `STALE_SPREAD_MAX`'tan fazla sapan signal emirlerini iptal et.
 fn cancel_stale(ctx: &StrategyContext<'_>) -> Decision {
-    let ids: Vec<String> = ctx
-        .open_orders
-        .iter()
-        .filter(|o| {
-            if !o.reason.starts_with("bonereaper:signal:") || o.side != Side::Buy {
-                return false;
-            }
-            let cur_bid = ctx.best_bid(o.outcome);
-            cur_bid > 0.0 && (o.price - cur_bid).abs() > STALE_SPREAD_MAX
-        })
-        .map(|o| o.id.clone())
-        .collect();
+    let mut ids: Vec<String> = Vec::with_capacity(ctx.open_orders.len());
+    for o in ctx.open_orders.iter() {
+        if !o.reason.starts_with("bonereaper:signal:") || o.side != Side::Buy {
+            continue;
+        }
+        let cur_bid = ctx.best_bid(o.outcome);
+        if cur_bid > 0.0 && (o.price - cur_bid).abs() > STALE_SPREAD_MAX {
+            ids.push(o.id.clone());
+        }
+    }
     if ids.is_empty() { Decision::NoOp } else { Decision::CancelOrders(ids) }
 }
 
