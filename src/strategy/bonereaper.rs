@@ -18,6 +18,8 @@
 //! `bonereaper:dutch:{up,down}`  — Dutch Book arbitraj
 //! `bonereaper:rebalance:{up,down}` — rebalance fill
 
+use std::collections::VecDeque;
+
 use serde::{Deserialize, Serialize};
 
 use super::common::{Decision, OpenOrder, PlannedOrder, StrategyContext};
@@ -29,14 +31,14 @@ use crate::types::{OrderType, Outcome, Side};
 
 const TICK_INTERVAL_SECS: u64 = 2;
 const POST_MARKET_WAIT: f64 = 30.0;
-/// Rebalance tetiklenme eşiği: bu kadar fark oluşunca devreye gir.
-const REBALANCE_TRIGGER: f64 = 5.0;
 /// Minimum lot: her rebalance tick'inde en az bu kadar al.
 const REBALANCE_MIN_LOT: f64 = 1.0;
 /// Stale emir maksimum fiyat sapması (bid'den uzaklık).
 const STALE_SPREAD_MAX: f64 = 0.05;
 /// Convergence guard eşiği: karşı tarafın bid'i bu değeri geçerse o tarafa emir verilmez.
 const CONVERGENCE_THRESHOLD: f64 = 0.80;
+/// Signal "güçlü" eşiği: |effective_score - 5| bu değeri aşarsa sinyal güçlü kabul edilir.
+const SIGNAL_STRONG_DELTA: f64 = 2.5;
 
 // ─────────────────────────────────────────────
 // FSM State
@@ -64,6 +66,23 @@ pub struct BonereaperActive {
     pub last_signal_dir: Option<Outcome>,
     /// Son işlem yapılan çift saniye (2-sn gate için).
     pub last_acted_even_sec: u64,
+    /// Persistence K-tick onayı için kullanılan onaylanmış (confirmed) yön.
+    /// `None` → henüz hiç sinyal görülmedi.
+    #[serde(default)]
+    pub confirmed_signal: Option<Outcome>,
+    /// Persistence için bekleyen aday yön (confirmed'in tersi).
+    #[serde(default)]
+    pub pending_signal: Option<Outcome>,
+    /// Bekleyen aday için ardışık tick sayısı.
+    #[serde(default)]
+    pub pending_count: u32,
+    /// Convergence guard sliding window: son N tick'in conv durumu (true = conv tetik).
+    #[serde(default)]
+    pub conv_history: VecDeque<bool>,
+    /// Conv tarihçesinde gözlenen son converging taraf (UP/DN bid > THRESHOLD).
+    /// `None` → window içinde conv yok.
+    #[serde(default)]
+    pub last_conv_side: Option<Outcome>,
 }
 
 // ─────────────────────────────────────────────
@@ -96,6 +115,11 @@ impl BonereaperEngine {
                 let active = BonereaperActive {
                     last_signal_dir: None,
                     last_acted_even_sec: 0,
+                    confirmed_signal: None,
+                    pending_signal: None,
+                    pending_count: 0,
+                    conv_history: VecDeque::new(),
+                    last_conv_side: None,
                 };
                 (BonereaperState::Active(Box::new(active)), Decision::NoOp)
             }
@@ -124,6 +148,10 @@ impl BonereaperEngine {
                     return (BonereaperState::Active(st), Decision::NoOp);
                 }
 
+                // ── CONV SLIDING WINDOW GÜNCELLE ─────────────────────────────
+                let conv_window = ctx.strategy_params.bonereaper_conv_guard_window() as usize;
+                update_conv_history(&mut st, ctx, conv_window);
+
                 let m = ctx.metrics;
 
                 // ── DUTCH BOOK ───────────────────────────────────────────────
@@ -132,12 +160,25 @@ impl BonereaperEngine {
                 }
 
                 // ── REBALANCE ────────────────────────────────────────────────
+                let rebalance_trigger = ctx.strategy_params.bonereaper_rebalance_trigger();
                 let fill_imbalance = m.up_filled - m.down_filled;
-                if fill_imbalance.abs() >= REBALANCE_TRIGGER {
+                let signal_strong = (ctx.effective_score - 5.0).abs() > SIGNAL_STRONG_DELTA;
+                let rebalance_when_strong =
+                    ctx.strategy_params.bonereaper_rebalance_when_signal_strong();
+
+                if fill_imbalance.abs() >= rebalance_trigger
+                    && (rebalance_when_strong || !signal_strong)
+                {
                     let deficit = if fill_imbalance > 0.0 { Outcome::Down } else { Outcome::Up };
-                    // Convergence guard: karşı taraf converge ediyorsa deficit tarafa emir verme.
+                    // Convergence guard (sliding window): son N tick'te karşı taraf
+                    // converging idiyse deficit tarafa emir verme.
+                    let conv_blocks_deficit = match st.last_conv_side {
+                        Some(side) => side == deficit.opposite(),
+                        None => false,
+                    };
                     let opp_bid = ctx.best_bid(deficit.opposite());
-                    if opp_bid <= CONVERGENCE_THRESHOLD {
+                    let conv_now = opp_bid > CONVERGENCE_THRESHOLD;
+                    if !conv_now && !conv_blocks_deficit {
                         let def_bid = ctx.best_bid(deficit);
                         // Deficit taraf dominant (yükselen) ise taker ask → anında fill (parametre ile kontrol).
                         let price = if def_bid > 0.50 && ctx.strategy_params.bonereaper_rebalance_taker() {
@@ -161,7 +202,8 @@ impl BonereaperEngine {
                     return (BonereaperState::Active(st), Decision::NoOp);
                 }
 
-                let new_dir = signal_direction(ctx);
+                let persistence_k = ctx.strategy_params.bonereaper_signal_persistence_k();
+                let new_dir = signal_direction_persistent(&mut st, ctx, persistence_k);
 
                 // Yön değiştiyse eski signal emirlerini iptal et.
                 let prev_dir = st.last_signal_dir;
@@ -179,7 +221,7 @@ impl BonereaperEngine {
                         .map(|o| o.id.clone())
                         .collect();
 
-                    if let Some(order) = signal_order(ctx, new_dir) {
+                    if let Some(order) = signal_order(&st, ctx, new_dir) {
                         if cancel_ids.is_empty() {
                             return (BonereaperState::Active(st), Decision::PlaceOrders(vec![order]));
                         }
@@ -205,7 +247,7 @@ impl BonereaperEngine {
                     .map(|o| o.id.clone())
                     .collect();
 
-                if let Some(order) = signal_order(ctx, new_dir) {
+                if let Some(order) = signal_order(&st, ctx, new_dir) {
                     if stale_signal_ids.is_empty() {
                         return (BonereaperState::Active(st), Decision::PlaceOrders(vec![order]));
                     }
@@ -230,14 +272,81 @@ impl BonereaperEngine {
 // Sinyal yön kararı
 // ─────────────────────────────────────────────
 
-/// `effective_score > 5.0` → UP, `≤ 5.0` → DOWN.
-/// Eşik yoktur; her zaman bir yön döner.
-fn signal_direction(ctx: &StrategyContext<'_>) -> Outcome {
-    if ctx.effective_score > 5.0 {
+/// Persistence-aware sinyal yön kararı.
+///
+/// `K=1` → mevcut anlık karar (her tick yön değiştirir).
+/// `K=2+` → mevcut yön korunur; ters yön için K ardışık tick onayı gerekir.
+fn signal_direction_persistent(
+    st: &mut BonereaperActive,
+    ctx: &StrategyContext<'_>,
+    k: u32,
+) -> Outcome {
+    let raw: Outcome = if ctx.effective_score > 5.0 {
         Outcome::Up
     } else {
         Outcome::Down
+    };
+    // İlk sinyal: doğrudan kabul et.
+    let confirmed = match st.confirmed_signal {
+        Some(c) => c,
+        None => {
+            st.confirmed_signal = Some(raw);
+            st.pending_signal = None;
+            st.pending_count = 0;
+            return raw;
+        }
+    };
+    // K=1: persistence yok, anlık karar.
+    if k <= 1 {
+        st.confirmed_signal = Some(raw);
+        st.pending_signal = None;
+        st.pending_count = 0;
+        return raw;
     }
+    // Ham sinyal mevcut yönle aynı: pending sıfırla.
+    if raw == confirmed {
+        st.pending_signal = None;
+        st.pending_count = 0;
+        return confirmed;
+    }
+    // Ham sinyal ters: pending sayacını artır.
+    if st.pending_signal == Some(raw) {
+        st.pending_count = st.pending_count.saturating_add(1);
+    } else {
+        st.pending_signal = Some(raw);
+        st.pending_count = 1;
+    }
+    if st.pending_count >= k {
+        st.confirmed_signal = Some(raw);
+        st.pending_signal = None;
+        st.pending_count = 0;
+        return raw;
+    }
+    confirmed
+}
+
+/// Conv sliding window: her decision tick'te conv durumunu kaydet, son N tick'lik
+/// pencerede herhangi bir tick conv idiyse `last_conv_side` doldurulur.
+fn update_conv_history(
+    st: &mut BonereaperActive,
+    ctx: &StrategyContext<'_>,
+    window: usize,
+) {
+    let conv_now = ctx.up_best_bid > CONVERGENCE_THRESHOLD
+        || ctx.down_best_bid > CONVERGENCE_THRESHOLD;
+    st.conv_history.push_back(conv_now);
+    while st.conv_history.len() > window.max(1) {
+        st.conv_history.pop_front();
+    }
+    // Son conv tarafı: anlık conv varsa onu yaz; pencerede conv yoksa None.
+    if ctx.up_best_bid > CONVERGENCE_THRESHOLD {
+        st.last_conv_side = Some(Outcome::Up);
+    } else if ctx.down_best_bid > CONVERGENCE_THRESHOLD {
+        st.last_conv_side = Some(Outcome::Down);
+    } else if !st.conv_history.iter().any(|&v| v) {
+        st.last_conv_side = None;
+    }
+    // else: pencere içinde geçmiş bir conv varsa last_conv_side korunur.
 }
 
 /// Sinyal yönünde emir:
@@ -245,10 +354,19 @@ fn signal_direction(ctx: &StrategyContext<'_>) -> Outcome {
 ///   bid ≤ 0.50 (ucuz / durağan taraf)      → `best_bid` maker, hız kritik değil.
 /// Boyut: `order_usdc / price` — notional ≥ min_order_size olacak şekilde ceil kullanılır.
 /// Signal emirleri tek taraflı directional bet olduğundan pair_cost_ok kontrolü uygulanmaz.
-/// Convergence guard: karşı tarafın bid'i CONVERGENCE_THRESHOLD'u geçmişse None döner.
-fn signal_order(ctx: &StrategyContext<'_>, dir: Outcome) -> Option<PlannedOrder> {
-    // Karşı taraf converge ediyorsa bu tarafa emir verme.
+/// Convergence guard: karşı tarafın bid'i CONVERGENCE_THRESHOLD'u geçmişse veya
+/// son N tick içinde geçmişse None döner (sliding window).
+fn signal_order(
+    st: &BonereaperActive,
+    ctx: &StrategyContext<'_>,
+    dir: Outcome,
+) -> Option<PlannedOrder> {
+    // Anlık conv kontrolü: karşı taraf bid > THRESHOLD ise emir verme.
     if ctx.best_bid(dir.opposite()) > CONVERGENCE_THRESHOLD {
+        return None;
+    }
+    // Sliding window kontrolü: pencere içinde karşı taraf converging idiyse emir verme.
+    if st.last_conv_side == Some(dir.opposite()) {
         return None;
     }
     let bid = ctx.best_bid(dir);

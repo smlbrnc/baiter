@@ -60,6 +60,17 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
     params.bonereaper_signal_taker ?? STRATEGY_PARAMS_DEFAULTS.bonereaper_signal_taker;
   const bonereaperRebalanceTaker =
     params.bonereaper_rebalance_taker ?? STRATEGY_PARAMS_DEFAULTS.bonereaper_rebalance_taker;
+  const bonereaperRebalanceTrigger =
+    params.bonereaper_rebalance_trigger ?? STRATEGY_PARAMS_DEFAULTS.bonereaper_rebalance_trigger;
+  const bonereaperRebalanceWhenSignalStrong =
+    params.bonereaper_rebalance_when_signal_strong ??
+    STRATEGY_PARAMS_DEFAULTS.bonereaper_rebalance_when_signal_strong;
+  const bonereaperSignalPersistenceK =
+    params.bonereaper_signal_persistence_k ??
+    STRATEGY_PARAMS_DEFAULTS.bonereaper_signal_persistence_k;
+  const bonereaperConvGuardWindow =
+    params.bonereaper_conv_guard_window ??
+    STRATEGY_PARAMS_DEFAULTS.bonereaper_conv_guard_window;
 
   return (
     <div className="space-y-3">
@@ -385,7 +396,73 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
               onChange={(v) => patch({ bonereaper_rebalance_taker: v })}
               title="Rebalance — dominant tarafta taker (ask)"
               description="İmbalance düzeltme emirlerinde deficit taraf > 0.50 ise ask fiyatından taker emir verilir. Büyük dengesizliği hızla kapamak için kritik. Default: açık."
-              tooltip="Rebalance; UP/DOWN pozisyon farkı ≥ 5 share olunca tetiklenir. Deficit taraf yükselen ise maker bid fill'i geciktirir."
+              tooltip="Rebalance; UP/DOWN pozisyon farkı ≥ rebalance_trigger olunca tetiklenir. Deficit taraf yükselen ise maker bid fill'i geciktirir."
+            />
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Field
+                label="Rebalance trigger (share)"
+                tooltip="|UP_filled - DOWN_filled| ≥ bu değer olunca rebalance devreye girer. Eski sabit 5'ti — çok düşük olduğu için her tick tetiklenip karşı tarafa yığma yapıyordu. 20-30 daha sağlıklı; çok küçük dengesizlikleri yok sayar."
+                hint={`5 – 100 share (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_rebalance_trigger}).`}
+              >
+                <Input
+                  type="number"
+                  step="5"
+                  min="1"
+                  max="200"
+                  value={bonereaperRebalanceTrigger}
+                  onChange={(e) =>
+                    patch({ bonereaper_rebalance_trigger: Number(e.target.value) })
+                  }
+                />
+              </Field>
+              <Field
+                label="Signal persistence K (tick)"
+                tooltip="Yeni yön için kaç ardışık decision tick (~2sn/tick) onayı gerekli. K=1 → mevcut anlık karar (her tick yön değişebilir). K=2 → yumuşak filtre, flip-flop'u %30-50 azaltır. K=3+ → daha agresif, kazanç sessionlarda riskli."
+                hint={`1 – 20 tick (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_signal_persistence_k}).`}
+              >
+                <Input
+                  type="number"
+                  step="1"
+                  min="1"
+                  max="20"
+                  value={bonereaperSignalPersistenceK}
+                  onChange={(e) =>
+                    patch({
+                      bonereaper_signal_persistence_k: Number(e.target.value),
+                    })
+                  }
+                />
+              </Field>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Field
+                label="Conv guard window (tick)"
+                tooltip="Convergence guard sliding window. Bu kadar son tick içinde herhangi bir tick'te bir taraf bid > 0.80 idiyse o tarafa karşı koruma aktif kalır. N=1 → mevcut anlık kontrol (conv geri çekildiğinde guard kapanır). N=5 (~10sn) intermittent conv durumlarda sürekli koruma sağlar."
+                hint={`1 – 60 tick (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_conv_guard_window}).`}
+              >
+                <Input
+                  type="number"
+                  step="1"
+                  min="1"
+                  max="60"
+                  value={bonereaperConvGuardWindow}
+                  onChange={(e) =>
+                    patch({ bonereaper_conv_guard_window: Number(e.target.value) })
+                  }
+                />
+              </Field>
+            </div>
+
+            <ToggleRow
+              checked={bonereaperRebalanceWhenSignalStrong}
+              onChange={(v) =>
+                patch({ bonereaper_rebalance_when_signal_strong: v })
+              }
+              title="Rebalance — signal güçlü iken aktif"
+              description="|effective_score - 5| > 2.5 (yani score > 7.5 veya < 2.5) iken rebalance ne yapar? Default KAPALI: signal güçlüyse rebalance pasif kalır (signal'a güveniyor, hedge yapmıyor → kayıp önler). AÇIK: rebalance her zaman aktif (eski davranış)."
+              tooltip="Smoking gun: 1777736700 marketinde signal=DN doğruyken rebalance UP'a 311 share yığıp -$20 yaptırdı. Bu toggle KAPALI iken aynı durumda +$45 olurdu (simülasyon)."
             />
           </div>
 

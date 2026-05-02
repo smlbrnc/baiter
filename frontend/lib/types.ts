@@ -107,6 +107,29 @@ export interface StrategyParams {
    * Default true — kritik imbalance düzeltmesinde anında fill.
    */
   bonereaper_rebalance_taker?: boolean | null;
+  /**
+   * Rebalance tetiklenme eşiği (share). |UP_filled - DOWN_filled| ≥ bu değer
+   * olunca rebalance devreye girer. Eski sabit 5'ti — çok düşük olduğu için
+   * sürekli karşı tarafa pozisyon yığıyordu. Default 20.
+   */
+  bonereaper_rebalance_trigger?: number | null;
+  /**
+   * Signal güçlü iken (|effective_score - 5| > 2.5) rebalance pasif mi olsun?
+   * `false` (default) → pasif (signal güveniliyor, hedge yapılmaz, kayıp önler).
+   * `true` → her zaman aktif (eski davranış, signal/rebalance birlikte çalışır).
+   */
+  bonereaper_rebalance_when_signal_strong?: boolean | null;
+  /**
+   * Signal yön onayı için kaç ardışık tick gerekli? K=1 → mevcut anlık karar.
+   * K=2 (default) → yeni yön için 2 ardışık tick onayı; flip-flop'u azaltır.
+   */
+  bonereaper_signal_persistence_k?: number | null;
+  /**
+   * Convergence guard sliding window (decision tick sayısı, ~2 saniye/tick).
+   * Bu kadar tick içinde herhangi bir tick conv idiyse guard aktif kalır.
+   * N=1 → mevcut anlık kontrol; N=5 (default) → ~10 saniye stabil koruma.
+   */
+  bonereaper_conv_guard_window?: number | null;
 }
 
 export interface BotRow {
@@ -436,4 +459,8 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   bonereaper_lottery_enabled: false,
   bonereaper_signal_taker: true,
   bonereaper_rebalance_taker: true,
+  bonereaper_rebalance_trigger: 20,
+  bonereaper_rebalance_when_signal_strong: false,
+  bonereaper_signal_persistence_k: 2,
+  bonereaper_conv_guard_window: 5,
 } as const;

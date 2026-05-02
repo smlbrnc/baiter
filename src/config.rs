@@ -157,6 +157,23 @@ pub struct StrategyParams {
     /// Default: true (kritik imbalance düzeltmesinde anında fill).
     #[serde(default)]
     pub bonereaper_rebalance_taker: Option<bool>,
+    /// Rebalance tetiklenme eşiği (share). Bu kadar imbalance oluşunca devreye girer.
+    /// Default: 20.0 (eski sabit değer 5'ti — çok düşük, her tick tetikleniyordu).
+    #[serde(default)]
+    pub bonereaper_rebalance_trigger: Option<f64>,
+    /// Signal güçlü iken (|effective_score - 5| > 2.5) rebalance pasif mi?
+    /// `false` → pasif (default, kayıp önler), `true` → her zaman aktif (eski davranış).
+    #[serde(default)]
+    pub bonereaper_rebalance_when_signal_strong: Option<bool>,
+    /// Signal yön onayı için kaç ardışık tick gerekli? K=1 mevcut anlık karar.
+    /// K=2 (default) → yeni yön için 2 ardışık tick onayı; flip-flop'u azaltır.
+    #[serde(default)]
+    pub bonereaper_signal_persistence_k: Option<u32>,
+    /// Convergence guard sliding window (tick sayısı). Bu kadar tick içinde herhangi
+    /// bir tick conv idiyse guard aktif. N=1 → mevcut anlık kontrol; N=5 (default)
+    /// conv intermittent durumlarda guard'ı stabil tutar.
+    #[serde(default)]
+    pub bonereaper_conv_guard_window: Option<u32>,
 }
 
 impl StrategyParams {
@@ -202,6 +219,18 @@ impl StrategyParams {
     }
     pub fn bonereaper_rebalance_taker(&self) -> bool {
         self.bonereaper_rebalance_taker.unwrap_or(true)
+    }
+    pub fn bonereaper_rebalance_trigger(&self) -> f64 {
+        self.bonereaper_rebalance_trigger.unwrap_or(20.0).clamp(1.0, 200.0)
+    }
+    pub fn bonereaper_rebalance_when_signal_strong(&self) -> bool {
+        self.bonereaper_rebalance_when_signal_strong.unwrap_or(false)
+    }
+    pub fn bonereaper_signal_persistence_k(&self) -> u32 {
+        self.bonereaper_signal_persistence_k.unwrap_or(2).clamp(1, 20)
+    }
+    pub fn bonereaper_conv_guard_window(&self) -> u32 {
+        self.bonereaper_conv_guard_window.unwrap_or(5).clamp(1, 60)
     }
 }
 
