@@ -29,8 +29,10 @@ use crate::types::{OrderType, Outcome, Side};
 
 const TICK_INTERVAL_SECS: u64 = 2;
 const POST_MARKET_WAIT: f64 = 30.0;
-/// Rebalance tetiklenme eşiği (share).
-const REBALANCE_MIN: f64 = 5.0;
+/// Rebalance tetiklenme eşiği: bu kadar fark oluşunca devreye gir.
+const REBALANCE_TRIGGER: f64 = 5.0;
+/// Minimum lot: her rebalance tick'inde en az bu kadar al.
+const REBALANCE_MIN_LOT: f64 = 1.0;
 /// Stale emir maksimum fiyat sapması (bid'den uzaklık).
 const STALE_SPREAD_MAX: f64 = 0.05;
 
@@ -129,7 +131,7 @@ impl BonereaperEngine {
 
                 // ── REBALANCE ────────────────────────────────────────────────
                 let fill_imbalance = m.up_filled - m.down_filled;
-                if fill_imbalance.abs() >= REBALANCE_MIN {
+                if fill_imbalance.abs() >= REBALANCE_TRIGGER {
                     let deficit = if fill_imbalance > 0.0 { Outcome::Down } else { Outcome::Up };
                     let price = ctx.best_bid(deficit);
                     let lot = rebalance_lot(fill_imbalance);
@@ -265,10 +267,10 @@ fn check_dutch_book(ctx: &StrategyContext<'_>) -> Option<Vec<PlannedOrder>> {
 // Yardımcılar
 // ─────────────────────────────────────────────
 
-/// Rebalance lot: `max(5, |imbalance| / 4)`.
+/// Rebalance lot: `max(REBALANCE_MIN_LOT, |imbalance| / 2)`.
 #[inline]
 fn rebalance_lot(imbalance: f64) -> f64 {
-    (imbalance.abs() / 4.0).max(REBALANCE_MIN)
+    (imbalance.abs() / 2.0).max(REBALANCE_MIN_LOT)
 }
 
 /// `side + karşı_taraf < $1.00` kontrolü.
