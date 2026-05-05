@@ -186,12 +186,6 @@ pub struct StrategyParams {
     /// arası daha pürüzsüz ama yön değişiminde geç kalır.
     #[serde(default)]
     pub bonereaper_signal_ema_alpha: Option<f64>,
-
-    /// avg_sum filtresi eşiği: `avg_up + avg_down` bu değeri aşarsa signal ve
-    /// rebalance emirleri bloke edilir. Default 1.0 (filtre pratikte kapalı).
-    /// 0.98 gibi değerler daha erken koruma sağlar.
-    #[serde(default)]
-    pub bonereaper_avg_threshold: Option<f64>,
 }
 
 impl StrategyParams {
@@ -255,9 +249,6 @@ impl StrategyParams {
     }
     pub fn bonereaper_signal_ema_alpha(&self) -> f64 {
         self.bonereaper_signal_ema_alpha.unwrap_or(1.0).clamp(0.01, 1.0)
-    }
-    pub fn bonereaper_avg_threshold(&self) -> f64 {
-        self.bonereaper_avg_threshold.unwrap_or(1.0).clamp(0.50, 1.0)
     }
 }
 
