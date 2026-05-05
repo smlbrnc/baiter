@@ -453,7 +453,7 @@ fn signal_order(
     // ceil: $5 / $0.61 = 8.19 → 9 shares × $0.61 = $5.49 ≥ min_order_size
     let size = (ctx.order_usdc / price).ceil();
     // Asimetrik avg_sum_ok: pahalı taraf (bid > 0.50) satın alımı avg_sum'u
-    // bozmasın. Ucuz taraf (bid ≤ 0.50) her zaman alınır — avg_sum'u düşürür.
+    // 1.0'ın üstüne taşırsa bloke et. Ucuz taraf (bid ≤ 0.50) serbest.
     if bid > 0.50 {
         let m = ctx.metrics;
         let (cur_filled, cur_avg, opp_filled, opp_avg) = match dir {
@@ -462,7 +462,7 @@ fn signal_order(
         };
         if opp_filled > 0.0 {
             let new_avg = (cur_avg * cur_filled + price * size) / (cur_filled + size);
-            if new_avg + opp_avg >= ctx.avg_threshold {
+            if new_avg + opp_avg >= 1.0 {
                 return None;
             }
         }
