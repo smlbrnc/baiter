@@ -351,7 +351,7 @@ fn signal_order(
         };
         if opp_filled > 0.0 {
             let new_avg = (cur_avg * cur_filled + price * size) / (cur_filled + size);
-            if new_avg + opp_avg >= 1.0 {
+            if new_avg + opp_avg >= 1.05 {
                 return None;
             }
         }
