@@ -476,8 +476,11 @@ fn rebalance_lot(imbalance: f64) -> f64 {
 }
 
 /// Prospektif avg_sum kontrolü: yeni emir sonrası avg_this + avg_opp < threshold mi?
-/// Karşı tarafta henüz fill yoksa (avg_opp == 0.0) kontrol atlanır — tek taraflı
-/// pozisyonda pair maliyeti hesaplanamaz.
+///
+/// İki koşulda kontrol atlanır (her zaman `true` döner):
+/// 1. Karşı tarafta henüz fill yok (avg_opp == 0.0) — pair maliyeti hesaplanamaz.
+/// 2. Bu tarafta henüz fill yok (filled_this == 0.0) — ilk giriş emri, maliyet
+///    henüz oluşmamış; tek bir emri bloke etmek aşırı kısıtlayıcıdır.
 #[inline]
 fn avg_sum_ok(ctx: &StrategyContext<'_>, side: Outcome, price: f64, size: f64, threshold: f64) -> bool {
     let m = ctx.metrics;
@@ -485,7 +488,7 @@ fn avg_sum_ok(ctx: &StrategyContext<'_>, side: Outcome, price: f64, size: f64, t
         Outcome::Up   => (m.up_filled,   m.avg_up,   m.avg_down),
         Outcome::Down => (m.down_filled, m.avg_down, m.avg_up),
     };
-    if avg_opp == 0.0 {
+    if avg_opp == 0.0 || filled_this == 0.0 {
         return true;
     }
     let new_total = filled_this + size;
