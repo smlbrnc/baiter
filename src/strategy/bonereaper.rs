@@ -492,10 +492,11 @@ fn avg_sum_ok_threshold(ctx: &StrategyContext<'_>, side: Outcome, price: f64, si
     new_avg + opp_avg < threshold
 }
 
-/// Signal için `avg_threshold` (config, varsayılan 0.98) kullanan kısayol.
+/// Signal için sabit 1.0 eşiği — rebalance ile aynı, pair maliyeti $1'ı geçmediği
+/// sürece her iki yönde de emir verilebilir.
 #[inline]
 fn avg_sum_ok(ctx: &StrategyContext<'_>, side: Outcome, price: f64, size: f64) -> bool {
-    avg_sum_ok_threshold(ctx, side, price, size, ctx.avg_threshold)
+    avg_sum_ok_threshold(ctx, side, price, size, 1.0)
 }
 
 /// `side + karşı_taraf < $1.00` kontrolü.
