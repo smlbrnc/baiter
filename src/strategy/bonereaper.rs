@@ -210,11 +210,8 @@ impl BonereaperEngine {
                             def_bid
                         };
                         let lot = rebalance_lot(fill_imbalance);
-                        // avg_sum < 1.0 sağlanıyorsa tam imbalance kadar rebalance yap.
-                        if avg_sum_ok_threshold(ctx, deficit, price, lot, 1.0) {
-                            if let Some(order) = make_buy(ctx, deficit, price, lot, reason_rebalance(deficit)) {
-                                return (BonereaperState::Active(st), Decision::PlaceOrders(vec![order]));
-                            }
+                        if let Some(order) = make_buy(ctx, deficit, price, lot, reason_rebalance(deficit)) {
+                            return (BonereaperState::Active(st), Decision::PlaceOrders(vec![order]));
                         }
                     }
                 }
