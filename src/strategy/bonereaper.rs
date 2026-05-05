@@ -432,11 +432,6 @@ fn signal_order(
     }
     // ceil: $5 / $0.61 = 8.19 → 9 shares × $0.61 = $5.49 ≥ min_order_size
     let size = (ctx.order_usdc / price).ceil();
-    // avg_sum filtresi: bu emir sonrası avg_this + avg_opp >= threshold olacaksa bloke et.
-    let avg_thr = ctx.strategy_params.bonereaper_avg_threshold();
-    if !avg_sum_ok(ctx, dir, price, size, avg_thr) {
-        return None;
-    }
     make_buy(ctx, dir, price, size, reason_signal(dir))
 }
 
