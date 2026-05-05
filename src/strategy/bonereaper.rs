@@ -134,7 +134,7 @@ impl BonereaperEngine {
                 // Active'e geç
                 let active = BonereaperActive {
                     last_signal_dir: None,
-                    last_acted_even_sec: 0,
+                    last_acted_even_sec: u64::MAX,
                     confirmed_signal: None,
                     pending_signal: None,
                     pending_count: 0,
