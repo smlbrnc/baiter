@@ -452,9 +452,9 @@ fn signal_order(
     }
     // ceil: $5 / $0.61 = 8.19 → 9 shares × $0.61 = $5.49 ≥ min_order_size
     let size = (ctx.order_usdc / price).ceil();
-    // Asimetrik avg_sum_ok: pahalı taraf (bid > 0.50) satın alımı avg_sum'u
-    // 1.0'ın üstüne taşırsa bloke et. Ucuz taraf (bid ≤ 0.50) serbest.
-    if bid > 0.50 {
+    // Asimetrik avg_sum_ok: yükselen taraf (bid > 0.50) serbest — trend yönünde
+    // agresif birikim. Düşen/ucuz taraf (bid ≤ 0.50) filtreli — avg_sum kontrolü.
+    if bid <= 0.50 {
         let m = ctx.metrics;
         let (cur_filled, cur_avg, opp_filled, opp_avg) = match dir {
             Outcome::Up   => (m.up_filled,   m.avg_up,   m.down_filled, m.avg_down),
