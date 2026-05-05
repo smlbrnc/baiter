@@ -210,8 +210,25 @@ impl BonereaperEngine {
                             def_bid
                         };
                         let lot = rebalance_lot(fill_imbalance);
-                        if let Some(order) = make_buy(ctx, deficit, price, lot, reason_rebalance(deficit)) {
-                            return (BonereaperState::Active(st), Decision::PlaceOrders(vec![order]));
+                        // Rebalance avg_sum eşiği 1.02 — pahalı taraf alımı avg_sum'u
+                        // 1.02'nin üstüne çıkarsa rebalance yapılmaz.
+                        let rebalance_ok = {
+                            let m = ctx.metrics;
+                            let (cf, ca, of_, oa) = match deficit {
+                                Outcome::Up   => (m.up_filled,   m.avg_up,   m.down_filled, m.avg_down),
+                                Outcome::Down => (m.down_filled, m.avg_down, m.up_filled,   m.avg_up),
+                            };
+                            if of_ <= 0.0 {
+                                true
+                            } else {
+                                let new_avg = (ca * cf + price * lot) / (cf + lot);
+                                new_avg + oa < 1.02
+                            }
+                        };
+                        if rebalance_ok {
+                            if let Some(order) = make_buy(ctx, deficit, price, lot, reason_rebalance(deficit)) {
+                                return (BonereaperState::Active(st), Decision::PlaceOrders(vec![order]));
+                            }
                         }
                     }
                 }
