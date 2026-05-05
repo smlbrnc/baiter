@@ -204,10 +204,21 @@ impl BonereaperEngine {
                         } else {
                             def_bid
                         };
-                        let lot = rebalance_lot(fill_imbalance);
-                        // Rebalance eşiği 1.0: pair toplam maliyeti $1'ı geçmediği sürece
-                        // denge emri verilir (signal'dan daha gevşek, hedge imkânı korunur).
-                        if avg_sum_ok_threshold(ctx, deficit, price, lot, 1.0) {
+                        let full_lot = rebalance_lot(fill_imbalance);
+                        // Tam lot avg_sum_ok'u geçemezse signal boyutunda fallback lot dene.
+                        // Mevcut karşı taraf fill varsa küçük lot weighted average'ı eşiğin
+                        // altında tutabilir (büyük lot geçemezken küçük lot geçebilir).
+                        let lot = if avg_sum_ok_threshold(ctx, deficit, price, full_lot, 1.0) {
+                            full_lot
+                        } else {
+                            let fallback = (ctx.order_usdc / price).ceil();
+                            if avg_sum_ok_threshold(ctx, deficit, price, fallback, 1.0) {
+                                fallback
+                            } else {
+                                0.0
+                            }
+                        };
+                        if lot > 0.0 {
                             if let Some(order) = make_buy(ctx, deficit, price, lot, reason_rebalance(deficit)) {
                                 return (BonereaperState::Active(st), Decision::PlaceOrders(vec![order]));
                             }
