@@ -205,8 +205,11 @@ impl BonereaperEngine {
                             def_bid
                         };
                         let lot = rebalance_lot(fill_imbalance);
-                        if let Some(order) = make_buy(ctx, deficit, price, lot, reason_rebalance(deficit)) {
-                            return (BonereaperState::Active(st), Decision::PlaceOrders(vec![order]));
+                        let avg_thr = ctx.strategy_params.bonereaper_avg_threshold();
+                        if avg_sum_ok(ctx, deficit, price, lot, avg_thr) {
+                            if let Some(order) = make_buy(ctx, deficit, price, lot, reason_rebalance(deficit)) {
+                                return (BonereaperState::Active(st), Decision::PlaceOrders(vec![order]));
+                            }
                         }
                     }
                 }
@@ -430,6 +433,11 @@ fn signal_order(
     }
     // ceil: $5 / $0.61 = 8.19 → 9 shares × $0.61 = $5.49 ≥ min_order_size
     let size = (ctx.order_usdc / price).ceil();
+    // avg_sum filtresi: bu emir sonrası avg_this + avg_opp >= threshold olacaksa bloke et.
+    let avg_thr = ctx.strategy_params.bonereaper_avg_threshold();
+    if !avg_sum_ok(ctx, dir, price, size, avg_thr) {
+        return None;
+    }
     make_buy(ctx, dir, price, size, reason_signal(dir))
 }
 
@@ -443,7 +451,6 @@ fn check_dutch_book(ctx: &StrategyContext<'_>) -> Option<Vec<PlannedOrder>> {
     if up_ask + dn_ask >= 1.0 || up_ask <= 0.0 || dn_ask <= 0.0 {
         return None;
     }
-    // pair_cost_ok: geçmiş avg alış fiyatlarıyla birlikte toplam çift maliyeti $1'ı geçmesin.
     if !pair_cost_ok(ctx, Outcome::Up, up_ask) || !pair_cost_ok(ctx, Outcome::Down, dn_ask) {
         return None;
     }
@@ -466,6 +473,28 @@ fn check_dutch_book(ctx: &StrategyContext<'_>) -> Option<Vec<PlannedOrder>> {
 #[inline]
 fn rebalance_lot(imbalance: f64) -> f64 {
     imbalance.abs().max(REBALANCE_MIN_LOT)
+}
+
+/// Prospektif avg_sum kontrolü: yeni emir sonrası avg_this + avg_opp < threshold mi?
+/// Karşı tarafta henüz fill yoksa (avg_opp == 0.0) kontrol atlanır — tek taraflı
+/// pozisyonda pair maliyeti hesaplanamaz.
+#[inline]
+fn avg_sum_ok(ctx: &StrategyContext<'_>, side: Outcome, price: f64, size: f64, threshold: f64) -> bool {
+    let m = ctx.metrics;
+    let (filled_this, avg_this, avg_opp) = match side {
+        Outcome::Up   => (m.up_filled,   m.avg_up,   m.avg_down),
+        Outcome::Down => (m.down_filled, m.avg_down, m.avg_up),
+    };
+    if avg_opp == 0.0 {
+        return true;
+    }
+    let new_total = filled_this + size;
+    let prospective_avg = if new_total > 0.0 {
+        (avg_this * filled_this + price * size) / new_total
+    } else {
+        price
+    };
+    prospective_avg + avg_opp < threshold
 }
 
 /// `side + karşı_taraf < $1.00` kontrolü.
