@@ -204,11 +204,9 @@ impl BonereaperEngine {
                         } else {
                             def_bid
                         };
-                        let full_lot = rebalance_lot(fill_imbalance);
-                        // avg_sum < 1.0 kısıtı altında analitik olarak izin verilen max lot.
-                        // Ne eksik ne fazla: tam imbalance veya kısıt varsa tam izin verilen kadar.
-                        let lot = capped_rebalance_lot(ctx, deficit, price, full_lot);
-                        if lot >= REBALANCE_MIN_LOT {
+                        let lot = rebalance_lot(fill_imbalance);
+                        // avg_sum < 1.0 sağlanıyorsa tam imbalance kadar rebalance yap.
+                        if avg_sum_ok_threshold(ctx, deficit, price, lot, 1.0) {
                             if let Some(order) = make_buy(ctx, deficit, price, lot, reason_rebalance(deficit)) {
                                 return (BonereaperState::Active(st), Decision::PlaceOrders(vec![order]));
                             }
@@ -476,34 +474,6 @@ fn rebalance_lot(imbalance: f64) -> f64 {
     imbalance.abs().max(REBALANCE_MIN_LOT)
 }
 
-/// avg_sum < 1.0 kısıtı altında verilebilecek analitik maksimum lot.
-///
-/// Kısıt: `(cur_cost + price × lot) / (cur_filled + lot) + opp_avg < 1.0`
-/// → `max_lot = (R × cur_filled - cur_cost) / (price - R)`  (R = 1.0 − opp_avg)
-///
-/// - price < R  → her lot geçerli, `full_lot` döner.
-/// - mevcut avg zaten R'yi aşıyorsa → 0.0 (emir verilmez).
-/// - Sonuç `full_lot` ile sınırlanır; ne eksik ne fazla.
-fn capped_rebalance_lot(ctx: &StrategyContext<'_>, side: Outcome, price: f64, full_lot: f64) -> f64 {
-    let m = ctx.metrics;
-    let (cur_filled, cur_avg, opp_filled, opp_avg) = match side {
-        Outcome::Up   => (m.up_filled,   m.avg_up,   m.down_filled, m.avg_down),
-        Outcome::Down => (m.down_filled, m.avg_down, m.up_filled,   m.avg_up),
-    };
-    if opp_filled <= 0.0 {
-        return full_lot;
-    }
-    let r = 1.0 - opp_avg;
-    if price < r {
-        return full_lot;
-    }
-    let cur_cost = cur_avg * cur_filled;
-    let numerator = r * cur_filled - cur_cost;
-    if numerator <= 0.0 {
-        return 0.0;
-    }
-    (numerator / (price - r)).floor().min(full_lot).max(0.0)
-}
 
 /// Bu emir yerleştirildikten sonra prospective avg_sum verilen eşiği geçer mi?
 /// Karşı tarafta hiç fill yoksa kontrol yapılmaz (pair henüz oluşmamış).
