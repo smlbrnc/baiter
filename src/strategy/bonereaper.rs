@@ -435,10 +435,6 @@ fn signal_order(
     }
     // ceil: $5 / $0.61 = 8.19 → 9 shares × $0.61 = $5.49 ≥ min_order_size
     let size = (ctx.order_usdc / price).ceil();
-    // avg_sum_ok: bu emir sonrası prospective avg_sum avg_threshold'u geçerse verme.
-    if !avg_sum_ok(ctx, dir, price, size) {
-        return None;
-    }
     make_buy(ctx, dir, price, size, reason_signal(dir))
 }
 
@@ -477,29 +473,6 @@ fn rebalance_lot(imbalance: f64) -> f64 {
 }
 
 
-/// Bu emir yerleştirildikten sonra prospective avg_sum verilen eşiği geçer mi?
-/// Karşı tarafta hiç fill yoksa kontrol yapılmaz (pair henüz oluşmamış).
-#[inline]
-fn avg_sum_ok_threshold(ctx: &StrategyContext<'_>, side: Outcome, price: f64, size: f64, threshold: f64) -> bool {
-    let m = ctx.metrics;
-    let (cur_filled, cur_avg, opp_filled, opp_avg) = match side {
-        Outcome::Up   => (m.up_filled,   m.avg_up,   m.down_filled, m.avg_down),
-        Outcome::Down => (m.down_filled, m.avg_down, m.up_filled,   m.avg_up),
-    };
-    if opp_filled <= 0.0 {
-        return true;
-    }
-    let new_filled = cur_filled + size;
-    let new_avg = (cur_avg * cur_filled + price * size) / new_filled;
-    new_avg + opp_avg < threshold
-}
-
-/// Signal için sabit 1.0 eşiği — rebalance ile aynı, pair maliyeti $1'ı geçmediği
-/// sürece her iki yönde de emir verilebilir.
-#[inline]
-fn avg_sum_ok(ctx: &StrategyContext<'_>, side: Outcome, price: f64, size: f64) -> bool {
-    avg_sum_ok_threshold(ctx, side, price, size, 1.0)
-}
 
 /// `side + karşı_taraf < $1.00` kontrolü.
 #[inline]
