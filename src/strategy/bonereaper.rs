@@ -424,10 +424,32 @@ fn signal_order(
     if bid <= 0.0 {
         return None;
     }
-    // Sinyal emirleri her zaman bid'den maker limit — taker kullanılmaz.
-    let price = bid;
+    // Dominant (yükselen) taraf taker mı? Parametre ile kontrol edilir.
+    let price = if bid > 0.50 && ctx.strategy_params.bonereaper_signal_taker() {
+        ctx.best_ask(dir)
+    } else {
+        bid
+    };
+    if price <= 0.0 {
+        return None;
+    }
     // ceil: $5 / $0.61 = 8.19 → 9 shares × $0.61 = $5.49 ≥ min_order_size
     let size = (ctx.order_usdc / price).ceil();
+    // Asimetrik avg_sum_ok: pahalı taraf (bid > 0.50) satın alımı avg_sum'u
+    // bozmasın. Ucuz taraf (bid ≤ 0.50) her zaman alınır — avg_sum'u düşürür.
+    if bid > 0.50 {
+        let m = ctx.metrics;
+        let (cur_filled, cur_avg, opp_filled, opp_avg) = match dir {
+            Outcome::Up   => (m.up_filled,   m.avg_up,   m.down_filled, m.avg_down),
+            Outcome::Down => (m.down_filled, m.avg_down, m.up_filled,   m.avg_up),
+        };
+        if opp_filled > 0.0 {
+            let new_avg = (cur_avg * cur_filled + price * size) / (cur_filled + size);
+            if new_avg + opp_avg >= ctx.avg_threshold {
+                return None;
+            }
+        }
+    }
     make_buy(ctx, dir, price, size, reason_signal(dir))
 }
 
