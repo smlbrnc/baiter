@@ -205,10 +205,8 @@ impl BonereaperEngine {
                             def_bid
                         };
                         let lot = rebalance_lot(fill_imbalance);
-                        if pair_cost_ok(ctx, deficit, price) {
-                            if let Some(order) = make_buy(ctx, deficit, price, lot, reason_rebalance(deficit)) {
-                                return (BonereaperState::Active(st), Decision::PlaceOrders(vec![order]));
-                            }
+                        if let Some(order) = make_buy(ctx, deficit, price, lot, reason_rebalance(deficit)) {
+                            return (BonereaperState::Active(st), Decision::PlaceOrders(vec![order]));
                         }
                     }
                 }
@@ -443,6 +441,10 @@ fn check_dutch_book(ctx: &StrategyContext<'_>) -> Option<Vec<PlannedOrder>> {
     let up_ask = ctx.up_best_ask;
     let dn_ask = ctx.down_best_ask;
     if up_ask + dn_ask >= 1.0 || up_ask <= 0.0 || dn_ask <= 0.0 {
+        return None;
+    }
+    // pair_cost_ok: geçmiş avg alış fiyatlarıyla birlikte toplam çift maliyeti $1'ı geçmesin.
+    if !pair_cost_ok(ctx, Outcome::Up, up_ask) || !pair_cost_ok(ctx, Outcome::Down, dn_ask) {
         return None;
     }
     let size = (ctx.order_usdc / up_ask.min(dn_ask)).floor();
