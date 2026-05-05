@@ -205,7 +205,9 @@ impl BonereaperEngine {
                             def_bid
                         };
                         let lot = rebalance_lot(fill_imbalance);
-                        if avg_sum_ok(ctx, deficit, price, lot) {
+                        // Rebalance eşiği 1.0: pair toplam maliyeti $1'ı geçmediği sürece
+                        // denge emri verilir (signal'dan daha gevşek, hedge imkânı korunur).
+                        if avg_sum_ok_threshold(ctx, deficit, price, lot, 1.0) {
                             if let Some(order) = make_buy(ctx, deficit, price, lot, reason_rebalance(deficit)) {
                                 return (BonereaperState::Active(st), Decision::PlaceOrders(vec![order]));
                             }
@@ -473,10 +475,10 @@ fn rebalance_lot(imbalance: f64) -> f64 {
     imbalance.abs().max(REBALANCE_MIN_LOT)
 }
 
-/// Bu emir yerleştirildikten sonra prospective avg_sum avg_threshold'u geçer mi?
+/// Bu emir yerleştirildikten sonra prospective avg_sum verilen eşiği geçer mi?
 /// Karşı tarafta hiç fill yoksa kontrol yapılmaz (pair henüz oluşmamış).
 #[inline]
-fn avg_sum_ok(ctx: &StrategyContext<'_>, side: Outcome, price: f64, size: f64) -> bool {
+fn avg_sum_ok_threshold(ctx: &StrategyContext<'_>, side: Outcome, price: f64, size: f64, threshold: f64) -> bool {
     let m = ctx.metrics;
     let (cur_filled, cur_avg, opp_filled, opp_avg) = match side {
         Outcome::Up   => (m.up_filled,   m.avg_up,   m.down_filled, m.avg_down),
@@ -487,7 +489,13 @@ fn avg_sum_ok(ctx: &StrategyContext<'_>, side: Outcome, price: f64, size: f64) -
     }
     let new_filled = cur_filled + size;
     let new_avg = (cur_avg * cur_filled + price * size) / new_filled;
-    new_avg + opp_avg < ctx.avg_threshold
+    new_avg + opp_avg < threshold
+}
+
+/// Signal için `avg_threshold` (config, varsayılan 0.98) kullanan kısayol.
+#[inline]
+fn avg_sum_ok(ctx: &StrategyContext<'_>, side: Outcome, price: f64, size: f64) -> bool {
+    avg_sum_ok_threshold(ctx, side, price, size, ctx.avg_threshold)
 }
 
 /// `side + karşı_taraf < $1.00` kontrolü.
