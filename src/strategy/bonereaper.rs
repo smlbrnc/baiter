@@ -30,7 +30,6 @@ use crate::types::{OrderType, Outcome, Side};
 // ─────────────────────────────────────────────
 
 const TICK_INTERVAL_SECS: u64 = 2;
-const POST_MARKET_WAIT: f64 = 30.0;
 /// Minimum lot: her rebalance tick'inde en az bu kadar al.
 const REBALANCE_MIN_LOT: f64 = 1.0;
 /// Stale emir maksimum fiyat sapması (bid'den uzaklık).
@@ -132,9 +131,6 @@ impl BonereaperEngine {
                 if !book_ready {
                     return (BonereaperState::Idle, Decision::NoOp);
                 }
-                if to_end < -POST_MARKET_WAIT {
-                    return (BonereaperState::Done, Decision::NoOp);
-                }
                 // Active'e geç
                 let active = BonereaperActive {
                     last_signal_dir: None,
@@ -150,11 +146,8 @@ impl BonereaperEngine {
             }
 
             BonereaperState::Active(mut st) => {
-                // ── POST-MARKET ──────────────────────────────────────────────
-                if to_end < -POST_MARKET_WAIT {
-                    let cancels = cancel_all(ctx);
-                    return (BonereaperState::Done, cancels);
-                }
+                // Pazar kapandıktan sonra yeni emir verilmez; max/min_price filtreleri
+                // aktif olduğu süre boyunca emir döngüsü çalışmaya devam eder.
                 if to_end < 0.0 {
                     return (BonereaperState::Active(st), Decision::NoOp);
                 }
@@ -467,10 +460,10 @@ fn check_dutch_book(ctx: &StrategyContext<'_>) -> Option<Vec<PlannedOrder>> {
 // Yardımcılar
 // ─────────────────────────────────────────────
 
-/// Rebalance lot: `max(REBALANCE_MIN_LOT, |imbalance| / 2)`.
+/// Rebalance lot: `max(REBALANCE_MIN_LOT, |imbalance|)` — tüm açığı tek seferde kapatır.
 #[inline]
 fn rebalance_lot(imbalance: f64) -> f64 {
-    (imbalance.abs() / 2.0).max(REBALANCE_MIN_LOT)
+    imbalance.abs().max(REBALANCE_MIN_LOT)
 }
 
 /// `side + karşı_taraf < $1.00` kontrolü.
@@ -507,17 +500,6 @@ fn make_buy(
         order_type: OrderType::Gtc,
         reason: reason.to_string(),
     })
-}
-
-/// Tüm `bonereaper:` emirlerini iptal et (post-market).
-fn cancel_all(ctx: &StrategyContext<'_>) -> Decision {
-    let mut ids: Vec<String> = Vec::with_capacity(ctx.open_orders.len());
-    for o in ctx.open_orders.iter() {
-        if o.reason.starts_with("bonereaper:") && o.side == Side::Buy {
-            ids.push(o.id.clone());
-        }
-    }
-    if ids.is_empty() { Decision::NoOp } else { Decision::CancelOrders(ids) }
 }
 
 /// Current bid'den `STALE_SPREAD_MAX`'tan fazla sapan signal emirlerini iptal et.
