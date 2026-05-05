@@ -186,6 +186,12 @@ pub struct StrategyParams {
     /// arası daha pürüzsüz ama yön değişiminde geç kalır.
     #[serde(default)]
     pub bonereaper_signal_ema_alpha: Option<f64>,
+    /// Profit lock: aktif ise her iki tarafta da fill oluşup imbalance rebalance
+    /// trigger'ın altına düştüğünde sinyal ve rebalance emirleri durur.
+    /// Market sonuna kadar mevcut pozisyon korunur, yeni emir verilmez.
+    /// Default: false (devre dışı).
+    #[serde(default)]
+    pub bonereaper_profit_lock: Option<bool>,
 }
 
 impl StrategyParams {
@@ -249,6 +255,10 @@ impl StrategyParams {
     }
     pub fn bonereaper_signal_ema_alpha(&self) -> f64 {
         self.bonereaper_signal_ema_alpha.unwrap_or(1.0).clamp(0.01, 1.0)
+    }
+
+    pub fn bonereaper_profit_lock(&self) -> bool {
+        self.bonereaper_profit_lock.unwrap_or(false)
     }
 }
 

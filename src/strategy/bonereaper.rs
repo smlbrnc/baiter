@@ -170,6 +170,18 @@ impl BonereaperEngine {
 
                 let m = ctx.metrics;
 
+                // ── PROFIT LOCK ───────────────────────────────────────────────
+                // Her iki tarafta fill var ve imbalance trigger altında ise
+                // mevcut pozisyonu koru, yeni emir verme.
+                if ctx.strategy_params.bonereaper_profit_lock()
+                    && m.up_filled > 0.0
+                    && m.down_filled > 0.0
+                    && (m.up_filled - m.down_filled).abs()
+                        < ctx.strategy_params.bonereaper_rebalance_trigger()
+                {
+                    return (BonereaperState::Active(st), Decision::NoOp);
+                }
+
                 // ── DUTCH BOOK ───────────────────────────────────────────────
                 if let Some(orders) = check_dutch_book(ctx) {
                     return (BonereaperState::Active(st), Decision::PlaceOrders(orders));

@@ -145,6 +145,12 @@ export interface StrategyParams {
    * 0.10-0.30 daha pürüzsüz ama yön değişiminde geç kalır.
    */
   bonereaper_signal_ema_alpha?: number | null;
+  /**
+   * Profit lock: aktif ise her iki tarafta da fill oluşup imbalance rebalance
+   * trigger altına düştüğünde yeni emir verilmez, pozisyon korunur.
+   * Default: false.
+   */
+  bonereaper_profit_lock?: boolean | null;
 }
 
 export interface BotRow {
@@ -480,4 +486,5 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   bonereaper_conv_guard_window: 5,
   bonereaper_signal_w_market: 0.7,
   bonereaper_signal_ema_alpha: 1.0,
+  bonereaper_profit_lock: false,
 } as const;

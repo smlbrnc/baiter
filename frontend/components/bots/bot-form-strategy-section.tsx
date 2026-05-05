@@ -77,6 +77,9 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const bonereaperSignalEmaAlpha =
     params.bonereaper_signal_ema_alpha ??
     STRATEGY_PARAMS_DEFAULTS.bonereaper_signal_ema_alpha;
+  const bonereaperProfitLock =
+    params.bonereaper_profit_lock ??
+    STRATEGY_PARAMS_DEFAULTS.bonereaper_profit_lock;
 
   return (
     <div className="space-y-3">
@@ -502,6 +505,17 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                   onChange={(e) =>
                     patch({ bonereaper_signal_ema_alpha: Number(e.target.value) })
                   }
+                />
+              </Field>
+              <Field
+                label="Profit Lock"
+                tooltip="Aktif ise: her iki tarafta da fill oluşup imbalance rebalance trigger altına düşünce yeni sinyal ve rebalance emirleri durur. Market sonuna kadar mevcut pozisyon korunur."
+                hint="Varsayılan: kapalı."
+              >
+                <ToggleRow
+                  label={bonereaperProfitLock ? "Aktif" : "Pasif"}
+                  checked={bonereaperProfitLock}
+                  onChange={(v) => patch({ bonereaper_profit_lock: v })}
                 />
               </Field>
             </div>
