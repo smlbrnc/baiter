@@ -36,8 +36,6 @@ const REBALANCE_MIN_LOT: f64 = 1.0;
 const STALE_SPREAD_MAX: f64 = 0.05;
 /// Convergence guard eşiği: karşı tarafın bid'i bu değeri geçerse o tarafa emir verilmez.
 const CONVERGENCE_THRESHOLD: f64 = 0.80;
-/// Signal "güçlü" eşiği: |effective_score - 5| bu değeri aşarsa sinyal güçlü kabul edilir.
-const SIGNAL_STRONG_DELTA: f64 = 2.5;
 /// Conv guard window üst sınırı (`bonereaper_conv_guard_window` clamp ile zaten 60).
 /// VecDeque::with_capacity için pre-allocate boyutu — heap reallocation kaçınılır.
 const CONV_HISTORY_CAPACITY: usize = 60;
@@ -180,13 +178,8 @@ impl BonereaperEngine {
                 // ── REBALANCE ────────────────────────────────────────────────
                 let rebalance_trigger = ctx.strategy_params.bonereaper_rebalance_trigger();
                 let fill_imbalance = m.up_filled - m.down_filled;
-                let signal_strong = (ctx.effective_score - 5.0).abs() > SIGNAL_STRONG_DELTA;
-                let rebalance_when_strong =
-                    ctx.strategy_params.bonereaper_rebalance_when_signal_strong();
 
-                if fill_imbalance.abs() >= rebalance_trigger
-                    && (rebalance_when_strong || !signal_strong)
-                {
+                if fill_imbalance.abs() >= rebalance_trigger {
                     let deficit = if fill_imbalance > 0.0 { Outcome::Down } else { Outcome::Up };
                     // Convergence guard (sliding window): son N tick'te karşı taraf
                     // converging idiyse deficit tarafa emir verme.
