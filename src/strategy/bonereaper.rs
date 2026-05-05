@@ -402,7 +402,6 @@ fn update_conv_history(
 ///   bid > 0.50 (yükselen / dominant taraf) → `best_ask` taker, live'da anında fill.
 ///   bid ≤ 0.50 (ucuz / durağan taraf)      → `best_bid` maker, hız kritik değil.
 /// Boyut: `order_usdc / price` — notional ≥ min_order_size olacak şekilde ceil kullanılır.
-/// Signal emirleri tek taraflı directional bet olduğundan pair_cost_ok kontrolü uygulanmaz.
 /// Convergence guard: karşı tarafın bid'i CONVERGENCE_THRESHOLD'u geçmişse veya
 /// son N tick içinde geçmişse None döner (sliding window).
 fn signal_order(
@@ -448,10 +447,9 @@ fn signal_order(
 fn check_dutch_book(ctx: &StrategyContext<'_>) -> Option<Vec<PlannedOrder>> {
     let up_ask = ctx.up_best_ask;
     let dn_ask = ctx.down_best_ask;
+    // up_ask + dn_ask < $1.00: Dutch Book'un kendi kârlılığını garanti eder.
+    // Her emir bağımsız arbitraj olduğundan tarihsel avg kontrol edilmez.
     if up_ask + dn_ask >= 1.0 || up_ask <= 0.0 || dn_ask <= 0.0 {
-        return None;
-    }
-    if !pair_cost_ok(ctx, Outcome::Up, up_ask) || !pair_cost_ok(ctx, Outcome::Down, dn_ask) {
         return None;
     }
     let size = (ctx.order_usdc / up_ask.min(dn_ask)).floor();
@@ -498,17 +496,6 @@ fn avg_sum_ok(ctx: &StrategyContext<'_>, side: Outcome, price: f64, size: f64, t
         price
     };
     prospective_avg + avg_opp < threshold
-}
-
-/// `side + karşı_taraf < $1.00` kontrolü.
-#[inline]
-fn pair_cost_ok(ctx: &StrategyContext<'_>, side: Outcome, price: f64) -> bool {
-    let m = ctx.metrics;
-    let opp_ref = match side.opposite() {
-        Outcome::Up   => if m.up_filled   > 0.0 { m.avg_up   } else { ctx.up_best_ask   },
-        Outcome::Down => if m.down_filled > 0.0 { m.avg_down } else { ctx.down_best_ask },
-    };
-    price + opp_ref < 1.00
 }
 
 /// BUY GTC limit emir. `price ≤ 0`, `size ≤ 0` veya notional < min → `None`.
