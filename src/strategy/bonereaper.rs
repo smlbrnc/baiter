@@ -424,15 +424,8 @@ fn signal_order(
     if bid <= 0.0 {
         return None;
     }
-    // signal_taker=true ise fiyat seviyesinden bağımsız her zaman ask (taker, anında fill).
-    let price = if ctx.strategy_params.bonereaper_signal_taker() {
-        ctx.best_ask(dir)
-    } else {
-        bid
-    };
-    if price <= 0.0 {
-        return None;
-    }
+    // Sinyal emirleri her zaman bid'den maker limit — taker kullanılmaz.
+    let price = bid;
     // ceil: $5 / $0.61 = 8.19 → 9 shares × $0.61 = $5.49 ≥ min_order_size
     let size = (ctx.order_usdc / price).ceil();
     make_buy(ctx, dir, price, size, reason_signal(dir))
