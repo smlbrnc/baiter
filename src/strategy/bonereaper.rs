@@ -341,21 +341,8 @@ fn signal_order(
     }
     // ceil: $5 / $0.61 = 8.19 → 9 shares × $0.61 = $5.49 ≥ min_order_size
     let size = (ctx.order_usdc / price).ceil();
-    // Asimetrik avg_sum_ok: yükselen taraf (bid > 0.50) serbest — trend yönünde
-    // agresif birikim. Düşen/ucuz taraf (bid ≤ 0.50) filtreli — avg_sum kontrolü.
-    if bid <= 0.50 {
-        let m = ctx.metrics;
-        let (cur_filled, cur_avg, opp_filled, opp_avg) = match dir {
-            Outcome::Up   => (m.up_filled,   m.avg_up,   m.down_filled, m.avg_down),
-            Outcome::Down => (m.down_filled, m.avg_down, m.up_filled,   m.avg_up),
-        };
-        if opp_filled > 0.0 {
-            let new_avg = (cur_avg * cur_filled + price * size) / (cur_filled + size);
-            if new_avg + opp_avg >= 1.0 {
-                return None;
-            }
-        }
-    }
+    // avg_sum filtresi kaldırıldı: her iki taraf da serbest.
+    // Düşük fiyatlı (bid ≤ 0.20) alımlar avg_sum'u seyreltir, bloke edilmemeli.
     make_buy(ctx, dir, price, size, reason_signal(dir))
 }
 
