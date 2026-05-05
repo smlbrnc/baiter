@@ -18,8 +18,6 @@
 //! `bonereaper:dutch:{up,down}`  — Dutch Book arbitraj
 //! `bonereaper:rebalance:{up,down}` — rebalance fill
 
-use std::collections::VecDeque;
-
 use serde::{Deserialize, Serialize};
 
 use super::common::{Decision, OpenOrder, PlannedOrder, StrategyContext};
@@ -34,11 +32,6 @@ const TICK_INTERVAL_SECS: u64 = 2;
 const REBALANCE_MIN_LOT: f64 = 1.0;
 /// Stale emir maksimum fiyat sapması (bid'den uzaklık).
 const STALE_SPREAD_MAX: f64 = 0.05;
-/// Convergence guard eşiği: karşı tarafın bid'i bu değeri geçerse o tarafa emir verilmez.
-const CONVERGENCE_THRESHOLD: f64 = 0.80;
-/// Conv guard window üst sınırı (`bonereaper_conv_guard_window` clamp ile zaten 60).
-/// VecDeque::with_capacity için pre-allocate boyutu — heap reallocation kaçınılır.
-const CONV_HISTORY_CAPACITY: usize = 60;
 
 // Reason etiketleri — `format!()` allocation'larını eler (hot path'te tick başına 1 alloc tasarrufu).
 #[inline]
@@ -93,13 +86,6 @@ pub struct BonereaperActive {
     /// Bekleyen aday için ardışık tick sayısı.
     #[serde(default)]
     pub pending_count: u32,
-    /// Convergence guard sliding window: son N tick'in conv durumu (true = conv tetik).
-    #[serde(default)]
-    pub conv_history: VecDeque<bool>,
-    /// Conv tarihçesinde gözlenen son converging taraf (UP/DN bid > THRESHOLD).
-    /// `None` → window içinde conv yok.
-    #[serde(default)]
-    pub last_conv_side: Option<Outcome>,
     /// Hibrit composite skoru için EMA değeri (skor[-1,+1] cinsinden).
     /// `None` → henüz initialize edilmemiş; ilk değeri ham hibrit alır.
     #[serde(default)]
@@ -136,8 +122,6 @@ impl BonereaperEngine {
                     confirmed_signal: None,
                     pending_signal: None,
                     pending_count: 0,
-                    conv_history: VecDeque::with_capacity(CONV_HISTORY_CAPACITY),
-                    last_conv_side: None,
                     signal_ema: None,
                 };
                 (BonereaperState::Active(Box::new(active)), Decision::NoOp)
@@ -164,10 +148,6 @@ impl BonereaperEngine {
                     return (BonereaperState::Active(st), Decision::NoOp);
                 }
 
-                // ── CONV SLIDING WINDOW GÜNCELLE ─────────────────────────────
-                let conv_window = ctx.strategy_params.bonereaper_conv_guard_window() as usize;
-                update_conv_history(&mut st, ctx, conv_window);
-
                 let m = ctx.metrics;
 
                 // ── PROFIT LOCK ───────────────────────────────────────────────
@@ -193,15 +173,7 @@ impl BonereaperEngine {
 
                 if fill_imbalance.abs() >= rebalance_trigger {
                     let deficit = if fill_imbalance > 0.0 { Outcome::Down } else { Outcome::Up };
-                    // Convergence guard (sliding window): son N tick'te karşı taraf
-                    // converging idiyse deficit tarafa emir verme.
-                    let conv_blocks_deficit = match st.last_conv_side {
-                        Some(side) => side == deficit.opposite(),
-                        None => false,
-                    };
-                    let opp_bid = ctx.best_bid(deficit.opposite());
-                    let conv_now = opp_bid > CONVERGENCE_THRESHOLD;
-                    if !conv_now && !conv_blocks_deficit {
+                    {
                         let def_bid = ctx.best_bid(deficit);
                         // Deficit taraf dominant (yükselen) ise taker ask → anında fill (parametre ile kontrol).
                         let price = if def_bid > 0.50 && ctx.strategy_params.bonereaper_rebalance_taker() {
@@ -393,50 +365,16 @@ fn signal_direction_persistent(
     confirmed
 }
 
-/// Conv sliding window: her decision tick'te conv durumunu kaydet, son N tick'lik
-/// pencerede herhangi bir tick conv idiyse `last_conv_side` doldurulur.
-fn update_conv_history(
-    st: &mut BonereaperActive,
-    ctx: &StrategyContext<'_>,
-    window: usize,
-) {
-    let conv_now = ctx.up_best_bid > CONVERGENCE_THRESHOLD
-        || ctx.down_best_bid > CONVERGENCE_THRESHOLD;
-    st.conv_history.push_back(conv_now);
-    while st.conv_history.len() > window.max(1) {
-        st.conv_history.pop_front();
-    }
-    // Son conv tarafı: anlık conv varsa onu yaz; pencerede conv yoksa None.
-    if ctx.up_best_bid > CONVERGENCE_THRESHOLD {
-        st.last_conv_side = Some(Outcome::Up);
-    } else if ctx.down_best_bid > CONVERGENCE_THRESHOLD {
-        st.last_conv_side = Some(Outcome::Down);
-    } else if !st.conv_history.iter().any(|&v| v) {
-        st.last_conv_side = None;
-    }
-    // else: pencere içinde geçmiş bir conv varsa last_conv_side korunur.
-}
 
 /// Sinyal yönünde emir:
 ///   bid > 0.50 (yükselen / dominant taraf) → `best_ask` taker, live'da anında fill.
 ///   bid ≤ 0.50 (ucuz / durağan taraf)      → `best_bid` maker, hız kritik değil.
 /// Boyut: `order_usdc / price` — notional ≥ min_order_size olacak şekilde ceil kullanılır.
-/// Signal emirleri tek taraflı directional bet olduğundan pair_cost_ok kontrolü uygulanmaz.
-/// Convergence guard: karşı tarafın bid'i CONVERGENCE_THRESHOLD'u geçmişse veya
-/// son N tick içinde geçmişse None döner (sliding window).
 fn signal_order(
-    st: &BonereaperActive,
+    _st: &BonereaperActive,
     ctx: &StrategyContext<'_>,
     dir: Outcome,
 ) -> Option<PlannedOrder> {
-    // Anlık conv kontrolü: karşı taraf bid > THRESHOLD ise emir verme.
-    if ctx.best_bid(dir.opposite()) > CONVERGENCE_THRESHOLD {
-        return None;
-    }
-    // Sliding window kontrolü: pencere içinde karşı taraf converging idiyse emir verme.
-    if st.last_conv_side == Some(dir.opposite()) {
-        return None;
-    }
     let bid = ctx.best_bid(dir);
     if bid <= 0.0 {
         return None;
