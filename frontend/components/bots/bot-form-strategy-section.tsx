@@ -62,9 +62,6 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
     params.bonereaper_rebalance_taker ?? STRATEGY_PARAMS_DEFAULTS.bonereaper_rebalance_taker;
   const bonereaperRebalanceTrigger =
     params.bonereaper_rebalance_trigger ?? STRATEGY_PARAMS_DEFAULTS.bonereaper_rebalance_trigger;
-  const bonereaperRebalanceWhenSignalStrong =
-    params.bonereaper_rebalance_when_signal_strong ??
-    STRATEGY_PARAMS_DEFAULTS.bonereaper_rebalance_when_signal_strong;
   const bonereaperSignalPersistenceK =
     params.bonereaper_signal_persistence_k ??
     STRATEGY_PARAMS_DEFAULTS.bonereaper_signal_persistence_k;
@@ -465,13 +462,10 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
             </div>
 
             <ToggleRow
-              checked={bonereaperRebalanceWhenSignalStrong}
-              onChange={(v) =>
-                patch({ bonereaper_rebalance_when_signal_strong: v })
-              }
-              title="Rebalance — signal güçlü iken aktif"
-              description="|effective_score - 5| > 2.5 (yani score > 7.5 veya < 2.5) iken rebalance ne yapar? Default KAPALI: signal güçlüyse rebalance pasif kalır (signal'a güveniyor, hedge yapmıyor → kayıp önler). AÇIK: rebalance her zaman aktif (eski davranış)."
-              tooltip="Smoking gun: 1777736700 marketinde signal=DN doğruyken rebalance UP'a 311 share yığıp -$20 yaptırdı. Bu toggle KAPALI iken aynı durumda +$45 olurdu (simülasyon)."
+              checked={bonereaperProfitLock}
+              onChange={(v) => patch({ bonereaper_profit_lock: v })}
+              title="Profit Lock"
+              description="Her iki tarafta da fill oluşup imbalance rebalance trigger altına düşünce yeni sinyal ve rebalance emirleri durur. Market sonuna kadar mevcut pozisyon korunur."
             />
 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
@@ -505,17 +499,6 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                   onChange={(e) =>
                     patch({ bonereaper_signal_ema_alpha: Number(e.target.value) })
                   }
-                />
-              </Field>
-              <Field
-                label="Profit Lock"
-                tooltip="Aktif ise: her iki tarafta da fill oluşup imbalance rebalance trigger altına düşünce yeni sinyal ve rebalance emirleri durur. Market sonuna kadar mevcut pozisyon korunur."
-                hint="Varsayılan: kapalı."
-              >
-                <ToggleRow
-                  label={bonereaperProfitLock ? "Aktif" : "Pasif"}
-                  checked={bonereaperProfitLock}
-                  onChange={(v) => patch({ bonereaper_profit_lock: v })}
                 />
               </Field>
             </div>
