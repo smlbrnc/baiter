@@ -4,19 +4,16 @@
 //!
 //! Her **2 saniyede** bir karar döngüsü çalışır. Karar öncelik sırası:
 //!
-//! 1. POST-MARKET  — tüm emirleri iptal et, Done'a geç.
-//! 2. DUTCH BOOK   — up_ask + dn_ask < $1.00 → her iki tarafa arbitraj emri.
-//! 3. REBALANCE    — |up_fill − dn_fill| ≥ 5 sh → eksik tarafa emir.
-//! 4. SIGNAL       — skor → UP veya DOWN, yön değiştiyse önceki signal emirleri
+//! 1. DUTCH BOOK   — up_ask + dn_ask < $1.00 → her iki tarafa arbitraj emri.
+//! 2. SIGNAL       — skor → UP veya DOWN, yön değiştiyse önceki signal emirleri
 //!                   iptal edilir; yeni yönde `best_bid`'den GTC maker emir verilir.
-//! 5. STALE CANCEL — fiyatı current bid'den STALE_SPREAD_MAX'tan fazla sapan
+//! 3. STALE CANCEL — fiyatı current bid'den STALE_SPREAD_MAX'tan fazla sapan
 //!                   açık signal emirleri iptal edilir.
 //!
 //! ## Reason etiketleri
 //!
 //! `bonereaper:signal:{up,down}` — sinyal yönlü opener (her döngü)
 //! `bonereaper:dutch:{up,down}`  — Dutch Book arbitraj
-//! `bonereaper:rebalance:{up,down}` — rebalance fill
 
 use serde::{Deserialize, Serialize};
 
@@ -29,7 +26,6 @@ use crate::types::{OrderType, Outcome, Side};
 
 const TICK_INTERVAL_SECS: u64 = 2;
 /// Minimum lot: her rebalance tick'inde en az bu kadar al.
-const REBALANCE_MIN_LOT: f64 = 1.0;
 /// Stale emir maksimum fiyat sapması (bid'den uzaklık).
 const STALE_SPREAD_MAX: f64 = 0.05;
 
@@ -42,13 +38,6 @@ const fn reason_signal(dir: Outcome) -> &'static str {
     }
 }
 
-#[inline]
-const fn reason_rebalance(dir: Outcome) -> &'static str {
-    match dir {
-        Outcome::Up => "bonereaper:rebalance:up",
-        Outcome::Down => "bonereaper:rebalance:down",
-    }
-}
 
 // ─────────────────────────────────────────────
 // FSM State
@@ -165,44 +154,6 @@ impl BonereaperEngine {
                 // ── DUTCH BOOK ───────────────────────────────────────────────
                 if let Some(orders) = check_dutch_book(ctx) {
                     return (BonereaperState::Active(st), Decision::PlaceOrders(orders));
-                }
-
-                // ── REBALANCE ────────────────────────────────────────────────
-                let rebalance_trigger = ctx.strategy_params.bonereaper_rebalance_trigger();
-                let fill_imbalance = m.up_filled - m.down_filled;
-
-                if fill_imbalance.abs() >= rebalance_trigger {
-                    let deficit = if fill_imbalance > 0.0 { Outcome::Down } else { Outcome::Up };
-                    {
-                        let def_bid = ctx.best_bid(deficit);
-                        // Deficit taraf dominant (yükselen) ise taker ask → anında fill (parametre ile kontrol).
-                        let price = if def_bid > 0.50 && ctx.strategy_params.bonereaper_rebalance_taker() {
-                            ctx.best_ask(deficit)
-                        } else {
-                            def_bid
-                        };
-                        let lot = rebalance_lot(fill_imbalance);
-                        // Rebalance avg_sum eşiği 1.02 — pahalı taraf alımı avg_sum'u
-                        // 1.02'nin üstüne çıkarsa rebalance yapılmaz.
-                        let rebalance_ok = {
-                            let m = ctx.metrics;
-                            let (cf, ca, of_, oa) = match deficit {
-                                Outcome::Up   => (m.up_filled,   m.avg_up,   m.down_filled, m.avg_down),
-                                Outcome::Down => (m.down_filled, m.avg_down, m.up_filled,   m.avg_up),
-                            };
-                            if of_ <= 0.0 {
-                                true
-                            } else {
-                                let new_avg = (ca * cf + price * lot) / (cf + lot);
-                                new_avg + oa < 1.02
-                            }
-                        };
-                        if rebalance_ok {
-                            if let Some(order) = make_buy(ctx, deficit, price, lot, reason_rebalance(deficit)) {
-                                return (BonereaperState::Active(st), Decision::PlaceOrders(vec![order]));
-                            }
-                        }
-                    }
                 }
 
                 // ── SIGNAL ───────────────────────────────────────────────────
@@ -436,11 +387,6 @@ fn check_dutch_book(ctx: &StrategyContext<'_>) -> Option<Vec<PlannedOrder>> {
 // Yardımcılar
 // ─────────────────────────────────────────────
 
-/// Rebalance lot: `max(REBALANCE_MIN_LOT, |imbalance|)` — tüm açığı tek seferde kapatır.
-#[inline]
-fn rebalance_lot(imbalance: f64) -> f64 {
-    imbalance.abs().max(REBALANCE_MIN_LOT)
-}
 
 
 
