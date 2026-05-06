@@ -28,6 +28,9 @@ const TICK_INTERVAL_SECS: u64 = 2;
 /// Minimum lot: her rebalance tick'inde en az bu kadar al.
 /// Stale emir maksimum fiyat sapması (bid'den uzaklık).
 const STALE_SPREAD_MAX: f64 = 0.05;
+/// Cheap hedge eşiği: karşı taraf bid bu değerin altında ise sinyal emriyle
+/// birlikte ek bir hedge emri de verilir — avg_sum seyreltme + risk dağıtma.
+const CHEAP_HEDGE_THRESHOLD: f64 = 0.35;
 
 // Reason etiketleri — `format!()` allocation'larını eler (hot path'te tick başına 1 alloc tasarrufu).
 #[inline]
@@ -35,6 +38,14 @@ const fn reason_signal(dir: Outcome) -> &'static str {
     match dir {
         Outcome::Up => "bonereaper:signal:up",
         Outcome::Down => "bonereaper:signal:down",
+    }
+}
+
+#[inline]
+const fn reason_hedge(dir: Outcome) -> &'static str {
+    match dir {
+        Outcome::Up => "bonereaper:hedge:up",
+        Outcome::Down => "bonereaper:hedge:down",
     }
 }
 
@@ -181,14 +192,18 @@ impl BonereaperEngine {
                     }
 
                     if let Some(order) = signal_order(&st, ctx, new_dir) {
+                        let mut places = vec![order];
+                        if let Some(hedge) = cheap_hedge_order(ctx, new_dir.opposite()) {
+                            places.push(hedge);
+                        }
                         if cancel_ids.is_empty() {
-                            return (BonereaperState::Active(st), Decision::PlaceOrders(vec![order]));
+                            return (BonereaperState::Active(st), Decision::PlaceOrders(places));
                         }
                         return (
                             BonereaperState::Active(st),
                             Decision::CancelAndPlace {
                                 cancels: cancel_ids,
-                                places: vec![order],
+                                places,
                             },
                         );
                     }
@@ -207,14 +222,19 @@ impl BonereaperEngine {
                 }
 
                 if let Some(order) = signal_order(&st, ctx, new_dir) {
+                    // Karşı taraf ucuzsa (bid ≤ CHEAP_HEDGE_THRESHOLD) hedge emri de ekle.
+                    let mut places = vec![order];
+                    if let Some(hedge) = cheap_hedge_order(ctx, new_dir.opposite()) {
+                        places.push(hedge);
+                    }
                     if stale_signal_ids.is_empty() {
-                        return (BonereaperState::Active(st), Decision::PlaceOrders(vec![order]));
+                        return (BonereaperState::Active(st), Decision::PlaceOrders(places));
                     }
                     return (
                         BonereaperState::Active(st),
                         Decision::CancelAndPlace {
                             cancels: stale_signal_ids,
-                            places: vec![order],
+                            places,
                         },
                     );
                 }
@@ -427,6 +447,17 @@ fn make_buy(
 }
 
 /// Current bid'den `STALE_SPREAD_MAX`'tan fazla sapan signal emirlerini iptal et.
+/// Karşı taraf bid ≤ CHEAP_HEDGE_THRESHOLD ise ucuza hedge emri ver.
+/// avg_sum filtresi uygulanmaz — ucuz alım her zaman avg_sum'u düşürür.
+fn cheap_hedge_order(ctx: &StrategyContext<'_>, dir: Outcome) -> Option<PlannedOrder> {
+    let bid = ctx.best_bid(dir);
+    if bid <= 0.0 || bid > CHEAP_HEDGE_THRESHOLD {
+        return None;
+    }
+    let size = (ctx.order_usdc / bid).ceil();
+    make_buy(ctx, dir, bid, size, reason_hedge(dir))
+}
+
 fn cancel_stale(ctx: &StrategyContext<'_>) -> Decision {
     let mut ids: Vec<String> = Vec::with_capacity(ctx.open_orders.len());
     for o in ctx.open_orders.iter() {
