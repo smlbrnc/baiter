@@ -259,7 +259,7 @@ impl StrategyParams {
         self.bonereaper_rebalance_when_signal_strong.unwrap_or(false)
     }
     pub fn bonereaper_signal_persistence_k(&self) -> u32 {
-        self.bonereaper_signal_persistence_k.unwrap_or(2).clamp(1, 20)
+        self.bonereaper_signal_persistence_k.unwrap_or(1).clamp(1, 20)
     }
     pub fn bonereaper_conv_guard_window(&self) -> u32 {
         self.bonereaper_conv_guard_window.unwrap_or(5).clamp(1, 60)

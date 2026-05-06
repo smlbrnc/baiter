@@ -1,8 +1,8 @@
-//! Bonereaper stratejisi — sinyal tabanlı 2 saniyelik emir döngüsü.
+//! Bonereaper stratejisi — sinyal tabanlı 1 saniyelik emir döngüsü.
 //!
 //! ## Çalışma mantığı
 //!
-//! Her **2 saniyede** bir karar döngüsü çalışır. Karar öncelik sırası:
+//! Her **1 saniyede** bir karar döngüsü çalışır. Karar öncelik sırası:
 //!
 //! 1. DUTCH BOOK   — up_ask + dn_ask < $1.00 → her iki tarafa arbitraj emri.
 //! 2. SIGNAL       — skor → UP veya DOWN, yön değiştiyse önceki signal emirleri
@@ -24,7 +24,7 @@ use crate::types::{OrderType, Outcome, Side};
 // Sabitler
 // ─────────────────────────────────────────────
 
-const TICK_INTERVAL_SECS: u64 = 2;
+const TICK_INTERVAL_SECS: u64 = 1;
 /// Minimum lot: her rebalance tick'inde en az bu kadar al.
 /// Stale emir maksimum fiyat sapması (bid'den uzaklık).
 const STALE_SPREAD_MAX: f64 = 0.05;
@@ -317,12 +317,22 @@ fn signal_direction_persistent(
 }
 
 
-/// Sinyal yönünde emir:
-///   bid > 0.50 (yükselen / dominant taraf) → `best_ask` taker, live'da anında fill.
-///   bid ≤ 0.50 (ucuz / durağan taraf)      → `best_bid` maker, hız kritik değil.
-/// Boyut: `order_usdc / price` — notional ≥ min_order_size olacak şekilde ceil kullanılır.
+/// Sinyal yönünde emir — dinamik size + asimetrik avg_sum filtresi.
+///
+/// **Fiyat:** `signal_taker=true` → `best_ask` (taker, anında fill).
+///             `signal_taker=false` → `best_bid` (maker, GTC limit).
+///
+/// **Boyut (dinamik 2x-7x):** `multiplier = 2.0 + 5.0 × |signal_ema|`
+///   - Zayıf sinyal (|ema|≈0) → 2x = $10 base
+///   - Güçlü sinyal (|ema|≈1) → 7x = $35 base
+///   - Real bot davranışı: medyan $10.54, p90 $32 ile uyumlu
+///
+/// **avg_sum filtresi (yalnız pahalı taraf, bid > 0.50):**
+///   Karşı tarafta zaten pozisyon varsa (`opp_filled > 0`) ve mevcut yönde de
+///   pozisyon varsa (`cur_filled > 0`), yeni alımın etkisiyle `new_avg + opp_avg ≥ 1.25`
+///   olacaksa emir verilmez. Real bot p90 ~1.20'ye yakın eşik.
 fn signal_order(
-    _st: &BonereaperActive,
+    st: &BonereaperActive,
     ctx: &StrategyContext<'_>,
     dir: Outcome,
 ) -> Option<PlannedOrder> {
@@ -330,7 +340,6 @@ fn signal_order(
     if bid <= 0.0 {
         return None;
     }
-    // Dominant (yükselen) taraf taker mı? Parametre ile kontrol edilir.
     let price = if ctx.strategy_params.bonereaper_signal_taker() {
         ctx.best_ask(dir)
     } else {
@@ -339,10 +348,10 @@ fn signal_order(
     if price <= 0.0 {
         return None;
     }
-    // ceil: $5 / $0.61 = 8.19 → 9 shares × $0.61 = $5.49 ≥ min_order_size
-    let size = (ctx.order_usdc / price).ceil();
-    // Pahalı taraf (bid > 0.50): avg_sum < 1.0 kontrolü — sinyal yanlış yönde ise
-    // agresif birikim engellenir. Ucuz taraf (bid ≤ 0.50): serbest, avg_sum seyreltir.
+    let s = st.signal_ema.unwrap_or(0.0).abs().min(1.0);
+    let multiplier = 2.0 + 5.0 * s;
+    let usdc = ctx.order_usdc * multiplier;
+    let size = (usdc / price).ceil();
     if bid > 0.50 {
         let m = ctx.metrics;
         let (cur_filled, cur_avg, opp_filled, opp_avg) = match dir {
@@ -350,11 +359,11 @@ fn signal_order(
             Outcome::Down => (m.down_filled, m.avg_down, m.up_filled,   m.avg_up),
         };
         if opp_filled > 0.0 && cur_filled > 0.0 {
-                let new_avg = (cur_avg * cur_filled + price * size) / (cur_filled + size);
-                if new_avg + opp_avg >= 1.05 {
-                    return None;
-                }
+            let new_avg = (cur_avg * cur_filled + price * size) / (cur_filled + size);
+            if new_avg + opp_avg >= 1.25 {
+                return None;
             }
+        }
     }
     make_buy(ctx, dir, price, size, reason_signal(dir))
 }
