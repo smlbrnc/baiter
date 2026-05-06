@@ -224,8 +224,8 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
         </div>
       )}
 
-      {/* ── Alis / ortak profit-lock (Elis'te gizli) ─────────────────── */}
-      {!isElis && (
+      {/* ── Alis profit-lock (sadece Alis için) ─────────────────── */}
+      {isAlis && (
         <div className="space-y-3">
           <div>
             <SectionLabel icon={Sliders} title="Strateji parametreleri" />

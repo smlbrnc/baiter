@@ -11,30 +11,38 @@ type Props = {
 };
 
 export function BotFormSettingsSection({ form, setForm }: Props) {
+  const isAlis = form.strategy === "alis";
   const isElis = form.strategy === "elis";
+  const isBonereaper = form.strategy === "bonereaper";
+  const description = isElis
+    ? "Fiyat aralığı (min/max price). Elis loop süresi ve emir boyutu aşağıdaki strateji parametrelerinden ayarlanır."
+    : isBonereaper
+      ? "Order USDC = base; Bonereaper bunu sinyal kuvvetine göre 2x-7x dinamik çarpar. Min/Max price emir filtresi (executor reddi)."
+      : "Emir boyutu, cooldown ve fiyat aralığı.";
+
+  const orderTooltip = isElis
+    ? "Elis: api_min_order_size kontrolü için kullanılır. Gerçek emir boyutu strategy_params.elis_max_buy_order_size (share) ile belirlenir."
+    : isBonereaper
+      ? "Bonereaper base USDC. Sinyal kuvvetine göre 2x-7x dinamik çarpılır (multiplier = 2 + 5×|signal_ema|). Default 10 → $20-$70 dinamik aralık (real bot medyan $10.54, p90 $32 ile uyumlu)."
+      : "Emir başına harcanacak USDC miktarı. GTC size = max(order_usdc / fiyat, api_min_order_size).";
+
+  const orderHint = isElis
+    ? "api_min_order_size kontrolü için; min 1 USDC."
+    : isBonereaper
+      ? "Default 10 USDC (base, dinamik 2x-7x çarpılır)."
+      : "Minimum 1 USDC.";
+
   return (
     <div className="space-y-3">
       <div>
         <SectionLabel icon={Settings2} title="Risk ve emir parametreleri" />
-        <p className="text-muted-foreground mt-1 text-sm">
-          {isElis
-            ? "Fiyat aralığı (min/max price). Elis loop süresi ve emir boyutu aşağıdaki strateji parametrelerinden ayarlanır; bu bölümdeki cooldown Elis tarafından kullanılmaz."
-            : "Emir boyutu, cooldown ve fiyat aralığı."}
-        </p>
+        <p className="text-muted-foreground mt-1 text-sm">{description}</p>
       </div>
 
       <div className="bg-muted/25 space-y-3 rounded-md border border-border/40 p-3">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <div className={cn(isElis && "sm:col-span-2")}>
-            <Field
-              label="Order USDC"
-              tooltip={
-                isElis
-                  ? "Elis: api_min_order_size kontrolü için kullanılır. Gerçek emir boyutu strategy_params.elis_max_buy_order_size (share) ile belirlenir. Min 1 USDC."
-                  : "Emir basina harcanacak USDC miktari. GTC size = max(order_usdc / fiyat, api_min_order_size). Artirmak emir buyuklugunu dogrudan arttirir."
-              }
-              hint={isElis ? "api_min_order_size kontrolü için; min 1 USDC." : "Minimum 1 USDC."}
-            >
+          <div className={cn(!isAlis && "sm:col-span-2")}>
+            <Field label="Order USDC" tooltip={orderTooltip} hint={orderHint}>
               <Input
                 type="number"
                 step="0.01"
@@ -46,11 +54,11 @@ export function BotFormSettingsSection({ form, setForm }: Props) {
               />
             </Field>
           </div>
-          {!isElis && (
+          {isAlis && (
             <Field
               label="Cooldown (ms)"
-              tooltip="Iki averaging GTC emri arasindaki minimum bekleme suresi (milisaniye). Fiyat dustukten sonra bot bu sure dolmadan yeni averaging emri gondermez. Varsayilan: 30 000 ms = 30 sn."
-              hint="Varsayilan 30 000 ms."
+              tooltip="Alis: iki averaging GTC emri arasındaki minimum bekleme süresi (ms). Fiyat düştükten sonra bot bu süre dolmadan yeni averaging emri göndermez."
+              hint="Varsayılan 30 000 ms (30 sn)."
             >
               <Input
                 type="number"
@@ -71,8 +79,8 @@ export function BotFormSettingsSection({ form, setForm }: Props) {
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field
             label="Min price"
-            tooltip="Emirlerin kabul edildigi minimum fiyat esigi (0.01-0.50 USDC/share). Bu degerin altindaki fiyatlarda emir gonderilmez; asiri dusuk likiditeye karsi koruma saglar."
-            hint="0.01 – 0.50; emirler bu fiyatin altinda olamaz."
+            tooltip="Executor: emirlerin kabul edildiği minimum fiyat eşiği. Strateji bu değerin altında bir fiyat önerirse otomatik reddedilir. Aşırı düşük likiditeye karşı koruma."
+            hint="0.01 – 0.50; default 0.05."
           >
             <Input
               type="number"
@@ -87,8 +95,8 @@ export function BotFormSettingsSection({ form, setForm }: Props) {
           </Field>
           <Field
             label="Max price"
-            tooltip="Emirlerin kabul edildigi maksimum fiyat esigi (0.50-0.99 USDC/share). Bu degerin uzerindeki fiyatlarda emir gonderilmez; cok pahali pozisyon almayi onler."
-            hint="0.50 – 0.99; emirler bu fiyatin ustunde olamaz."
+            tooltip="Executor: emirlerin kabul edildiği maksimum fiyat eşiği. Bonereaper için 0.99 önerilir (real bot 0.99'a kadar trade yapıyor)."
+            hint={isBonereaper ? "0.50 – 0.99; default 0.99 (real bot uyumu)." : "0.50 – 0.99; default 0.95."}
           >
             <Input
               type="number"
