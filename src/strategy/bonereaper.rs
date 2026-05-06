@@ -183,8 +183,8 @@ impl BonereaperEngine {
                 // < 0 → DOWN dominant signal, > 0 → UP dominant signal.
                 //
                 // Fill imbalance, sinyal yönüyle çelişiyorsa düzelt:
-                //   - UP fills ağır + cumS DOWN  → kademeli: yönü DOWN'a çek
-                //   - DOWN fills ağır + cumS UP   → ilk fırsatta: yönü UP'a çek
+                //   - UP fills ağır + signal DOWN  → kademeli: yönü DOWN'a çek
+                //   - DOWN fills ağır + signal UP   → ilk fırsatta: yönü UP'a çek
                 //     ve avg_sum filtresi devre dışı (force_rebalance = true)
                 let total_sh = m.up_filled + m.down_filled;
                 let cum_signal_dir = if st.cum_skor <= 0.0 { Outcome::Down } else { Outcome::Up };
@@ -300,10 +300,11 @@ impl BonereaperEngine {
 /// 1. Hibrit composite: `signal_skor × (1 - w_market) + market_skor × w_market`
 ///    - signal_skor: Binance/OKX composite [(effective_score-5)/5] ∈ [-1, +1]
 ///    - market_skor: Polymarket UP_bid trendi [(up_bid-0.5) × 2] ∈ [-1, +1]
-///    82 market tick analizinde Polymarket sinyalı %76 doğru, composite %55.
+///    59 market simülasyonunda: w=0.0 (saf exchange) %79.7 WR, w=0.7 (market ağırlıklı) %57.6 WR.
+///    Default w=0.0 — exchange sinyali tek başına çok daha güvenilir.
 ///
 /// 2. EMA smoothing: `ema = α × hybrid + (1-α) × prev_ema`
-///    Bimodal score'ları yumuşatır, gürültüyü filtreler.
+///    α=0.5 (default): orta yumuşatma — gürültüyü filtreler, yön değişiminde lag minimal.
 ///
 /// 3. Persistence (K-tick onay):
 ///    - `K=1` → anlık karar (her tick yön değiştirebilir).
