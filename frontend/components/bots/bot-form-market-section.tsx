@@ -213,11 +213,9 @@ export function BotFormMarketSection({
                         const p = f.strategy_params ?? {};
                         next.strategy_params = {
                           ...p,
-                          elis_spread_threshold: p.elis_spread_threshold ?? 0.02,
                           elis_max_buy_order_size: p.elis_max_buy_order_size ?? 20,
-                          elis_trade_cooldown_ms: p.elis_trade_cooldown_ms ?? 5000,
-                          elis_balance_factor: p.elis_balance_factor ?? 0.7,
-                          elis_stop_before_end_secs: p.elis_stop_before_end_secs ?? 60,
+                          elis_trade_cooldown_ms: p.elis_trade_cooldown_ms ?? 2000,
+                          elis_stop_before_end_secs: p.elis_stop_before_end_secs ?? 30,
                         };
                       }
                       return next;

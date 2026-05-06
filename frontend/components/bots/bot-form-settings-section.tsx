@@ -18,7 +18,7 @@ export function BotFormSettingsSection({ form, setForm }: Props) {
         <SectionLabel icon={Settings2} title="Risk ve emir parametreleri" />
         <p className="text-muted-foreground mt-1 text-sm">
           {isElis
-            ? "Emir başına USDC ve fiyat aralığı. Elis cooldown'u strategy_params üzerinden (elis_trade_cooldown_ms) yönetir; bu alandaki cooldown değeri Elis tarafından kullanılmaz."
+            ? "Fiyat aralığı (min/max price). Elis loop süresi ve emir boyutu aşağıdaki strateji parametrelerinden ayarlanır; bu bölümdeki cooldown Elis tarafından kullanılmaz."
             : "Emir boyutu, cooldown ve fiyat aralığı."}
         </p>
       </div>
@@ -30,10 +30,10 @@ export function BotFormSettingsSection({ form, setForm }: Props) {
               label="Order USDC"
               tooltip={
                 isElis
-                  ? "Elis: her batch'te UP ve DOWN emirleri için temel notional. Balance factor bu degeri arti/eksi ayarlar; gercek emir boyutu = round(order_usdc / fiyat). Min 1 USDC."
+                  ? "Elis: api_min_order_size kontrolü için kullanılır. Gerçek emir boyutu strategy_params.elis_max_buy_order_size (share) ile belirlenir. Min 1 USDC."
                   : "Emir basina harcanacak USDC miktari. GTC size = max(order_usdc / fiyat, api_min_order_size). Artirmak emir buyuklugunu dogrudan arttirir."
               }
-              hint={isElis ? "Her outcome basina notional; min 1 USDC." : "Minimum 1 USDC."}
+              hint={isElis ? "api_min_order_size kontrolü için; min 1 USDC." : "Minimum 1 USDC."}
             >
               <Input
                 type="number"

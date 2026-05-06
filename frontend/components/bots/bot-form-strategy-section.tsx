@@ -37,15 +37,11 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
     params.pyramid_fak_delta ?? STRATEGY_PARAMS_DEFAULTS.pyramid_fak_delta;
   const pyramidUsdc = params.pyramid_usdc ?? null;
 
-  // ── Elis Dutch Book ───────────────────────────────────────────────────
-  const elisSpreadThreshold =
-    params.elis_spread_threshold ?? STRATEGY_PARAMS_DEFAULTS.elis_spread_threshold;
+  // ── Elis Dutch Book Bid Loop ──────────────────────────────────────────
   const elisMaxBuyOrderSize =
     params.elis_max_buy_order_size ?? STRATEGY_PARAMS_DEFAULTS.elis_max_buy_order_size;
   const elisTradeCooldownMs =
     params.elis_trade_cooldown_ms ?? STRATEGY_PARAMS_DEFAULTS.elis_trade_cooldown_ms;
-  const elisBalanceFactor =
-    params.elis_balance_factor ?? STRATEGY_PARAMS_DEFAULTS.elis_balance_factor;
   const elisStopBeforeEndSecs =
     params.elis_stop_before_end_secs ?? STRATEGY_PARAMS_DEFAULTS.elis_stop_before_end_secs;
 
@@ -81,65 +77,48 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   return (
     <div className="space-y-3">
 
-      {/* ── Elis Dutch Book parametreleri ─────────────────────────────── */}
+      {/* ── Elis Dutch Book Bid Loop parametreleri ───────────────────────── */}
       {isElis && (
         <div className="space-y-3">
           <div>
-            <SectionLabel icon={Zap} title="Elis — Dutch Book parametreleri" />
+            <SectionLabel icon={Zap} title="Elis — Dutch Book Bid Loop" />
             <p className="text-muted-foreground mt-1 text-sm">
-              Her iki tarafın bid-ask spread'i geniş olduğunda UP+DOWN çift
-              taraflı maker bid emri verilir. Balance factor envanter dengesini
-              korur; cooldown ardışık batch'ler arasındaki beklemeyi belirler.
+              Her 2 saniyede bir döngü: <code>up_bid + dn_bid &lt; $1.00</code>{" "}
+              koşulunda her iki tarafa bid fiyatından limit emir verilir.
+              Dolmayan miktar biriktirilir ve sonraki döngüde base emir
+              boyutuna eklenir.
             </p>
           </div>
 
           <div className="bg-muted/25 space-y-4 rounded-md border border-border/40 p-3">
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field
-                label="Spread eşiği"
-                tooltip="Her tick'te UP_spread = UP_ask − UP_bid ve DOWN_spread = DOWN_ask − DOWN_bid hesaplanır. Her iki değer bu eşiğe ulaştığında batch emri tetiklenir. Geniş spread = yeterli likidite sinyali."
-                hint={`0.01 – 0.20 (default ${STRATEGY_PARAMS_DEFAULTS.elis_spread_threshold}).`}
-              >
-                <Input
-                  type="number"
-                  step="0.005"
-                  min="0.01"
-                  max="0.20"
-                  value={elisSpreadThreshold}
-                  onChange={(e) =>
-                    patch({ elis_spread_threshold: Number(e.target.value) })
-                  }
-                />
-              </Field>
-              <Field
-                label="Maks emir boyutu (share)"
-                tooltip="Dengeli pozisyonda UP ve DOWN taraflarına verilecek maksimum share miktarı. Balance factor bu tavan üzerinden artı/eksi uygular. Artırmak sermayeyi büyütür, azaltmak riski sınırlar."
-                hint={`1 – 1000 share (default ${STRATEGY_PARAMS_DEFAULTS.elis_max_buy_order_size}).`}
-              >
-                <Input
-                  type="number"
-                  step="5"
-                  min="1"
-                  max="1000"
-                  value={elisMaxBuyOrderSize}
-                  onChange={(e) =>
-                    patch({ elis_max_buy_order_size: Number(e.target.value) })
-                  }
-                />
-              </Field>
-            </div>
+            <Field
+              label="Temel emir boyutu (share)"
+              tooltip="Her döngüde UP ve DOWN taraflarına verilecek temel share miktarı. Önceki döngüde dolmayan emirlerin kalan miktarı bu taban üstüne eklenir. Artırmak sermayeyi büyütür, azaltmak riski sınırlar."
+              hint={`1 – 1000 share (default ${STRATEGY_PARAMS_DEFAULTS.elis_max_buy_order_size}).`}
+            >
+              <Input
+                type="number"
+                step="5"
+                min="1"
+                max="1000"
+                value={elisMaxBuyOrderSize}
+                onChange={(e) =>
+                  patch({ elis_max_buy_order_size: Number(e.target.value) })
+                }
+              />
+            </Field>
 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Field
-                label="Trade cooldown (ms)"
-                tooltip="Bir batch yerleştirildikten sonra bu süre dolmadan yeni UP+DOWN çifti verilmez. Cooldown dolduğunda açık emirler iptal edilir ve Idle'a dönülür. Artırmak batch sıklığını düşürür."
-                hint={`1 000 – 30 000 ms (default ${STRATEGY_PARAMS_DEFAULTS.elis_trade_cooldown_ms}).`}
+                label="Loop süresi (ms)"
+                tooltip="Emir verildikten bu süre sonra açık elis emirleri iptal edilir ve yeni döngü başlar. Dolmayan miktar biriktirilip sonraki loop'ta base'e eklenir."
+                hint={`500 – 10 000 ms (default ${STRATEGY_PARAMS_DEFAULTS.elis_trade_cooldown_ms}).`}
               >
                 <Input
                   type="number"
                   step="500"
-                  min="1000"
-                  max="30000"
+                  min="500"
+                  max="10000"
                   value={elisTradeCooldownMs}
                   onChange={(e) =>
                     patch({ elis_trade_cooldown_ms: Number(e.target.value) })
@@ -147,39 +126,22 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                 />
               </Field>
               <Field
-                label="Balance factor"
-                tooltip="Envanter dengesizliğine karşı uygulanacak düzeltme çarpanı. adjustment = round(imbalance × factor × 0.5). 0 = denge kapalı (her batch sabit boyut); 1.0 = tam agresif denge. Default 0.7 doküman önerisidir."
-                hint="0.00 – 1.00 (default 0.70)."
+                label="Pencere stop (sn)"
+                tooltip="Market kapanışından bu kadar saniye önce yeni emir verilmez; açık emirler iptal edilir ve strateji Done durumuna geçer."
+                hint={`10 – 120 sn (default ${STRATEGY_PARAMS_DEFAULTS.elis_stop_before_end_secs}).`}
               >
                 <Input
                   type="number"
-                  step="0.05"
-                  min="0"
-                  max="1"
-                  value={elisBalanceFactor}
+                  step="5"
+                  min="10"
+                  max="120"
+                  value={elisStopBeforeEndSecs}
                   onChange={(e) =>
-                    patch({ elis_balance_factor: Number(e.target.value) })
+                    patch({ elis_stop_before_end_secs: Number(e.target.value) })
                   }
                 />
               </Field>
             </div>
-
-            <Field
-              label="Pencere stop (sn)"
-              tooltip="Market kapanışından bu kadar saniye önce yeni emir verilmez; açık emirler iptal edilir ve strateji Done durumuna geçer. Kapanış volatilitesinden korunmak için kullanılır."
-              hint={`10 – 120 sn (default ${STRATEGY_PARAMS_DEFAULTS.elis_stop_before_end_secs}).`}
-            >
-              <Input
-                type="number"
-                step="5"
-                min="10"
-                max="120"
-                value={elisStopBeforeEndSecs}
-                onChange={(e) =>
-                  patch({ elis_stop_before_end_secs: Number(e.target.value) })
-                }
-              />
-            </Field>
           </div>
 
           {/* Elis özet kartı */}
@@ -187,29 +149,29 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
             <p className="font-medium text-foreground">Elis — nasıl çalışır?</p>
             <ul className="list-disc space-y-1 pl-4">
               <li>
-                <strong>Spread tespiti:</strong> Her tick'te UP_ask − UP_bid ve
-                DOWN_ask − DOWN_bid hesaplanır. Her ikisi de{" "}
-                <code>spread_threshold</code>'u aşarsa batch tetiklenir.
+                <strong>Koşul:</strong> <code>up_bid + dn_bid &lt; $1.00</code>{" "}
+                ve her iki bid <code>min_price</code> üzerinde ise döngü aktif.
               </li>
               <li>
-                <strong>Maker bid emri:</strong> UP ve DOWN taraflarına{" "}
-                <em>bid fiyatından</em> GTC limit emir verilir. UP_bid +
-                DOWN_bid {"<"} $1.00 olduğundan fill olursa garantili kâr.
+                <strong>Maker bid emri:</strong> UP tarafına <code>up_best_bid</code>,
+                DOWN tarafına <code>dn_best_bid</code> fiyatından GTC limit
+                emir. Fill olursa toplam maliyet {"<"} $1.00 — garantili kâr.
               </li>
               <li>
-                <strong>Balance factor:</strong> UP ve DOWN dolum miktarı
-                arasındaki fark varsa <code>balance_factor</code> ile düzeltme
-                yapılır: geride kalan tarafa daha büyük emir verilir.
+                <strong>Birikim mekanizması:</strong> Emir boyutu ={" "}
+                <code>base_size + accum</code>. Her döngü sonunda dolmayan
+                kısım <code>accum</code>&apos;a eklenir; bir sonraki loop&apos;ta
+                base üstüne ilave edilir.
               </li>
               <li>
-                <strong>Cooldown döngüsü:</strong> Batch yerleştikten sonra{" "}
-                <code>trade_cooldown_ms</code> beklenir, açık emirler iptal
-                edilir, Idle'a dönülür ve spread kontrolü yeniden başlar.
+                <strong>Loop döngüsü:</strong>{" "}
+                <code>trade_cooldown_ms</code> (default 2sn) sonra tüm açık
+                elis emirleri iptal, Idle&apos;a dön, yeni koşul kontrolü.
               </li>
               <li>
                 <strong>Pencere stop:</strong> Kapanıştan{" "}
                 <code>stop_before_end_secs</code> önce tüm yeni emirler durur;
-                mevcut emirler iptal edilerek Done'a geçilir.
+                Done&apos;a geçilir.
               </li>
             </ul>
           </div>

@@ -19,7 +19,7 @@ export const STRATEGY_OPTIONS: {
     id: "elis",
     label: "Elis",
     description:
-      "Dutch Book spread capture: UP+DOWN bid'den çift taraflı maker limit; spread geniş tick'te emir, balance factor ile envanter dengesi, pencere sonuna kadar cooldown döngüsü.",
+      "Dutch Book Bid Loop: up_bid + down_bid < $1.00 koşulunda her iki tarafı bid fiyatından al; 2sn döngüde dolmayanları biriktir, sonraki emirlere ekle.",
   },
   {
     id: "bonereaper",
