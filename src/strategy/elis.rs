@@ -261,8 +261,11 @@ fn is_profit_locked(ctx: &StrategyContext<'_>, lock_threshold: f64) -> bool {
 
 /// P4 — Improvement-Based Decision (docs/gabagool.md §4).
 ///
-/// Mevcut fill yoksa her zaman izin verir (ilk alım).
-/// Fill varsa: `current_pair_cost - projected_pair_cost ≥ min_improvement`.
+/// Yalnızca **her iki tarafta da fill** varsa iyileştirme kontrolü yapılır.
+/// Tek taraflı fill durumunda `avg_sum()` yanlış bir baseline oluşturur
+/// (ör. DOWN filled=0.52, UP filled=0 → avg_sum=0.52; UP almak projected=1.30
+/// yapar → improvement=-0.78 → yanlış blok). Bu yüzden her iki taraf doluysa
+/// kontrol et, aksi halde her zaman izin ver (pozisyon inşa aşaması).
 #[inline]
 fn improvement_ok(
     ctx: &StrategyContext<'_>,
@@ -273,17 +276,15 @@ fn improvement_ok(
     min_improvement: f64,
 ) -> bool {
     let m = ctx.metrics;
-    // İlk alım: her iki tarafta da fill yok → her zaman izin ver.
-    if m.up_filled == 0.0 && m.down_filled == 0.0 {
+    // Herhangi bir tarafta fill yoksa → pozisyon inşa aşaması, izin ver.
+    if m.up_filled == 0.0 || m.down_filled == 0.0 {
         return true;
     }
-    // Mevcut avg pair cost.
+    // Her iki tarafta da fill var → pair cost anlamlı, iyileştirme kontrol et.
     let current_pair = m.avg_sum();
-    // Simüle edilmiş yeni avg pair cost.
     let new_avg_up = weighted_avg(m.avg_up, m.up_filled, up_price, up_size);
     let new_avg_dn = weighted_avg(m.avg_down, m.down_filled, dn_price, dn_size);
     let projected_pair = new_avg_up + new_avg_dn;
-    // İyileşme yeterli mi?
     current_pair - projected_pair >= min_improvement
 }
 
@@ -298,12 +299,24 @@ fn weighted_avg(current_avg: f64, current_qty: f64, new_price: f64, new_qty: f64
 }
 
 /// P5 — Volatility filter: bid-ask spread çok genişse OB güvenilmez.
-/// Her iki tarafın spreadi `threshold` altında olmalı.
+///
+/// Dominant taraf (taker) ask'tan alınacağı için dominant tarafın spreadi
+/// kritik; weaker taraf (maker) bid'den beklendiği için sadece dominant
+/// tarafın spreadi kontrol edilir. Eşit fiyat durumunda her ikisi kontrol.
 #[inline]
 fn vol_filter_ok(ctx: &StrategyContext<'_>, threshold: f64) -> bool {
     let up_spread = ctx.up_best_ask - ctx.up_best_bid;
     let dn_spread = ctx.down_best_ask - ctx.down_best_bid;
-    up_spread <= threshold && dn_spread <= threshold
+    let up_bid = ctx.up_best_bid;
+    let dn_bid = ctx.down_best_bid;
+    // Dominant taraf = daha yüksek bid'e sahip taraf
+    if up_bid > dn_bid {
+        up_spread <= threshold  // UP dominant (taker) → sadece UP spread kontrol
+    } else if dn_bid > up_bid {
+        dn_spread <= threshold  // DOWN dominant (taker) → sadece DOWN spread kontrol
+    } else {
+        up_spread <= threshold && dn_spread <= threshold
+    }
 }
 
 /// P5 — BSI filter: aşırı tek yönlü akış varsa karşı tarafı engelle.
