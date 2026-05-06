@@ -263,36 +263,24 @@ impl StrategyParams {
 }
 
 /// Elis stratejisi parametreleri — `StrategyParams`'tan resolve edilir.
-/// Dutch Book spread capture parametreleri.
-///
-/// Doküman: `docs/elis.md` §5 (Konfigürasyon Parametreleri).
+/// Dutch Book Bid Loop parametreleri.
 #[derive(Debug, Clone, Copy)]
 pub struct ElisParams {
-    /// Her iki tarafta bid-ask spread'in geçmesi gereken minimum eşik.
-    /// Dokümandan: `spread_threshold = 0.02`
-    pub spread_threshold: f64,
-    /// Taraf başına maksimum emir büyüklüğü (share). Balance factor öncesi taban.
-    /// Dokümandan: `max_buy_order_size = 20`
+    /// Taraf başına temel emir büyüklüğü (share). Önceki loop'ta dolmayan
+    /// miktar bu taban üstüne eklenir. Default: 20.0
     pub max_buy_order_size: f64,
-    /// Emir gönderme → iptal arası bekleme süresi (ms).
-    /// Dokümandan: `trade_cooldown = 5000`
+    /// Emir gönderme → iptal arası loop süresi (ms). Default: 2000
     pub trade_cooldown_ms: u64,
-    /// Pozisyon dengeleme agresifliği (0.0 = pasif, 1.0 = maksimum).
-    /// Dokümandan: `balance_factor = 0.7`
-    pub balance_factor: f64,
-    /// Pencere kapanmadan bu kadar saniye önce işlemleri durdur.
-    /// Dokümandan: `stop_before_end_ms = 60000` → 60.0s
+    /// Pencere kapanmadan bu kadar saniye önce döngüyü durdur. Default: 30.0
     pub stop_before_end_secs: f64,
 }
 
 impl Default for ElisParams {
     fn default() -> Self {
         Self {
-            spread_threshold: 0.02,
             max_buy_order_size: 20.0,
-            trade_cooldown_ms: 5000,
-            balance_factor: 0.7,
-            stop_before_end_secs: 60.0,
+            trade_cooldown_ms: 2000,
+            stop_before_end_secs: 30.0,
         }
     }
 }
@@ -303,15 +291,9 @@ impl ElisParams {
     pub fn from_strategy_params(p: &StrategyParams) -> Self {
         let d = Self::default();
         Self {
-            spread_threshold: p.elis_spread_threshold.unwrap_or(d.spread_threshold),
-            max_buy_order_size: p
-                .elis_max_buy_order_size
-                .unwrap_or(d.max_buy_order_size),
+            max_buy_order_size: p.elis_max_buy_order_size.unwrap_or(d.max_buy_order_size),
             trade_cooldown_ms: p.elis_trade_cooldown_ms.unwrap_or(d.trade_cooldown_ms),
-            balance_factor: p.elis_balance_factor.unwrap_or(d.balance_factor),
-            stop_before_end_secs: p
-                .elis_stop_before_end_secs
-                .unwrap_or(d.stop_before_end_secs),
+            stop_before_end_secs: p.elis_stop_before_end_secs.unwrap_or(d.stop_before_end_secs),
         }
     }
 }
