@@ -478,7 +478,14 @@ fn seyreltme_order(ctx: &StrategyContext<'_>, signal_dir: Outcome) -> Option<Pla
     if opp_filled <= 0.0 {
         return None; // Karşı tarafta fill yok, seyreltme anlamsız
     }
-    let size = (ctx.order_usdc / opp_bid).ceil();
+    // Seyreltme boyutu = signal boyutu (share bazlı eşitlik).
+    // Aksi halde DOWN@0.10 → 100sh vs UP@0.80 → 12sh → pozisyon tersine döner.
+    let signal_bid = ctx.best_bid(signal_dir);
+    let size = if signal_bid > 0.0 {
+        (ctx.order_usdc / signal_bid).ceil()
+    } else {
+        (ctx.order_usdc / opp_bid).ceil()
+    };
     let new_avg_opp = (opp_cost + opp_bid * size) / (opp_filled + size);
     // Sadece avg_sum < 1.0'da kalıyorsa seyrelt
     if new_avg_opp + sig_avg >= 1.0 {
