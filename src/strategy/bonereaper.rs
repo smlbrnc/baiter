@@ -32,11 +32,6 @@ const STALE_SPREAD_MAX: f64 = 0.05;
 /// sinyal, imbalance'ı azaltacak yönde ateşlenir (ters sinyal).
 /// Gerçek bot CHE/DOM ≈ 0.91x — %50 sınırı makul bir denge noktası.
 const IMBALANCE_CAP: f64 = 0.50;
-/// Minimum EMA sinyal gücü: |ema_val| bu değerin altında ise sinyal yok sayılır.
-/// Nötr bölge (market 0.45-0.55 arası sıkışık) trade'lerini engeller.
-/// Analiz: güçlü sinyal (|ema|>0.40) → 17:1 doğru/yanlış oran.
-/// Nötr bölge ise yanlış trade yoğun — bloke etmek +6.7% doğruluk artışı sağlar.
-const MIN_SIGNAL_STRENGTH: f64 = 0.20;
 /// Proaktif seyreltme eşiği: karşı taraf bid bu değerin altında ise ve
 /// avg_sum < 1.0 koşulu sağlanırsa sinyal emriyle birlikte seyreltme emri verilir.
 /// Gerçek bot analizi: CHE alımlarının %51'i bid < 0.45 fiyat bandında.
@@ -186,14 +181,6 @@ impl BonereaperEngine {
 
                 let persistence_k = ctx.strategy_params.bonereaper_signal_persistence_k();
                 let ema_dir = signal_direction_persistent(&mut st, ctx, persistence_k);
-
-                // ── EMA GÜÇ KONTROLÜ ─────────────────────────────────────────
-                // |ema| < MIN_SIGNAL_STRENGTH → nötr bölge, sinyal yok say.
-                // Analiz: nötr bölgede yanlış trade yoğun; güçlü sinyal 17:1 oran.
-                let ema_strength = st.signal_ema.map(|v| v.abs()).unwrap_or(0.0);
-                if ema_strength < MIN_SIGNAL_STRENGTH {
-                    return (BonereaperState::Active(st), Decision::NoOp);
-                }
 
                 // ── İMBALANCE KAPISI ─────────────────────────────────────────
                 // İmbalance > %50 ise sinyal yerine dengeleyici yönde ateşle.
@@ -366,7 +353,7 @@ fn signal_direction_persistent(
 ///   bid ≤ 0.50 (ucuz / durağan taraf)      → `best_bid` maker, hız kritik değil.
 /// Boyut: `order_usdc / price` — notional ≥ min_order_size olacak şekilde ceil kullanılır.
 fn signal_order(
-    _st: &BonereaperActive,
+    st: &BonereaperActive,
     ctx: &StrategyContext<'_>,
     dir: Outcome,
 ) -> Option<PlannedOrder> {
@@ -385,21 +372,33 @@ fn signal_order(
     }
     // ceil: $5 / $0.61 = 8.19 → 9 shares × $0.61 = $5.49 ≥ min_order_size
     let size = (ctx.order_usdc / price).ceil();
-    // Pahalı taraf (bid > 0.50): avg_sum < 1.0 kontrolü — sinyal yanlış yönde ise
-    // agresif birikim engellenir. Ucuz taraf (bid ≤ 0.50): serbest, avg_sum seyreltir.
-    if bid > 0.50 {
-        let m = ctx.metrics;
-        let (cur_filled, cur_avg, opp_filled, opp_avg) = match dir {
-            Outcome::Up   => (m.up_filled,   m.avg_up,   m.down_filled, m.avg_down),
-            Outcome::Down => (m.down_filled, m.avg_down, m.up_filled,   m.avg_up),
-        };
-        if opp_filled > 0.0 {
-            let new_avg = (cur_avg * cur_filled + price * size) / (cur_filled + size);
-            if new_avg + opp_avg >= 1.05 {
+
+    let m = ctx.metrics;
+    let (cur_filled, cur_avg, opp_filled, opp_avg) = match dir {
+        Outcome::Up   => (m.up_filled,   m.avg_up,   m.down_filled, m.avg_down),
+        Outcome::Down => (m.down_filled, m.avg_down, m.up_filled,   m.avg_up),
+    };
+
+    if opp_filled > 0.0 {
+        let new_avg = (cur_avg * cur_filled + price * size) / (cur_filled + size);
+        let prospective_sum = new_avg + opp_avg;
+
+        // avg_sum ≥ 1.0 olduğunda zayıf sinyal (|EMA| < 0.20) ile işlem yapma.
+        // avg_sum < 1.0 ise her zaman al (pair maliyeti uygun, sinyal gücüne bakma).
+        // avg_sum ≥ 1.0 ise güçlü sinyal (|EMA| ≥ 0.20) gerektir.
+        if prospective_sum >= 1.0 {
+            let ema_strength = st.signal_ema.map(|e| e.abs()).unwrap_or(0.0);
+            if ema_strength < 0.20 {
                 return None;
             }
         }
+
+        // Ek güvenlik: avg_sum 1.05'i aşarsa bloke (mevcut)
+        if prospective_sum >= 1.05 {
+            return None;
+        }
     }
+
     make_buy(ctx, dir, price, size, reason_signal(dir))
 }
 
