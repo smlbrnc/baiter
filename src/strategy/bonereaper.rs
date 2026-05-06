@@ -183,8 +183,8 @@ impl BonereaperEngine {
                 // < 0 → DOWN dominant signal, > 0 → UP dominant signal.
                 //
                 // Fill imbalance, sinyal yönüyle çelişiyorsa düzelt:
-                //   - UP fills ağır + signal DOWN  → kademeli: yönü DOWN'a çek
-                //   - DOWN fills ağır + signal UP   → ilk fırsatta: yönü UP'a çek
+                //   - UP fills ağır + cumS DOWN  → kademeli: yönü DOWN'a çek
+                //   - DOWN fills ağır + cumS UP   → ilk fırsatta: yönü UP'a çek
                 //     ve avg_sum filtresi devre dışı (force_rebalance = true)
                 let total_sh = m.up_filled + m.down_filled;
                 let cum_signal_dir = if st.cum_skor <= 0.0 { Outcome::Down } else { Outcome::Up };
