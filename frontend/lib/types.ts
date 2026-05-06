@@ -133,16 +133,16 @@ export interface StrategyParams {
   bonereaper_conv_guard_window?: number | null;
   /**
    * Polymarket UP_bid sinyalinin yön kararındaki ağırlığı [0, 1].
-   * Hibrit formül: `signal × (1-w) + market × w`. 0 = sadece Binance/OKX (eski);
-   * 0.7 (default) = Polymarket dominant — 82 market analizinde tick doğruluğu
-   * %55→%76 (+21 puan).
+   * Hibrit formül: `signal × (1-w) + market × w`.
+   * 0.0 (default) = sadece Binance/OKX exchange sinyali — 59 market simülasyonunda
+   * w=0.0 ile %79.7 WR, w=0.7 ile %57.6 WR. Market bid zaten piyasa beklentisini
+   * yansıttığından sinyal gücünü azaltıyor; exchange signal çok daha güvenilir.
    */
   bonereaper_signal_w_market?: number | null;
   /**
-   * Composite skor EMA smoothing α ∈ (0, 1]. 1.0 (default) = smoothing yok —
-   * persistence K=2 zaten gürültü filtresi, EMA üst üste lag yaratıp kayıp veriyor.
-   * 24 market grid search optimum α=1.0, K=2 (+$530 vs α=0.10 +$465).
-   * 0.10-0.30 daha pürüzsüz ama yön değişiminde geç kalır.
+   * Composite skor EMA smoothing α ∈ (0, 1].
+   * 0.5 (default) = orta yumuşatma — anlık gürültüyü filtreler, yön değişiminde
+   * minimal lag. K=2 persistence ile birlikte flip-flop'u etkin şekilde önler.
    */
   bonereaper_signal_ema_alpha?: number | null;
   /**
@@ -484,7 +484,7 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   bonereaper_rebalance_when_signal_strong: false,
   bonereaper_signal_persistence_k: 2,
   bonereaper_conv_guard_window: 5,
-  bonereaper_signal_w_market: 0.7,
-  bonereaper_signal_ema_alpha: 1.0,
+  bonereaper_signal_w_market: 0.0,
+  bonereaper_signal_ema_alpha: 0.5,
   bonereaper_profit_lock: false,
 } as const;
