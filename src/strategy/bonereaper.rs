@@ -349,12 +349,12 @@ fn signal_order(
             Outcome::Up   => (m.up_filled,   m.avg_up,   m.down_filled, m.avg_down),
             Outcome::Down => (m.down_filled, m.avg_down, m.up_filled,   m.avg_up),
         };
-        if opp_filled > 0.0 {
-            let new_avg = (cur_avg * cur_filled + price * size) / (cur_filled + size);
-            if new_avg + opp_avg >= 1.05 {
-                return None;
+        if opp_filled > 0.0 && cur_filled > 0.0 {
+                let new_avg = (cur_avg * cur_filled + price * size) / (cur_filled + size);
+                if new_avg + opp_avg >= 1.05 {
+                    return None;
+                }
             }
-        }
     }
     make_buy(ctx, dir, price, size, reason_signal(dir))
 }
