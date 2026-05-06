@@ -37,6 +37,9 @@ use crate::types::{OrderType, Outcome, Side};
 
 const REASON_UP: &str = "elis:dutch:up";
 const REASON_DN: &str = "elis:dutch:down";
+/// Biriktirilen dolmayan miktarın maksimum çarpanı (base × çarpan).
+/// Dolmayan emirler bu sınırı aşamaz — sınırsız büyümeyi engeller.
+const MAX_ACCUM_MULTIPLIER: f64 = 5.0;
 
 // ============================================================================
 // FSM State
@@ -105,9 +108,11 @@ impl ElisEngine {
                 // Süre doldu: açık elis emirlerinden dolmayan miktarı hesapla.
                 // NOT: accum, bu loop'un emir boyutuna (base + eski_accum) zaten
                 // dahildi. Yeni accum = sadece bu loop'ta dolmayan kısım.
+                // Cap: maksimum accum = base * MAX_ACCUM_MULTIPLIER (sınırsız büyümeyi engeller).
+                let base = p.max_buy_order_size;
                 let (unfilled_up, unfilled_dn) = compute_unfilled(ctx);
-                let new_accum_up = unfilled_up;
-                let new_accum_dn = unfilled_dn;
+                let new_accum_up = unfilled_up.min(base * MAX_ACCUM_MULTIPLIER);
+                let new_accum_dn = unfilled_dn.min(base * MAX_ACCUM_MULTIPLIER);
 
                 let cancel = cancel_all_elis(ctx);
                 (
