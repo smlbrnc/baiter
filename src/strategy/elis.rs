@@ -147,8 +147,21 @@ impl ElisEngine {
                 let up_size = base + accum_up;
                 let dn_size = base + accum_dn;
 
-                let up_ord = make_order(ctx, Outcome::Up, up_bid, up_size, REASON_UP);
-                let dn_ord = make_order(ctx, Outcome::Down, dn_bid, dn_size, REASON_DN);
+                // Yükselen (dominant) taraf ask'tan taker emir alır; weaker taraf
+                // bid'den maker olarak bekler.
+                // up_bid > dn_bid → UP dominant → UP @ ask, DOWN @ bid
+                // dn_bid > up_bid → DOWN dominant → DOWN @ ask, UP @ bid
+                let (up_price, up_type, dn_price, dn_type) = if up_bid > dn_bid {
+                    (ctx.up_best_ask, OrderType::Gtc, dn_bid, OrderType::Gtc)
+                } else if dn_bid > up_bid {
+                    (up_bid, OrderType::Gtc, ctx.down_best_ask, OrderType::Gtc)
+                } else {
+                    // Eşit: her iki taraf bid'den maker.
+                    (up_bid, OrderType::Gtc, dn_bid, OrderType::Gtc)
+                };
+
+                let up_ord = make_order(ctx, Outcome::Up,   up_price, up_size, up_type, REASON_UP);
+                let dn_ord = make_order(ctx, Outcome::Down, dn_price, dn_size, dn_type, REASON_DN);
 
                 let orders: Vec<PlannedOrder> = [up_ord, dn_ord]
                     .into_iter()
@@ -210,13 +223,16 @@ fn compute_unfilled(ctx: &StrategyContext<'_>) -> (f64, f64) {
     (up, dn)
 }
 
-/// Tek taraf için BUY limit emri oluştur.
+/// Tek taraf için BUY emri oluştur.
+/// `order_type`: Gtc maker (bid) veya Gtc taker (ask) için aynı tip kullanılır;
+/// fiyat ask olunca CLOB taraf olarak taker davranır.
 #[inline]
 fn make_order(
     ctx: &StrategyContext<'_>,
     outcome: Outcome,
     price: f64,
     size: f64,
+    order_type: OrderType,
     reason: &'static str,
 ) -> Option<PlannedOrder> {
     if price <= 0.0 || size <= 0.0 || size * price < ctx.api_min_order_size {
@@ -228,7 +244,7 @@ fn make_order(
         side: Side::Buy,
         price,
         size,
-        order_type: OrderType::Gtc,
+        order_type,
         reason: reason.to_string(),
     })
 }
