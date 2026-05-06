@@ -25,9 +25,12 @@ use crate::types::{OrderType, Outcome, Side};
 // ─────────────────────────────────────────────
 
 const TICK_INTERVAL_SECS: u64 = 1;
-/// Minimum lot: her rebalance tick'inde en az bu kadar al.
 /// Stale emir maksimum fiyat sapması (bid'den uzaklık).
 const STALE_SPREAD_MAX: f64 = 0.05;
+/// Aynı yönde ardışık signal trade'ler arası minimum bekleme (ms).
+/// Yön değişiminde bu cooldown atlanır (anlık reaksiyon için).
+/// 3sn → ~100 trade/5dk markette (real bot medyan 73 trade/market ile uyumlu).
+const SAME_DIR_COOLDOWN_MS: u64 = 3000;
 
 // Reason etiketleri — `format!()` allocation'larını eler (hot path'te tick başına 1 alloc tasarrufu).
 #[inline]
@@ -79,6 +82,10 @@ pub struct BonereaperActive {
     /// `None` → henüz initialize edilmemiş; ilk değeri ham hibrit alır.
     #[serde(default)]
     pub signal_ema: Option<f64>,
+    /// Son signal emri verilen ms (aynı yön cooldown gate için).
+    /// 0 = henüz emir verilmedi (cooldown bypass).
+    #[serde(default)]
+    pub last_signal_trade_ms: u64,
 }
 
 // ─────────────────────────────────────────────
@@ -112,6 +119,7 @@ impl BonereaperEngine {
                     pending_signal: None,
                     pending_count: 0,
                     signal_ema: None,
+                    last_signal_trade_ms: 0,
                 };
                 (BonereaperState::Active(Box::new(active)), Decision::NoOp)
             }
@@ -171,6 +179,7 @@ impl BonereaperEngine {
 
                 if prev_dir == Some(new_dir.opposite()) {
                     // Eski yöndeki signal emirlerini iptal + yeni emir tek adımda.
+                    // Yön değişimi cooldown'a tabi DEĞİL — anlık reaksiyon için.
                     let mut cancel_ids: Vec<String> = Vec::with_capacity(ctx.open_orders.len());
                     for o in ctx.open_orders.iter() {
                         if o.reason.starts_with("bonereaper:signal:")
@@ -181,6 +190,7 @@ impl BonereaperEngine {
                     }
 
                     if let Some(order) = signal_order(&st, ctx, new_dir) {
+                        st.last_signal_trade_ms = ctx.now_ms;
                         if cancel_ids.is_empty() {
                             return (BonereaperState::Active(st), Decision::PlaceOrders(vec![order]));
                         }
@@ -198,6 +208,16 @@ impl BonereaperEngine {
                     return (BonereaperState::Active(st), Decision::NoOp);
                 }
 
+                // Aynı yön cooldown: son signal trade'den `SAME_DIR_COOLDOWN_MS` geçmediyse
+                // yeni emir vermeyip yalnızca stale cancel kontrolü yap. Yön değişiminde
+                // cooldown atlanır (üstteki dal). Real bot 16 trade/dakika pattern uyumu.
+                if st.last_signal_trade_ms > 0
+                    && ctx.now_ms.saturating_sub(st.last_signal_trade_ms) < SAME_DIR_COOLDOWN_MS
+                {
+                    let stale = cancel_stale(ctx);
+                    return (BonereaperState::Active(st), stale);
+                }
+
                 // Aynı yön: mevcut signal emirlerini iptal et (fiyat tazeleme) + yenisini koy.
                 let mut stale_signal_ids: Vec<String> = Vec::with_capacity(ctx.open_orders.len());
                 for o in ctx.open_orders.iter() {
@@ -207,6 +227,7 @@ impl BonereaperEngine {
                 }
 
                 if let Some(order) = signal_order(&st, ctx, new_dir) {
+                    st.last_signal_trade_ms = ctx.now_ms;
                     if stale_signal_ids.is_empty() {
                         return (BonereaperState::Active(st), Decision::PlaceOrders(vec![order]));
                     }
