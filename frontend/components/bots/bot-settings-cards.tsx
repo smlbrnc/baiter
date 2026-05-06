@@ -16,26 +16,9 @@ import {
   Workflow,
 } from "lucide-react";
 import type { BotRow } from "@/lib/types";
-import { STRATEGY_PARAMS_DEFAULTS } from "@/lib/types";
 
 /** Bot ayarlarını yan yana özet kartları (bot detay / market detay sayfaları). */
 export function BotSettingsCards({ bot }: { bot: BotRow }) {
-  const sp = bot.strategy_params;
-  const isBonereaper = bot.strategy === "bonereaper";
-
-  const wMarket = sp?.bonereaper_signal_w_market
-    ?? STRATEGY_PARAMS_DEFAULTS.bonereaper_signal_w_market;
-  const alpha = sp?.bonereaper_signal_ema_alpha
-    ?? STRATEGY_PARAMS_DEFAULTS.bonereaper_signal_ema_alpha;
-  const kPersist = sp?.bonereaper_signal_persistence_k
-    ?? STRATEGY_PARAMS_DEFAULTS.bonereaper_signal_persistence_k;
-
-  const signalLabel = isBonereaper
-    ? wMarket === 0
-      ? `Saf Exch  α=${alpha}  K=${kPersist}`
-      : `Hibrit w=${wMarket}  α=${alpha}  K=${kPersist}`
-    : "CVD + OKX EMA";
-
   const cards: { label: string; value: string; icon: LucideIcon }[] = [
     {
       label: "Strategy",
@@ -49,7 +32,7 @@ export function BotSettingsCards({ bot }: { bot: BotRow }) {
     },
     {
       label: "Signal",
-      value: signalLabel,
+      value: "CVD + OKX EMA",
       icon: Radio,
     },
     {

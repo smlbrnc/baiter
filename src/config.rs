@@ -176,17 +176,14 @@ pub struct StrategyParams {
     #[serde(default)]
     pub bonereaper_conv_guard_window: Option<u32>,
     /// Polymarket UP_bid sinyalinin composite içindeki ağırlığı [0, 1].
-    /// Yön kararı: `signal × (1-w) + market × w`.
-    /// 0.0 (default) = sadece Binance/OKX exchange sinyali — 59 market simülasyonunda
-    /// w=0.0 ile %79.7 WR (+$8174), w=0.7 ile sadece %57.6 WR (+$5471).
-    /// Market bid fiyatı (up_bid) zaten piyasa beklentisini yansıttığı için sinyal
-    /// gücünü düşürüyor; exchange signal tek başına çok daha güvenilir.
+    /// Yön kararı: `signal × (1-w) + market × w`. 0 = sadece Binance/OKX (eski);
+    /// 0.7 (default) = Polymarket dominant — 82 market analizinde %55→%76 doğruluk.
     #[serde(default)]
     pub bonereaper_signal_w_market: Option<f64>,
-    /// Composite skor EMA smoothing α ∈ (0, 1].
-    /// 0.5 (default) = orta yumuşatma — 59 market simülasyonunda K=2 + α=0.5
-    /// ile %67.8 WR (+$9080, avg +$154/mkt). α=1.0 (smoothing yok) ile
-    /// %79.7 WR ama yüksek trade hacmi; α=0.5 daha az trade ve daha istikrarlı.
+    /// Composite skor EMA smoothing α ∈ (0, 1]. 1.0 (default) = smoothing yok
+    /// — 24 market grid search'te en yüksek PnL veren değer (persistence K zaten
+    /// gürültü filtreliyor, EMA üst üste fazla → lag yaratıp kayıp). 0.10-0.30
+    /// arası daha pürüzsüz ama yön değişiminde geç kalır.
     #[serde(default)]
     pub bonereaper_signal_ema_alpha: Option<f64>,
     /// Profit lock: aktif ise her iki tarafta da fill oluşup imbalance rebalance
@@ -254,10 +251,10 @@ impl StrategyParams {
         self.bonereaper_conv_guard_window.unwrap_or(5).clamp(1, 60)
     }
     pub fn bonereaper_signal_w_market(&self) -> f64 {
-        self.bonereaper_signal_w_market.unwrap_or(0.0).clamp(0.0, 1.0)
+        self.bonereaper_signal_w_market.unwrap_or(0.7).clamp(0.0, 1.0)
     }
     pub fn bonereaper_signal_ema_alpha(&self) -> f64 {
-        self.bonereaper_signal_ema_alpha.unwrap_or(0.5).clamp(0.01, 1.0)
+        self.bonereaper_signal_ema_alpha.unwrap_or(1.0).clamp(0.01, 1.0)
     }
 
     pub fn bonereaper_profit_lock(&self) -> bool {

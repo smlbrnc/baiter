@@ -17,12 +17,11 @@ import {
   SIGNAL_PAIR_HEADER_CLASS,
 } from "@/lib/chart-utils";
 
-/* ─── Signal formula (w_market = 0.0 → saf exchange sinyali) ────────────────
+/* ─── Signal formula (signal.md Katman 3) ───────────────────────────────────
  *
- *   skor        = (imbalance × 0.6) + (clip(momentum_bps, −5, +5) / 5 × 0.4)
+ *   skor = (imbalance × 0.6) + (clip(momentum_bps, −5, +5) / 5 × 0.4)
  *   signal_score = skor × 5 + 5  ∈ [0, 10]  (5.0 = nötr)
- *   ema_signal  = EMA(skor, α=0.5)  — botun gerçek karar sinyali
- *   ema_signal > 0 → UP, ema_signal ≤ 0 → DOWN
+ *   skor > 0 → UP, skor ≤ 0 → DOWN
  */
 const TICK = 0.01;
 const MIN_PRICE = 0.05;
@@ -42,21 +41,9 @@ function dualPrices(composite: number) {
   };
 }
 
-const EMA_ALPHA = 0.5;
-
 type SignalSide = "up" | "down" | "neutral";
 const signalSide = (s: number): SignalSide =>
   s > 5 + NEUTRAL_EPS ? "up" : s < 5 - NEUTRAL_EPS ? "down" : "neutral";
-
-/** EMA(α=0.5) hesapla — botun gerçek karar sinyali. */
-function computeEma(ticks: { skor: number }[]): number {
-  if (!ticks.length) return 0;
-  let ema = ticks[0]!.skor;
-  for (let i = 1; i < ticks.length; i++) {
-    ema = EMA_ALPHA * (ticks[i]!.skor) + (1 - EMA_ALPHA) * ema;
-  }
-  return ema;
-}
 
 interface Props {
   data: MarketTick[];
@@ -151,15 +138,11 @@ export function BinanceSignalPanel({ data, strategyParams: _strategyParams }: Pr
     const { upBid, downBid, delta } = dualPrices(composite);
     const bar = (composite - 5) * 2; // [0,10] → [-10,+10] for display
     const pct = Math.max(0, Math.min(100, ((bar + 10) / 20) * 100));
-    const emaSignal = computeEma(data.map((tk) => ({ skor: tk.skor ?? 0 })));
-    const emaSide: SignalSide = Math.abs(emaSignal) < 0.03
-      ? "neutral"
-      : emaSignal > 0 ? "up" : "down";
     return {
       composite,
       bar,
       pct,
-      side: emaSide,
+      side: signalSide(composite),
       upBid,
       downBid,
       delta,
@@ -168,7 +151,6 @@ export function BinanceSignalPanel({ data, strategyParams: _strategyParams }: Pr
       imbalance: last.imbalance ?? 0,
       momentum_bps: last.momentum_bps ?? 0,
       skor: last.skor ?? 0,
-      emaSignal,
     };
   }, [data]);
 
@@ -181,7 +163,7 @@ export function BinanceSignalPanel({ data, strategyParams: _strategyParams }: Pr
         <div className="flex min-w-0 items-center gap-1.5">
           <Zap className="text-muted-foreground size-3 shrink-0" />
           <CardTitle className={cn(SECTION_LABEL_CLASS, "normal-case tracking-[0.12em]")}>
-            EXCHANGE SİNYALİ
+            KOMPOZİT SİNYAL (SON)
           </CardTitle>
         </div>
         {d && (
@@ -234,13 +216,11 @@ export function BinanceSignalPanel({ data, strategyParams: _strategyParams }: Pr
               </div>
             </div>
 
-            {/* Meta — ema + skor + δ */}
+            {/* Meta — composite + skor + δ */}
             <div className="text-muted-foreground/60 flex items-center justify-between font-mono text-[9px] tabular-nums">
               <span>
-                ema{" "}
-                <span className={d.emaSignal > 0 ? "text-emerald-400 font-bold" : "text-rose-400 font-bold"}>
-                  {d.emaSignal >= 0 ? "+" : ""}{d.emaSignal.toFixed(3)}
-                </span>
+                cmp{" "}
+                <span className="text-muted-foreground">{d.composite.toFixed(2)}</span>
               </span>
               <span>
                 skor{" "}
@@ -249,8 +229,8 @@ export function BinanceSignalPanel({ data, strategyParams: _strategyParams }: Pr
                 </span>
               </span>
               <span>
-                cmp{" "}
-                <span className="text-muted-foreground">{d.composite.toFixed(2)}</span>
+                δ{" "}
+                <span className="text-muted-foreground">{d.delta.toFixed(2)}</span>
               </span>
             </div>
 

@@ -50,8 +50,6 @@ interface Row {
   imbalance: number;
   /** OKX EMA momentum normalize: clip(bps, −5, +5) / 5 ∈ [−1, +1]. */
   momNorm: number;
-  /** EMA(α=0.5) üzerinden yumuşatılmış sinyal ∈ [−1, +1] — botun karar sinyali. */
-  signalEma: number;
 }
 
 const chartConfig = {
@@ -60,29 +58,21 @@ const chartConfig = {
   cSkor:     { label: "cum.skor",    color: "oklch(0.82 0.18 75)"  },
   imbalance: { label: "imbalance",   color: "oklch(0.68 0.17 155)" },
   momNorm:   { label: "mom (norm)",  color: "oklch(0.72 0.15 295)" },
-  signalEma: { label: "EMA sig",     color: "oklch(0.75 0.20 200)" },
 } satisfies ChartConfig;
 
 const MOM_CAP = 5;
-const EMA_ALPHA = 0.5;
 
 function toRows(ticks: MarketTick[]): { rows: Row[]; cMin: number; cMax: number } {
   const rows: Row[] = [];
   let cumul = 0;
   let cMin = 0;
   let cMax = 0;
-  let ema = 0;
-  let emaInited = false;
 
   for (const tk of ticks) {
     const t = Math.floor(tk.ts_ms / 1000);
-    const skor = tk.skor ?? 0;
-    cumul += skor;
+    cumul += tk.skor ?? 0;
     if (cumul < cMin) cMin = cumul;
     if (cumul > cMax) cMax = cumul;
-
-    if (!emaInited) { ema = skor; emaInited = true; }
-    else ema = EMA_ALPHA * skor + (1 - EMA_ALPHA) * ema;
 
     const row: Row = {
       t,
@@ -91,7 +81,6 @@ function toRows(ticks: MarketTick[]): { rows: Row[]; cMin: number; cMax: number 
       cSkor:      cumul,
       imbalance:  tk.imbalance ?? 0,
       momNorm:    Math.max(-1, Math.min(1, (tk.momentum_bps ?? 0) / MOM_CAP)),
-      signalEma:  ema,
     };
     if (rows.length && rows[rows.length - 1].t === t) {
       rows[rows.length - 1] = row;
@@ -134,10 +123,6 @@ export function SpreadSignalChart({ data, session }: Props) {
             <span className="flex items-center gap-1">
               <span className="inline-block h-0.5 w-5 rounded" style={{ background: "var(--color-cSkor)" }} />
               cum.skor
-            </span>
-            <span className="flex items-center gap-1">
-              <span className="inline-block h-0.5 w-5 rounded" style={{ background: "var(--color-signalEma)" }} />
-              ema sig
             </span>
             <span className="flex items-center gap-1">
               <span
@@ -274,17 +259,6 @@ export function SpreadSignalChart({ data, session }: Props) {
               dataKey="cSkor"
               stroke="var(--color-cSkor)"
               strokeWidth={2.5}
-              dot={false}
-              isAnimationActive={false}
-            />
-
-            {/* EMA(α=0.5) sinyal — botun karar sinyali, [-1,+1] ekseninde */}
-            <Line
-              yAxisId="signal"
-              type="monotone"
-              dataKey="signalEma"
-              stroke="var(--color-signalEma)"
-              strokeWidth={2}
               dot={false}
               isAnimationActive={false}
             />
