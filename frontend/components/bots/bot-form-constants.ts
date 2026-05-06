@@ -25,7 +25,7 @@ export const STRATEGY_OPTIONS: {
     id: "bonereaper",
     label: "Bonereaper",
     description:
-      "5dk btc-updown için 2sn decision loop; BSI yön kararı, opening grid + Dutch Book + rebalance + scoop; opt-in lottery tail. BUY-only, çıkış REDEEM.",
+      "5dk btc-updown için 1sn decision loop; hibrit composite + EMA sinyal yön kararı; Dutch Book + Signal (dinamik 2x-7x size, avg_sum<1.25); opt-in profit lock. BUY-only, çıkış REDEEM.",
   },
 ];
 
