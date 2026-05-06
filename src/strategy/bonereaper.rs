@@ -25,17 +25,8 @@ use crate::types::{OrderType, Outcome, Side};
 // ─────────────────────────────────────────────
 
 const TICK_INTERVAL_SECS: u64 = 2;
-/// Minimum lot: her rebalance tick'inde en az bu kadar al.
 /// Stale emir maksimum fiyat sapması (bid'den uzaklık).
 const STALE_SPREAD_MAX: f64 = 0.05;
-/// İmbalance kapısı: toplam pozisyonun bu oranını aşan imbalance durumunda
-/// sinyal, imbalance'ı azaltacak yönde ateşlenir (ters sinyal).
-/// Gerçek bot CHE/DOM ≈ 0.91x — %50 sınırı makul bir denge noktası.
-const IMBALANCE_CAP: f64 = 0.50;
-/// Proaktif seyreltme eşiği: karşı taraf bid bu değerin altında ise ve
-/// avg_sum < 1.0 koşulu sağlanırsa sinyal emriyle birlikte seyreltme emri verilir.
-/// Gerçek bot analizi: CHE alımlarının %51'i bid < 0.45 fiyat bandında.
-const SEYRELTME_THRESHOLD: f64 = 0.45;
 
 // Reason etiketleri — `format!()` allocation'larını eler (hot path'te tick başına 1 alloc tasarrufu).
 #[inline]
@@ -47,10 +38,10 @@ const fn reason_signal(dir: Outcome) -> &'static str {
 }
 
 #[inline]
-const fn reason_seyreltme(dir: Outcome) -> &'static str {
+const fn reason_rebalance(dir: Outcome) -> &'static str {
     match dir {
-        Outcome::Up => "bonereaper:seyreltme:up",
-        Outcome::Down => "bonereaper:seyreltme:down",
+        Outcome::Up => "bonereaper:rebalance:up",
+        Outcome::Down => "bonereaper:rebalance:down",
     }
 }
 
@@ -96,6 +87,10 @@ pub struct BonereaperActive {
     /// `None` → henüz initialize edilmemiş; ilk değeri ham hibrit alır.
     #[serde(default)]
     pub signal_ema: Option<f64>,
+    /// Market başından beri kümülatif hibrit sinyal skoru.
+    /// < 0 → DOWN dominant, > 0 → UP dominant.
+    #[serde(default)]
+    pub cum_skor: f64,
 }
 
 // ─────────────────────────────────────────────
@@ -129,6 +124,7 @@ impl BonereaperEngine {
                     pending_signal: None,
                     pending_count: 0,
                     signal_ema: None,
+                    cum_skor: 0.0,
                 };
                 (BonereaperState::Active(Box::new(active)), Decision::NoOp)
             }
@@ -182,20 +178,30 @@ impl BonereaperEngine {
                 let persistence_k = ctx.strategy_params.bonereaper_signal_persistence_k();
                 let ema_dir = signal_direction_persistent(&mut st, ctx, persistence_k);
 
-                // ── İMBALANCE KAPISI ─────────────────────────────────────────
-                // İmbalance > %50 ise sinyal yerine dengeleyici yönde ateşle.
-                // Bu, aşırı tek yönlü birikimi önler (gerçek bot CHE/DOM ≈ 1x).
+                // ── CUM_SKOR TABANLI İMBALANCE YÖNETİMİ ─────────────────────
+                // cum_skor: market başından beri kümülatif hibrit sinyal skoru.
+                // < 0 → DOWN dominant signal, > 0 → UP dominant signal.
+                //
+                // Fill imbalance, sinyal yönüyle çelişiyorsa düzelt:
+                //   - UP fills ağır + signal DOWN  → kademeli: yönü DOWN'a çek
+                //   - DOWN fills ağır + signal UP   → ilk fırsatta: yönü UP'a çek
+                //     ve avg_sum filtresi devre dışı (force_rebalance = true)
                 let total_sh = m.up_filled + m.down_filled;
-                let new_dir = if total_sh > 0.0 {
-                    let imb_ratio = (m.up_filled - m.down_filled).abs() / total_sh;
-                    if imb_ratio > IMBALANCE_CAP {
-                        // Fazlalık hangi tarafta? Karşı tarafa yönlendir.
-                        if m.up_filled > m.down_filled { Outcome::Down } else { Outcome::Up }
+                let cum_signal_dir = if st.cum_skor <= 0.0 { Outcome::Down } else { Outcome::Up };
+                let (new_dir, force_rebalance) = if total_sh > 0.0 {
+                    let fill_up_heavy   = m.up_filled   > m.down_filled;
+                    let fill_down_heavy = m.down_filled > m.up_filled;
+                    if fill_up_heavy && cum_signal_dir == Outcome::Down {
+                        // Kademeli: UP fills fazla, sinyal DOWN → yönü DOWN'a yönlendir
+                        (cum_signal_dir, false)
+                    } else if fill_down_heavy && cum_signal_dir == Outcome::Up {
+                        // İlk fırsatta: DOWN fills fazla, sinyal UP → zorla UP, avg_sum atla
+                        (cum_signal_dir, true)
                     } else {
-                        ema_dir
+                        (ema_dir, false)
                     }
                 } else {
-                    ema_dir
+                    (ema_dir, false)
                 };
 
                 // Yön değiştiyse eski signal emirlerini iptal et.
@@ -206,16 +212,15 @@ impl BonereaperEngine {
                     // Eski yöndeki signal emirlerini iptal + yeni emir tek adımda.
                     let mut cancel_ids: Vec<String> = Vec::with_capacity(ctx.open_orders.len());
                     for o in ctx.open_orders.iter() {
-                        if o.reason.starts_with("bonereaper:signal:")
-                            && o.outcome == new_dir.opposite()
-                        {
+                        let is_managed = o.reason.starts_with("bonereaper:signal:")
+                            || o.reason.starts_with("bonereaper:rebalance:");
+                        if is_managed && o.outcome == new_dir.opposite() {
                             cancel_ids.push(o.id.clone());
                         }
                     }
 
                     if let Some(order) = signal_order(&st, ctx, new_dir) {
-                        let mut places = vec![order];
-                        if let Some(s) = seyreltme_order(ctx, new_dir) { places.push(s); }
+                        let places = vec![order];
                         if cancel_ids.is_empty() {
                             return (BonereaperState::Active(st), Decision::PlaceOrders(places));
                         }
@@ -223,6 +228,19 @@ impl BonereaperEngine {
                             BonereaperState::Active(st),
                             Decision::CancelAndPlace { cancels: cancel_ids, places },
                         );
+                    }
+                    // signal_order bloklandi; force_rebalance aktifse avg_sum atla
+                    if force_rebalance {
+                        if let Some(reb) = rebalance_order_forced(ctx, new_dir) {
+                            let places = vec![reb];
+                            if cancel_ids.is_empty() {
+                                return (BonereaperState::Active(st), Decision::PlaceOrders(places));
+                            }
+                            return (
+                                BonereaperState::Active(st),
+                                Decision::CancelAndPlace { cancels: cancel_ids, places },
+                            );
+                        }
                     }
                     if !cancel_ids.is_empty() {
                         return (BonereaperState::Active(st), Decision::CancelOrders(cancel_ids));
@@ -233,14 +251,15 @@ impl BonereaperEngine {
                 // Aynı yön: mevcut signal emirlerini iptal et (fiyat tazeleme) + yenisini koy.
                 let mut stale_signal_ids: Vec<String> = Vec::with_capacity(ctx.open_orders.len());
                 for o in ctx.open_orders.iter() {
-                    if o.reason.starts_with("bonereaper:signal:") {
+                    if o.reason.starts_with("bonereaper:signal:")
+                        || o.reason.starts_with("bonereaper:rebalance:")
+                    {
                         stale_signal_ids.push(o.id.clone());
                     }
                 }
 
                 if let Some(order) = signal_order(&st, ctx, new_dir) {
-                    let mut places = vec![order];
-                    if let Some(s) = seyreltme_order(ctx, new_dir) { places.push(s); }
+                    let places = vec![order];
                     if stale_signal_ids.is_empty() {
                         return (BonereaperState::Active(st), Decision::PlaceOrders(places));
                     }
@@ -248,6 +267,20 @@ impl BonereaperEngine {
                         BonereaperState::Active(st),
                         Decision::CancelAndPlace { cancels: stale_signal_ids, places },
                     );
+                }
+
+                // signal_order bloklandi; force_rebalance aktifse avg_sum atla
+                if force_rebalance {
+                    if let Some(reb) = rebalance_order_forced(ctx, new_dir) {
+                        let places = vec![reb];
+                        if stale_signal_ids.is_empty() {
+                            return (BonereaperState::Active(st), Decision::PlaceOrders(places));
+                        }
+                        return (
+                            BonereaperState::Active(st),
+                            Decision::CancelAndPlace { cancels: stale_signal_ids, places },
+                        );
+                    }
                 }
 
                 // ── STALE CANCEL ─────────────────────────────────────────────
@@ -292,6 +325,10 @@ fn signal_direction_persistent(
     let w_market = ctx.strategy_params.bonereaper_signal_w_market();
     let w_signal = 1.0 - w_market;
     let hybrid_skor = signal_skor * w_signal + market_skor * w_market;
+
+    // Kümülatif sinyal skoru: market başından beri toplam ağırlık.
+    // < 0 → DOWN dominant, > 0 → UP dominant.
+    st.cum_skor += hybrid_skor;
 
     // EMA smoothing. İlk tick'te EMA = ham hibrit (warm-start).
     // market_skor book hazır olmadan 0 döndüğü için ilk tick'te ekstrem değer
@@ -469,70 +506,31 @@ fn make_buy(
     })
 }
 
-/// Current bid'den `STALE_SPREAD_MAX`'tan fazla sapan signal emirlerini iptal et.
-/// Karşı taraf bid ≤ CHEAP_HEDGE_THRESHOLD ise ucuza hedge emri ver.
-
-/// Proaktif seyreltme: karşı taraf ucuzsa (bid < SEYRELTME_THRESHOLD) ve
-/// bu alım avg_sum'u < 1.0'da tutuyorsa sinyal emriyle birlikte küçük emir ver.
-/// Gerçek bot: CHE alımlarının %51'i bid < 0.45 bandında, avg_sum yönetimi amacıyla.
-fn seyreltme_order(ctx: &StrategyContext<'_>, signal_dir: Outcome) -> Option<PlannedOrder> {
-    let opp = signal_dir.opposite();
-    let opp_bid = ctx.best_bid(opp);
-    if opp_bid <= 0.0 || opp_bid >= SEYRELTME_THRESHOLD {
+/// Force rebalance emri: avg_sum filtresi uygulanmaz.
+/// Case B (DOWN fills ağır, signal UP → ilk fırsatta) için kullanılır.
+fn rebalance_order_forced(ctx: &StrategyContext<'_>, dir: Outcome) -> Option<PlannedOrder> {
+    let bid = ctx.best_bid(dir);
+    if bid <= 0.0 {
         return None;
     }
-    let m = ctx.metrics;
-    // Karşı tarafta zaten fill varsa avg kontrolü yap
-    let (opp_filled, opp_cost, sig_filled, sig_cost) = match opp {
-        Outcome::Up   => (m.up_filled,   m.avg_up   * m.up_filled,   m.down_filled, m.avg_down * m.down_filled),
-        Outcome::Down => (m.down_filled, m.avg_down * m.down_filled, m.up_filled,   m.avg_up   * m.up_filled),
-    };
-    if opp_filled <= 0.0 {
-        return None; // Karşı tarafta fill yok, seyreltme anlamsız
-    }
-    // Seyreltme, imbalance'ı daha da kötüleştirmemeli.
-    // Karşı taraf (opp) zaten dominant ise seyreltme durur.
-    let total_sh = m.up_filled + m.down_filled;
-    if total_sh > 0.0 {
-        let imb_ratio = (m.up_filled - m.down_filled).abs() / total_sh;
-        let opp_is_dominant = match opp {
-            Outcome::Up   => m.up_filled > m.down_filled,
-            Outcome::Down => m.down_filled > m.up_filled,
-        };
-        if opp_is_dominant && imb_ratio > IMBALANCE_CAP {
-            return None;
-        }
-    }
-    // Seyreltme boyutu = signal boyutu (share bazlı eşitlik).
-    // Aksi halde DOWN@0.10 → 100sh vs UP@0.80 → 12sh → pozisyon tersine döner.
-    let signal_bid = ctx.best_bid(signal_dir);
-    let size = if signal_bid > 0.0 {
-        (ctx.order_usdc / signal_bid).ceil()
+    let price = if bid > 0.50 && ctx.strategy_params.bonereaper_signal_taker() {
+        ctx.best_ask(dir)
     } else {
-        (ctx.order_usdc / opp_bid).ceil()
+        bid
     };
-    let new_avg_opp = (opp_cost + opp_bid * size) / (opp_filled + size);
-    // Sinyal emrinin prospektif avg'ini hesapla (stale değil)
-    let prospective_sig_avg = if signal_bid > 0.0 && sig_filled + size > 0.0 {
-        let sig_new_cost = sig_cost + signal_bid * size;
-        let sig_new_filled = sig_filled + size;
-        sig_new_cost / sig_new_filled
-    } else if sig_filled > 0.0 {
-        sig_cost / sig_filled
-    } else {
-        signal_bid
-    };
-    // Sadece avg_sum < 1.0'da kalıyorsa seyrelt
-    if new_avg_opp + prospective_sig_avg >= 1.0 {
+    if price <= 0.0 {
         return None;
     }
-    make_buy(ctx, opp, opp_bid, size, reason_seyreltme(opp))
+    let size = (ctx.order_usdc / price).ceil();
+    make_buy(ctx, dir, price, size, reason_rebalance(dir))
 }
 
 fn cancel_stale(ctx: &StrategyContext<'_>) -> Decision {
     let mut ids: Vec<String> = Vec::with_capacity(ctx.open_orders.len());
     for o in ctx.open_orders.iter() {
-        if !o.reason.starts_with("bonereaper:signal:") || o.side != Side::Buy {
+        let is_managed = o.reason.starts_with("bonereaper:signal:")
+            || o.reason.starts_with("bonereaper:rebalance:");
+        if !is_managed || o.side != Side::Buy {
             continue;
         }
         let cur_bid = ctx.best_bid(o.outcome);
