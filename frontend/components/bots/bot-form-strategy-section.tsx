@@ -459,8 +459,8 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                 her iki tarafa eş zamanlı taker GTC emir → garantili kâr marjı.
               </li>
               <li>
-                <strong>Signal emri (dinamik size):</strong> Sinyal kuvvetine göre 2x-7x ($10-$35);
-                multiplier = 2 + 5×|signal_ema|. Real bot medyan $10.54, p90 $32 ile uyumlu.
+                <strong>Signal emri (sabit size):</strong> <code>size = ceil(order_usdc / price)</code>;
+                order_usdc default 10 USDC. Real bot medyan $12.32 ile birebir uyumlu.
               </li>
               <li>
                 <strong>avg_sum filtresi:</strong> Her iki tarafta pozisyon varken yeni emir

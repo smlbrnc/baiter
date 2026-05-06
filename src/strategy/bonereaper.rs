@@ -317,22 +317,21 @@ fn signal_direction_persistent(
 }
 
 
-/// Sinyal yönünde emir — dinamik size + asimetrik avg_sum filtresi.
+/// Sinyal yönünde emir — sabit size + asimetrik avg_sum filtresi.
 ///
 /// **Fiyat:** `signal_taker=true` → `best_ask` (taker, anında fill).
 ///             `signal_taker=false` → `best_bid` (maker, GTC limit).
 ///
-/// **Boyut (dinamik 2x-7x):** `multiplier = 2.0 + 5.0 × |signal_ema|`
-///   - Zayıf sinyal (|ema|≈0) → 2x = $10 base
-///   - Güçlü sinyal (|ema|≈1) → 7x = $35 base
-///   - Real bot davranışı: medyan $10.54, p90 $32 ile uyumlu
+/// **Boyut (sabit):** `size = ceil(order_usdc / price)` — `order_usdc` botun
+/// genel ayarı (default 10). Real bot medyan $12.32 ile uyumlu (5dk markette
+/// ~100 trade × $10 = $1000 cost; real bot ortalaması ~$1700/market).
 ///
 /// **avg_sum filtresi (yalnız pahalı taraf, bid > 0.50):**
 ///   Karşı tarafta zaten pozisyon varsa (`opp_filled > 0`) ve mevcut yönde de
 ///   pozisyon varsa (`cur_filled > 0`), yeni alımın etkisiyle `new_avg + opp_avg ≥ 1.25`
 ///   olacaksa emir verilmez. Real bot p90 ~1.20'ye yakın eşik.
 fn signal_order(
-    st: &BonereaperActive,
+    _st: &BonereaperActive,
     ctx: &StrategyContext<'_>,
     dir: Outcome,
 ) -> Option<PlannedOrder> {
@@ -348,10 +347,7 @@ fn signal_order(
     if price <= 0.0 {
         return None;
     }
-    let s = st.signal_ema.unwrap_or(0.0).abs().min(1.0);
-    let multiplier = 2.0 + 5.0 * s;
-    let usdc = ctx.order_usdc * multiplier;
-    let size = (usdc / price).ceil();
+    let size = (ctx.order_usdc / price).ceil();
     if bid > 0.50 {
         let m = ctx.metrics;
         let (cur_filled, cur_avg, opp_filled, opp_avg) = match dir {

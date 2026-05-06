@@ -17,19 +17,19 @@ export function BotFormSettingsSection({ form, setForm }: Props) {
   const description = isElis
     ? "Fiyat aralığı (min/max price). Elis loop süresi ve emir boyutu aşağıdaki strateji parametrelerinden ayarlanır."
     : isBonereaper
-      ? "Order USDC = base; Bonereaper bunu sinyal kuvvetine göre 2x-7x dinamik çarpar. Min/Max price emir filtresi (executor reddi)."
+      ? "Order USDC = sabit emir boyutu (size = ceil(order_usdc / price)). Min/Max price emir filtresi (executor reddi)."
       : "Emir boyutu, cooldown ve fiyat aralığı.";
 
   const orderTooltip = isElis
     ? "Elis: api_min_order_size kontrolü için kullanılır. Gerçek emir boyutu strategy_params.elis_max_buy_order_size (share) ile belirlenir."
     : isBonereaper
-      ? "Bonereaper base USDC. Sinyal kuvvetine göre 2x-7x dinamik çarpılır (multiplier = 2 + 5×|signal_ema|). Default 10 → $20-$70 dinamik aralık (real bot medyan $10.54, p90 $32 ile uyumlu)."
+      ? "Bonereaper sabit USDC: her emir bu kadar USDC notional'da yapılır. Default 10 → real bot medyan $12.32 ile birebir uyumlu. Trade size = ceil(order_usdc / price)."
       : "Emir başına harcanacak USDC miktarı. GTC size = max(order_usdc / fiyat, api_min_order_size).";
 
   const orderHint = isElis
     ? "api_min_order_size kontrolü için; min 1 USDC."
     : isBonereaper
-      ? "Default 10 USDC (base, dinamik 2x-7x çarpılır)."
+      ? "Default 10 USDC (sabit, real bot medyan $12 uyumlu)."
       : "Minimum 1 USDC.";
 
   return (
