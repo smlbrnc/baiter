@@ -483,9 +483,9 @@ fn seyreltme_order(ctx: &StrategyContext<'_>, signal_dir: Outcome) -> Option<Pla
     }
     let m = ctx.metrics;
     // Karşı tarafta zaten fill varsa avg kontrolü yap
-    let (opp_filled, opp_cost, sig_avg) = match opp {
-        Outcome::Up   => (m.up_filled,   m.avg_up   * m.up_filled,   m.avg_down),
-        Outcome::Down => (m.down_filled, m.avg_down * m.down_filled, m.avg_up),
+    let (opp_filled, opp_cost, sig_filled, sig_cost) = match opp {
+        Outcome::Up   => (m.up_filled,   m.avg_up   * m.up_filled,   m.down_filled, m.avg_down * m.down_filled),
+        Outcome::Down => (m.down_filled, m.avg_down * m.down_filled, m.up_filled,   m.avg_up   * m.up_filled),
     };
     if opp_filled <= 0.0 {
         return None; // Karşı tarafta fill yok, seyreltme anlamsız
@@ -499,8 +499,18 @@ fn seyreltme_order(ctx: &StrategyContext<'_>, signal_dir: Outcome) -> Option<Pla
         (ctx.order_usdc / opp_bid).ceil()
     };
     let new_avg_opp = (opp_cost + opp_bid * size) / (opp_filled + size);
+    // Sinyal emrinin prospektif avg'ini hesapla (stale değil)
+    let prospective_sig_avg = if signal_bid > 0.0 && sig_filled + size > 0.0 {
+        let sig_new_cost = sig_cost + signal_bid * size;
+        let sig_new_filled = sig_filled + size;
+        sig_new_cost / sig_new_filled
+    } else if sig_filled > 0.0 {
+        sig_cost / sig_filled
+    } else {
+        signal_bid
+    };
     // Sadece avg_sum < 1.0'da kalıyorsa seyrelt
-    if new_avg_opp + sig_avg >= 1.0 {
+    if new_avg_opp + prospective_sig_avg >= 1.0 {
         return None;
     }
     make_buy(ctx, opp, opp_bid, size, reason_seyreltme(opp))
