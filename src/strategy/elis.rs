@@ -103,9 +103,11 @@ impl ElisEngine {
                 }
 
                 // Süre doldu: açık elis emirlerinden dolmayan miktarı hesapla.
+                // NOT: accum, bu loop'un emir boyutuna (base + eski_accum) zaten
+                // dahildi. Yeni accum = sadece bu loop'ta dolmayan kısım.
                 let (unfilled_up, unfilled_dn) = compute_unfilled(ctx);
-                let new_accum_up = accum_up + unfilled_up;
-                let new_accum_dn = accum_dn + unfilled_dn;
+                let new_accum_up = unfilled_up;
+                let new_accum_dn = unfilled_dn;
 
                 let cancel = cancel_all_elis(ctx);
                 (
