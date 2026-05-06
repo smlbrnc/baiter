@@ -331,7 +331,7 @@ fn signal_order(
         return None;
     }
     // Dominant (yükselen) taraf taker mı? Parametre ile kontrol edilir.
-    let price = if bid > 0.50 && ctx.strategy_params.bonereaper_signal_taker() {
+    let price = if ctx.strategy_params.bonereaper_signal_taker() {
         ctx.best_ask(dir)
     } else {
         bid
