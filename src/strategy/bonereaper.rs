@@ -490,6 +490,19 @@ fn seyreltme_order(ctx: &StrategyContext<'_>, signal_dir: Outcome) -> Option<Pla
     if opp_filled <= 0.0 {
         return None; // Karşı tarafta fill yok, seyreltme anlamsız
     }
+    // Seyreltme, imbalance'ı daha da kötüleştirmemeli.
+    // Karşı taraf (opp) zaten dominant ise seyreltme durur.
+    let total_sh = m.up_filled + m.down_filled;
+    if total_sh > 0.0 {
+        let imb_ratio = (m.up_filled - m.down_filled).abs() / total_sh;
+        let opp_is_dominant = match opp {
+            Outcome::Up   => m.up_filled > m.down_filled,
+            Outcome::Down => m.down_filled > m.up_filled,
+        };
+        if opp_is_dominant && imb_ratio > IMBALANCE_CAP {
+            return None;
+        }
+    }
     // Seyreltme boyutu = signal boyutu (share bazlı eşitlik).
     // Aksi halde DOWN@0.10 → 100sh vs UP@0.80 → 12sh → pozisyon tersine döner.
     let signal_bid = ctx.best_bid(signal_dir);
