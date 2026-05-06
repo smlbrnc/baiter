@@ -261,11 +261,14 @@ fn is_profit_locked(ctx: &StrategyContext<'_>, lock_threshold: f64) -> bool {
 
 /// P4 — Improvement-Based Decision (docs/gabagool.md §4).
 ///
-/// Yalnızca **her iki tarafta da fill** varsa iyileştirme kontrolü yapılır.
-/// Tek taraflı fill durumunda `avg_sum()` yanlış bir baseline oluşturur
-/// (ör. DOWN filled=0.52, UP filled=0 → avg_sum=0.52; UP almak projected=1.30
-/// yapar → improvement=-0.78 → yanlış blok). Bu yüzden her iki taraf doluysa
-/// kontrol et, aksi halde her zaman izin ver (pozisyon inşa aşaması).
+/// Üç durum:
+///
+/// 1. **Her iki taraf boş** — ilk giriş, `up_price + dn_price < 1.0` kontrolü.
+/// 2. **Bir taraf boş** — o tarafın ilk fill'i için `mevcut_avg + yeni_fiyat < 1.0`
+///    kontrolü. `|| true` vermek, dominant-taker fiyatının mevcut VWAP ile
+///    toplandığında 1.0'ı aşmasına yol açıyordu (ör. avg_up=0.54 + dn_ask=0.55
+///    = 1.09 → garantili zarar). Bu kontrol o açığı kapatır.
+/// 3. **Her iki taraf dolu** — `current_pair - projected_pair ≥ min_improvement`.
 #[inline]
 fn improvement_ok(
     ctx: &StrategyContext<'_>,
@@ -276,11 +279,23 @@ fn improvement_ok(
     min_improvement: f64,
 ) -> bool {
     let m = ctx.metrics;
-    // Herhangi bir tarafta fill yoksa → pozisyon inşa aşaması, izin ver.
-    if m.up_filled == 0.0 || m.down_filled == 0.0 {
-        return true;
+
+    if m.up_filled == 0.0 && m.down_filled == 0.0 {
+        // İlk giriş: her iki tarafın fiili fiyat toplamı < 1.0 olmalı.
+        return up_price + dn_price < 1.0;
     }
-    // Her iki tarafta da fill var → pair cost anlamlı, iyileştirme kontrol et.
+
+    if m.down_filled == 0.0 {
+        // DOWN ilk kez girecek: avg_up + dn_price < 1.0 garantisi ara.
+        return m.avg_up + dn_price < 1.0;
+    }
+
+    if m.up_filled == 0.0 {
+        // UP ilk kez girecek: avg_down + up_price < 1.0 garantisi ara.
+        return m.avg_down + up_price < 1.0;
+    }
+
+    // Her iki taraf da dolu → iyileştirme bazlı karar.
     let current_pair = m.avg_sum();
     let new_avg_up = weighted_avg(m.avg_up, m.up_filled, up_price, up_size);
     let new_avg_dn = weighted_avg(m.avg_down, m.down_filled, dn_price, dn_size);
