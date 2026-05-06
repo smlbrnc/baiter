@@ -28,10 +28,10 @@ const TICK_INTERVAL_SECS: u64 = 2;
 /// Minimum lot: her rebalance tick'inde en az bu kadar al.
 /// Stale emir maksimum fiyat sapması (bid'den uzaklık).
 const STALE_SPREAD_MAX: f64 = 0.05;
-/// Cheap hedge eşiği: karşı taraf bid bu değerin altında ise sinyal emriyle
-/// birlikte ek bir hedge emri de verilir — avg_sum seyreltme + risk dağıtma.
-/// 0.20: sadece çok ucuz fiyatlarda (DOWN ~0.80'e yakınsarken) tetiklenir.
-const CHEAP_HEDGE_THRESHOLD: f64 = 0.20;
+/// İmbalance kapısı: toplam pozisyonun bu oranını aşan imbalance durumunda
+/// sinyal, imbalance'ı azaltacak yönde ateşlenir (ters sinyal).
+/// Gerçek bot CHE/DOM ≈ 0.91x — %50 sınırı makul bir denge noktası.
+const IMBALANCE_CAP: f64 = 0.50;
 
 // Reason etiketleri — `format!()` allocation'larını eler (hot path'te tick başına 1 alloc tasarrufu).
 #[inline]
@@ -42,13 +42,6 @@ const fn reason_signal(dir: Outcome) -> &'static str {
     }
 }
 
-#[inline]
-const fn reason_hedge(dir: Outcome) -> &'static str {
-    match dir {
-        Outcome::Up => "bonereaper:hedge:up",
-        Outcome::Down => "bonereaper:hedge:down",
-    }
-}
 
 
 // ─────────────────────────────────────────────
@@ -175,7 +168,23 @@ impl BonereaperEngine {
                 }
 
                 let persistence_k = ctx.strategy_params.bonereaper_signal_persistence_k();
-                let new_dir = signal_direction_persistent(&mut st, ctx, persistence_k);
+                let ema_dir = signal_direction_persistent(&mut st, ctx, persistence_k);
+
+                // ── İMBALANCE KAPISI ─────────────────────────────────────────
+                // İmbalance > %50 ise sinyal yerine dengeleyici yönde ateşle.
+                // Bu, aşırı tek yönlü birikimi önler (gerçek bot CHE/DOM ≈ 1x).
+                let total_sh = m.up_filled + m.down_filled;
+                let new_dir = if total_sh > 0.0 {
+                    let imb_ratio = (m.up_filled - m.down_filled).abs() / total_sh;
+                    if imb_ratio > IMBALANCE_CAP {
+                        // Fazlalık hangi tarafta? Karşı tarafa yönlendir.
+                        if m.up_filled > m.down_filled { Outcome::Down } else { Outcome::Up }
+                    } else {
+                        ema_dir
+                    }
+                } else {
+                    ema_dir
+                };
 
                 // Yön değiştiyse eski signal emirlerini iptal et.
                 let prev_dir = st.last_signal_dir;
@@ -193,18 +202,14 @@ impl BonereaperEngine {
                     }
 
                     if let Some(order) = signal_order(&st, ctx, new_dir) {
-                        let mut places = vec![order];
-                        if let Some(hedge) = cheap_hedge_order(ctx, new_dir.opposite()) {
-                            places.push(hedge);
-                        }
                         if cancel_ids.is_empty() {
-                            return (BonereaperState::Active(st), Decision::PlaceOrders(places));
+                            return (BonereaperState::Active(st), Decision::PlaceOrders(vec![order]));
                         }
                         return (
                             BonereaperState::Active(st),
                             Decision::CancelAndPlace {
                                 cancels: cancel_ids,
-                                places,
+                                places: vec![order],
                             },
                         );
                     }
@@ -223,19 +228,14 @@ impl BonereaperEngine {
                 }
 
                 if let Some(order) = signal_order(&st, ctx, new_dir) {
-                    // Karşı taraf ucuzsa (bid ≤ CHEAP_HEDGE_THRESHOLD) hedge emri de ekle.
-                    let mut places = vec![order];
-                    if let Some(hedge) = cheap_hedge_order(ctx, new_dir.opposite()) {
-                        places.push(hedge);
-                    }
                     if stale_signal_ids.is_empty() {
-                        return (BonereaperState::Active(st), Decision::PlaceOrders(places));
+                        return (BonereaperState::Active(st), Decision::PlaceOrders(vec![order]));
                     }
                     return (
                         BonereaperState::Active(st),
                         Decision::CancelAndPlace {
                             cancels: stale_signal_ids,
-                            places,
+                            places: vec![order],
                         },
                     );
                 }
@@ -449,25 +449,6 @@ fn make_buy(
 
 /// Current bid'den `STALE_SPREAD_MAX`'tan fazla sapan signal emirlerini iptal et.
 /// Karşı taraf bid ≤ CHEAP_HEDGE_THRESHOLD ise ucuza hedge emri ver.
-/// avg_sum filtresi uygulanmaz — ucuz alım her zaman avg_sum'u düşürür.
-/// Lot: signal emriyle aynı USDC değeri → fiyat farkından kaynaklanan
-/// aşırı birikim önlenir (DOWN@0.07 signal lot'unun 10x'i değil).
-fn cheap_hedge_order(ctx: &StrategyContext<'_>, dir: Outcome) -> Option<PlannedOrder> {
-    let bid = ctx.best_bid(dir);
-    if bid <= 0.0 || bid > CHEAP_HEDGE_THRESHOLD {
-        return None;
-    }
-    // Signal lotunu referans al: signal fiyatındaki eşdeğer USDC değeri
-    let signal_bid = ctx.best_bid(dir.opposite());
-    let signal_size = if signal_bid > 0.0 {
-        (ctx.order_usdc / signal_bid).ceil()
-    } else {
-        (ctx.order_usdc / bid).ceil()
-    };
-    // Hedge share sayısı signal share sayısına eşit (USDC değil share bazlı denge)
-    let size = signal_size;
-    make_buy(ctx, dir, bid, size, reason_hedge(dir))
-}
 
 fn cancel_stale(ctx: &StrategyContext<'_>) -> Decision {
     let mut ids: Vec<String> = Vec::with_capacity(ctx.open_orders.len());
