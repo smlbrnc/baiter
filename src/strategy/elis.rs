@@ -4,30 +4,36 @@
 //!
 //! Her **2 saniyede** bir döngü çalışır:
 //!
-//! 1. Koşul: `up_bid + dn_bid < 1.00` AND her iki bid `min_price` üzerinde.
-//! 2. BUY UP  @ `up_best_bid`  — maker limit emri.
-//! 3. BUY DOWN @ `dn_best_bid` — maker limit emri.
-//! 4. Emir boyutu = `base_size + accum` (önceki loop'ta dolmayan birikmiş miktar).
-//! 5. 2sn sonra tüm açık `elis:` emirleri iptal edilir.
-//! 6. Dolmayan miktar hesaplanır → bir sonraki loop'ta base'e eklenir.
+//! 1. **P2 Lock:** Pozisyon kilitliyse (garantili kâr) → Done.
+//! 2. **P5 Vol filter:** Spread çok genişse (OB ince) → NoOp.
+//! 3. **P5 BSI filter:** Aşırı tek yönlü akış varsa karşı tarafı engelle.
+//! 4. **Koşul:** `up_bid + dn_bid < 1.00` AND her iki bid `min_price` üzerinde.
+//! 5. **P4 Improvement:** Yeni alım mevcut avg pair cost'u yeterince düşürüyor mu?
+//! 6. BUY UP  @ `up_best_ask`  (dominant taraf — taker) veya `up_best_bid` (maker).
+//! 7. BUY DOWN @ `dn_best_ask` (dominant taraf — taker) veya `dn_best_bid` (maker).
+//! 8. Emir boyutu = `base_size + accum` (önceki loop'ta dolmayan birikmiş miktar).
+//! 9. 2sn sonra tüm açık `elis:` emirleri iptal edilir.
+//! 10. Dolmayan miktar hesaplanır → bir sonraki loop'ta base'e eklenir.
 //!
 //! ## FSM State'leri
 //!
 //! ```text
 //! Idle { accum_up, accum_dn }
-//!   → koşul sağlanırsa UP+DOWN emir ver → Ordering
+//!   → lock/filter/improvement kontrollerinden geçerse UP+DOWN emir ver → Ordering
 //!
 //! Ordering { placed_at_ms, accum_up, accum_dn }
-//!   → 2sn geçince açık emirlerdeki dolmayan miktarı al → iptal → Idle (yeni accum)
+//!   → 2sn veya stale timeout geçince açık emirlerdeki dolmayan miktarı al → iptal → Idle
 //!
 //! Done
-//!   → pencere sona erdi, artık işlem yok
+//!   → pencere sona erdi veya pozisyon kilitlendi, artık işlem yok
 //! ```
 //!
-//! ## Reason Etiketleri
+//! ## Pattern Referansları (docs/gabagool.md)
 //!
-//! `elis:dutch:up`   — UP taraf alım emri
-//! `elis:dutch:down` — DOWN taraf alım emri
+//! - **P2** Hedged Lock Condition — `avg_sum < lock_threshold AND pair_count > cost_basis`
+//! - **P4** Improvement-Based Decision — `current_pair - projected_pair ≥ min_improvement`
+//! - **P5** Microstructure Filters — vol filter (spread) + BSI filter
+//! - **P6** Stale Order Cleanup — `max_order_age_ms` aşan emirleri zorla iptal
 
 use serde::{Deserialize, Serialize};
 
@@ -38,7 +44,6 @@ use crate::types::{OrderType, Outcome, Side};
 const REASON_UP: &str = "elis:dutch:up";
 const REASON_DN: &str = "elis:dutch:down";
 /// Biriktirilen dolmayan miktarın maksimum çarpanı (base × çarpan).
-/// Dolmayan emirler bu sınırı aşamaz — sınırsız büyümeyi engeller.
 const MAX_ACCUM_MULTIPLIER: f64 = 5.0;
 
 // ============================================================================
@@ -58,12 +63,10 @@ pub enum ElisState {
     /// Emirler verildi; `trade_cooldown_ms` geçince iptal → yeni loop.
     Ordering {
         placed_at_ms: u64,
-        /// Bu loop'tan önceki birikmiş UP miktarı (iptal sonrası yeniden hesaplanır).
         accum_up: f64,
-        /// Bu loop'tan önceki birikmiş DOWN miktarı.
         accum_dn: f64,
     },
-    /// Pencere bitti — sadece NoOp.
+    /// Pencere bitti veya pozisyon kilitlendi — sadece NoOp.
     Done,
 }
 
@@ -87,17 +90,30 @@ impl ElisEngine {
         let p = ElisParams::from_strategy_params(ctx.strategy_params);
 
         match state {
-            // ── Pencere bitti ─────────────────────────────────────────────────
+            // ── Pencere/lock bitti ────────────────────────────────────────────
             ElisState::Done => (ElisState::Done, Decision::NoOp),
 
-            // ── Emirler açık: 2sn dolunca iptal et ───────────────────────────
+            // ── Emirler açık: timer veya stale kontrolü ───────────────────────
             ElisState::Ordering { placed_at_ms, accum_up, accum_dn } => {
                 // Pencere stop — önce kapat.
                 if is_window_stop(ctx, &p) {
                     return (ElisState::Done, cancel_all_elis(ctx));
                 }
 
-                // 2sn dolmadıysa bekle.
+                // P6: Stale order cleanup — MAX_ORDER_AGE_MS'den eski emir varsa
+                // normal timer beklemeden zorla iptal et ve Idle'a dön.
+                if has_stale_orders(ctx, p.max_order_age_ms) {
+                    let base = p.max_buy_order_size;
+                    let (unfilled_up, unfilled_dn) = compute_unfilled(ctx);
+                    let new_accum_up = unfilled_up.min(base * MAX_ACCUM_MULTIPLIER);
+                    let new_accum_dn = unfilled_dn.min(base * MAX_ACCUM_MULTIPLIER);
+                    return (
+                        ElisState::Idle { accum_up: new_accum_up, accum_dn: new_accum_dn },
+                        cancel_all_elis(ctx),
+                    );
+                }
+
+                // Normal cooldown dolmadıysa bekle.
                 if ctx.now_ms.saturating_sub(placed_at_ms) < p.trade_cooldown_ms {
                     return (
                         ElisState::Ordering { placed_at_ms, accum_up, accum_dn },
@@ -105,25 +121,26 @@ impl ElisEngine {
                     );
                 }
 
-                // Süre doldu: açık elis emirlerinden dolmayan miktarı hesapla.
-                // NOT: accum, bu loop'un emir boyutuna (base + eski_accum) zaten
-                // dahildi. Yeni accum = sadece bu loop'ta dolmayan kısım.
-                // Cap: maksimum accum = base * MAX_ACCUM_MULTIPLIER (sınırsız büyümeyi engeller).
+                // Süre doldu: dolmayan miktarı al, cap uygula, iptal et.
                 let base = p.max_buy_order_size;
                 let (unfilled_up, unfilled_dn) = compute_unfilled(ctx);
                 let new_accum_up = unfilled_up.min(base * MAX_ACCUM_MULTIPLIER);
                 let new_accum_dn = unfilled_dn.min(base * MAX_ACCUM_MULTIPLIER);
 
-                let cancel = cancel_all_elis(ctx);
                 (
                     ElisState::Idle { accum_up: new_accum_up, accum_dn: new_accum_dn },
-                    cancel,
+                    cancel_all_elis(ctx),
                 )
             }
 
-            // ── Fırsat tara ve emir ver ───────────────────────────────────────
+            // ── Fırsat tara: filter → improvement → emir ─────────────────────
             ElisState::Idle { accum_up, accum_dn } => {
                 if is_window_stop(ctx, &p) {
+                    return (ElisState::Done, Decision::NoOp);
+                }
+
+                // ── P2: Hedged Lock — pozisyon kilitliyse artık emir verme ───
+                if is_profit_locked(ctx, p.lock_threshold) {
                     return (ElisState::Done, Decision::NoOp);
                 }
 
@@ -131,7 +148,9 @@ impl ElisEngine {
                 let dn_bid = ctx.down_best_bid;
 
                 // OB henüz dolu değil.
-                if up_bid <= 0.0 || dn_bid <= 0.0 {
+                if up_bid <= 0.0 || dn_bid <= 0.0
+                    || ctx.up_best_ask <= 0.0 || ctx.down_best_ask <= 0.0
+                {
                     return (ElisState::Idle { accum_up, accum_dn }, Decision::NoOp);
                 }
 
@@ -140,7 +159,7 @@ impl ElisEngine {
                     return (ElisState::Idle { accum_up, accum_dn }, Decision::NoOp);
                 }
 
-                // Fiyat aralığı kontrolü (her iki bid de kabul edilebilir aralıkta).
+                // Fiyat aralığı kontrolü.
                 if up_bid < ctx.min_price
                     || up_bid > ctx.max_price
                     || dn_bid < ctx.min_price
@@ -149,26 +168,51 @@ impl ElisEngine {
                     return (ElisState::Idle { accum_up, accum_dn }, Decision::NoOp);
                 }
 
-                // Emir boyutu: base + birikmiş dolmayan miktar.
-                let base = p.max_buy_order_size;
-                let up_size = base + accum_up;
-                let dn_size = base + accum_dn;
+                // ── P5: Volatility filter — spread çok genişse OB ince ───────
+                if !vol_filter_ok(ctx, p.vol_threshold) {
+                    return (ElisState::Idle { accum_up, accum_dn }, Decision::NoOp);
+                }
 
-                // Yükselen (dominant) taraf ask'tan taker emir alır; weaker taraf
-                // bid'den maker olarak bekler.
-                // up_bid > dn_bid → UP dominant → UP @ ask, DOWN @ bid
-                // dn_bid > up_bid → DOWN dominant → DOWN @ ask, UP @ bid
-                let (up_price, up_type, dn_price, dn_type) = if up_bid > dn_bid {
-                    (ctx.up_best_ask, OrderType::Gtc, dn_bid, OrderType::Gtc)
+                // ── P5: BSI filter — aşırı tek yönlü akış kontrolü ───────────
+                let (up_allowed, dn_allowed) = bsi_filter(ctx, p.bsi_filter_threshold);
+
+                // Dominant taraf ask, weaker taraf bid'den emir.
+                let (up_price, dn_price) = if up_bid > dn_bid {
+                    (ctx.up_best_ask, dn_bid)
                 } else if dn_bid > up_bid {
-                    (up_bid, OrderType::Gtc, ctx.down_best_ask, OrderType::Gtc)
+                    (up_bid, ctx.down_best_ask)
                 } else {
-                    // Eşit: her iki taraf bid'den maker.
-                    (up_bid, OrderType::Gtc, dn_bid, OrderType::Gtc)
+                    (up_bid, dn_bid)
                 };
 
-                let up_ord = make_order(ctx, Outcome::Up,   up_price, up_size, up_type, REASON_UP);
-                let dn_ord = make_order(ctx, Outcome::Down, dn_price, dn_size, dn_type, REASON_DN);
+                // BSI filter: izin verilmeyen tarafı None yap.
+                let base = p.max_buy_order_size;
+                let up_size = if up_allowed { base + accum_up } else { 0.0 };
+                let dn_size = if dn_allowed { base + accum_dn } else { 0.0 };
+
+                // Her iki taraf da engelleniyorsa NoOp.
+                if up_size <= 0.0 && dn_size <= 0.0 {
+                    return (ElisState::Idle { accum_up, accum_dn }, Decision::NoOp);
+                }
+
+                // ── P4: Improvement-based decision ───────────────────────────
+                // Mevcut fill varsa yeni alımın avg pair cost'u yeterince
+                // düşürüp düşürmediğini kontrol et.
+                if !improvement_ok(ctx, up_price, up_size, dn_price, dn_size, p.min_improvement) {
+                    return (ElisState::Idle { accum_up, accum_dn }, Decision::NoOp);
+                }
+
+                // Emirleri oluştur.
+                let up_ord = if up_size > 0.0 {
+                    make_order(ctx, Outcome::Up, up_price, up_size, REASON_UP)
+                } else {
+                    None
+                };
+                let dn_ord = if dn_size > 0.0 {
+                    make_order(ctx, Outcome::Down, dn_price, dn_size, REASON_DN)
+                } else {
+                    None
+                };
 
                 let orders: Vec<PlannedOrder> = [up_ord, dn_ord]
                     .into_iter()
@@ -192,10 +236,98 @@ impl ElisEngine {
 // Helpers
 // ============================================================================
 
-/// Pencere stop koşulu: market kapanmasına `stop_before_end_secs` saniye kaldı.
+/// Pencere stop koşulu.
 #[inline]
 fn is_window_stop(ctx: &StrategyContext<'_>, p: &ElisParams) -> bool {
     matches!(ctx.market_remaining_secs, Some(r) if r <= p.stop_before_end_secs)
+}
+
+/// P2 — Hedged Lock Condition (docs/gabagool.md §2).
+///
+/// İki koşul birden:
+/// 1. `avg_up + avg_down < lock_threshold`  (pair cost yeterince düşük)
+/// 2. `min(up_filled, dn_filled) > cost_basis`  (hedged qty > toplam maliyet)
+#[inline]
+fn is_profit_locked(ctx: &StrategyContext<'_>, lock_threshold: f64) -> bool {
+    let m = ctx.metrics;
+    let pair_count = m.pair_count();
+    if pair_count == 0.0 {
+        return false;
+    }
+    let avg_ok = m.avg_sum() < lock_threshold;
+    let qty_ok = pair_count > m.cost_basis();
+    avg_ok && qty_ok
+}
+
+/// P4 — Improvement-Based Decision (docs/gabagool.md §4).
+///
+/// Mevcut fill yoksa her zaman izin verir (ilk alım).
+/// Fill varsa: `current_pair_cost - projected_pair_cost ≥ min_improvement`.
+#[inline]
+fn improvement_ok(
+    ctx: &StrategyContext<'_>,
+    up_price: f64,
+    up_size: f64,
+    dn_price: f64,
+    dn_size: f64,
+    min_improvement: f64,
+) -> bool {
+    let m = ctx.metrics;
+    // İlk alım: her iki tarafta da fill yok → her zaman izin ver.
+    if m.up_filled == 0.0 && m.down_filled == 0.0 {
+        return true;
+    }
+    // Mevcut avg pair cost.
+    let current_pair = m.avg_sum();
+    // Simüle edilmiş yeni avg pair cost.
+    let new_avg_up = weighted_avg(m.avg_up, m.up_filled, up_price, up_size);
+    let new_avg_dn = weighted_avg(m.avg_down, m.down_filled, dn_price, dn_size);
+    let projected_pair = new_avg_up + new_avg_dn;
+    // İyileşme yeterli mi?
+    current_pair - projected_pair >= min_improvement
+}
+
+/// Ağırlıklı ortalama hesabı (VWAP benzeri).
+#[inline]
+fn weighted_avg(current_avg: f64, current_qty: f64, new_price: f64, new_qty: f64) -> f64 {
+    let total = current_qty + new_qty;
+    if total <= 0.0 {
+        return new_price;
+    }
+    (current_avg * current_qty + new_price * new_qty) / total
+}
+
+/// P5 — Volatility filter: bid-ask spread çok genişse OB güvenilmez.
+/// Her iki tarafın spreadi `threshold` altında olmalı.
+#[inline]
+fn vol_filter_ok(ctx: &StrategyContext<'_>, threshold: f64) -> bool {
+    let up_spread = ctx.up_best_ask - ctx.up_best_bid;
+    let dn_spread = ctx.down_best_ask - ctx.down_best_bid;
+    up_spread <= threshold && dn_spread <= threshold
+}
+
+/// P5 — BSI filter: aşırı tek yönlü akış varsa karşı tarafı engelle.
+///
+/// Returns `(up_allowed, dn_allowed)`.
+/// - `bsi > +threshold` → UP baskısı → DOWN almayı engelle
+/// - `bsi < -threshold` → DOWN baskısı → UP almayı engelle
+/// - `None` veya nötr → her iki taraf serbest
+#[inline]
+fn bsi_filter(ctx: &StrategyContext<'_>, threshold: f64) -> (bool, bool) {
+    match ctx.bsi {
+        Some(bsi) if bsi > threshold  => (true, false),
+        Some(bsi) if bsi < -threshold => (false, true),
+        _ => (true, true),
+    }
+}
+
+/// P6 — Stale order tespiti: herhangi bir elis emri `max_age_ms`'den eskiyse true.
+#[inline]
+fn has_stale_orders(ctx: &StrategyContext<'_>, max_age_ms: u64) -> bool {
+    ctx.open_orders
+        .iter()
+        .filter(|o| o.reason.starts_with("elis:"))
+        .any(|o| o.age_ms(ctx.now_ms) > max_age_ms)
 }
 
 /// `elis:` prefix'li tüm açık emirleri iptal et.
@@ -230,16 +362,13 @@ fn compute_unfilled(ctx: &StrategyContext<'_>) -> (f64, f64) {
     (up, dn)
 }
 
-/// Tek taraf için BUY emri oluştur.
-/// `order_type`: Gtc maker (bid) veya Gtc taker (ask) için aynı tip kullanılır;
-/// fiyat ask olunca CLOB taraf olarak taker davranır.
+/// Tek taraf için BUY limit emri oluştur.
 #[inline]
 fn make_order(
     ctx: &StrategyContext<'_>,
     outcome: Outcome,
     price: f64,
     size: f64,
-    order_type: OrderType,
     reason: &'static str,
 ) -> Option<PlannedOrder> {
     if price <= 0.0 || size <= 0.0 || size * price < ctx.api_min_order_size {
@@ -251,7 +380,7 @@ fn make_order(
         side: Side::Buy,
         price,
         size,
-        order_type,
+        order_type: OrderType::Gtc,
         reason: reason.to_string(),
     })
 }

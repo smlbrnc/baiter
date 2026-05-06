@@ -50,22 +50,38 @@ export interface StrategyParams {
    */
   pyramid_usdc?: number | null;
 
-  // ── Elis Dutch Book Bid Loop ─────────────────────────────────────────────
-  /**
-   * Her döngüde taraf başına verilecek temel emir büyüklüğü (share).
-   * Önceki döngüden kalan dolmayan miktar bu taban üstüne eklenir. Default 20.
-   */
+  // ── Elis Dutch Book Bid Loop (docs/gabagool.md) ──────────────────────────
+  /** Taraf başına temel emir büyüklüğü (share). Default 20. */
   elis_max_buy_order_size?: number | null;
-  /**
-   * Emir verme → iptal arası loop süresi (ms). Süre dolunca açık elis
-   * emirleri iptal edilir, dolmayan miktar biriktirilir. Default 2000.
-   */
+  /** Loop süresi: emir → iptal arası (ms). Default 2000. */
   elis_trade_cooldown_ms?: number | null;
-  /**
-   * Market kapanışından bu kadar saniye önce döngü durur.
-   * Default 30.
-   */
+  /** Pencere kapanmadan bu kadar saniye önce döngü durur. Default 30. */
   elis_stop_before_end_secs?: number | null;
+  /**
+   * P4 Improvement threshold: avg pair cost bu kadar düşmüyorsa emir verilmez.
+   * min_improvement ≥ tick + slippage + fee/size. Default 0.005.
+   */
+  elis_min_improvement?: number | null;
+  /**
+   * P5 Vol filter: bid-ask spread bu eşiği aşarsa OB ince sayılır, NoOp.
+   * Default 0.05.
+   */
+  elis_vol_threshold?: number | null;
+  /**
+   * P5 BSI filter: |BSI| bu eşiği aşarsa karşı taraf engellenir.
+   * Default 0.50.
+   */
+  elis_bsi_filter_threshold?: number | null;
+  /**
+   * P2 Lock threshold: avg_up + avg_down bu değerin altına düşünce pozisyon
+   * kilitli sayılır ve yeni emir verilmez. Default 0.98.
+   */
+  elis_lock_threshold?: number | null;
+  /**
+   * P6 Stale cleanup: emirler bu süreden (ms) eskiyse zorla iptal edilir.
+   * Default 30000.
+   */
+  elis_max_order_age_ms?: number | null;
 
   // ── Bonereaper ───────────────────────────────────────────────────────────
   /**
@@ -461,6 +477,11 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   elis_max_buy_order_size: 20,
   elis_trade_cooldown_ms: 2000,
   elis_stop_before_end_secs: 30,
+  elis_min_improvement: 0.005,
+  elis_vol_threshold: 0.05,
+  elis_bsi_filter_threshold: 0.50,
+  elis_lock_threshold: 0.98,
+  elis_max_order_age_ms: 30000,
   // Bonereaper
   bonereaper_bsi_threshold: 0.30,
   bonereaper_scoop_threshold: 0.25,

@@ -44,6 +44,16 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
     params.elis_trade_cooldown_ms ?? STRATEGY_PARAMS_DEFAULTS.elis_trade_cooldown_ms;
   const elisStopBeforeEndSecs =
     params.elis_stop_before_end_secs ?? STRATEGY_PARAMS_DEFAULTS.elis_stop_before_end_secs;
+  const elisMinImprovement =
+    params.elis_min_improvement ?? STRATEGY_PARAMS_DEFAULTS.elis_min_improvement;
+  const elisVolThreshold =
+    params.elis_vol_threshold ?? STRATEGY_PARAMS_DEFAULTS.elis_vol_threshold;
+  const elisBsiFilterThreshold =
+    params.elis_bsi_filter_threshold ?? STRATEGY_PARAMS_DEFAULTS.elis_bsi_filter_threshold;
+  const elisLockThreshold =
+    params.elis_lock_threshold ?? STRATEGY_PARAMS_DEFAULTS.elis_lock_threshold;
+  const elisMaxOrderAgeMs =
+    params.elis_max_order_age_ms ?? STRATEGY_PARAMS_DEFAULTS.elis_max_order_age_ms;
 
   // ── Bonereaper ────────────────────────────────────────────────────────
   const bonereaperBsiThreshold =
@@ -84,61 +94,109 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
             <SectionLabel icon={Zap} title="Elis — Dutch Book Bid Loop" />
             <p className="text-muted-foreground mt-1 text-sm">
               Her 2 saniyede bir döngü: <code>up_bid + dn_bid &lt; $1.00</code>{" "}
-              koşulunda her iki tarafa bid fiyatından limit emir verilir.
-              Dolmayan miktar biriktirilir ve sonraki döngüde base emir
-              boyutuna eklenir.
+              koşulunda dominant tarafa ask (taker), weaker tarafa bid (maker) emir
+              verilir. Gabagool pattern'ları: P2 lock, P4 improvement, P5 filter, P6 stale.
             </p>
           </div>
 
           <div className="bg-muted/25 space-y-4 rounded-md border border-border/40 p-3">
-            <Field
-              label="Temel emir boyutu (share)"
-              tooltip="Her döngüde UP ve DOWN taraflarına verilecek temel share miktarı. Önceki döngüde dolmayan emirlerin kalan miktarı bu taban üstüne eklenir. Artırmak sermayeyi büyütür, azaltmak riski sınırlar."
-              hint={`1 – 1000 share (default ${STRATEGY_PARAMS_DEFAULTS.elis_max_buy_order_size}).`}
-            >
-              <Input
-                type="number"
-                step="5"
-                min="1"
-                max="1000"
-                value={elisMaxBuyOrderSize}
-                onChange={(e) =>
-                  patch({ elis_max_buy_order_size: Number(e.target.value) })
-                }
-              />
-            </Field>
 
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            {/* ── Emir parametreleri ─── */}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               <Field
-                label="Loop süresi (ms)"
-                tooltip="Emir verildikten bu süre sonra açık elis emirleri iptal edilir ve yeni döngü başlar. Dolmayan miktar biriktirilip sonraki loop'ta base'e eklenir."
-                hint={`500 – 10 000 ms (default ${STRATEGY_PARAMS_DEFAULTS.elis_trade_cooldown_ms}).`}
+                label="Temel emir boyutu (share)"
+                tooltip="Her döngüde UP ve DOWN taraflarına verilecek temel share miktarı. Önceki döngüde dolmayan emirlerin kalan miktarı bu taban üstüne eklenir (cap: base×5)."
+                hint={`1 – 1000 (default ${STRATEGY_PARAMS_DEFAULTS.elis_max_buy_order_size}).`}
               >
                 <Input
-                  type="number"
-                  step="500"
-                  min="500"
-                  max="10000"
+                  type="number" step="5" min="1" max="1000"
+                  value={elisMaxBuyOrderSize}
+                  onChange={(e) => patch({ elis_max_buy_order_size: Number(e.target.value) })}
+                />
+              </Field>
+              <Field
+                label="Loop süresi (ms)"
+                tooltip="Emir verildikten bu süre sonra açık elis emirleri iptal edilir ve yeni döngü başlar."
+                hint={`500 – 10 000 (default ${STRATEGY_PARAMS_DEFAULTS.elis_trade_cooldown_ms}).`}
+              >
+                <Input
+                  type="number" step="500" min="500" max="10000"
                   value={elisTradeCooldownMs}
-                  onChange={(e) =>
-                    patch({ elis_trade_cooldown_ms: Number(e.target.value) })
-                  }
+                  onChange={(e) => patch({ elis_trade_cooldown_ms: Number(e.target.value) })}
                 />
               </Field>
               <Field
                 label="Pencere stop (sn)"
-                tooltip="Market kapanışından bu kadar saniye önce yeni emir verilmez; açık emirler iptal edilir ve strateji Done durumuna geçer."
-                hint={`10 – 120 sn (default ${STRATEGY_PARAMS_DEFAULTS.elis_stop_before_end_secs}).`}
+                tooltip="Market kapanışından bu kadar saniye önce yeni emir verilmez; Done'a geçilir."
+                hint={`10 – 120 (default ${STRATEGY_PARAMS_DEFAULTS.elis_stop_before_end_secs}).`}
               >
                 <Input
-                  type="number"
-                  step="5"
-                  min="10"
-                  max="120"
+                  type="number" step="5" min="10" max="120"
                   value={elisStopBeforeEndSecs}
-                  onChange={(e) =>
-                    patch({ elis_stop_before_end_secs: Number(e.target.value) })
-                  }
+                  onChange={(e) => patch({ elis_stop_before_end_secs: Number(e.target.value) })}
+                />
+              </Field>
+            </div>
+
+            {/* ── P4 + P2 ─── */}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Field
+                label="P4 — Min improvement"
+                tooltip="Yeni alımın avg pair cost'u (avg_up + avg_down) bu kadar düşürmesi gerekir, aksi halde emir verilmez. İlk fill'de bu kontrol atlanır. Değer = tick + slippage + fee/size ≈ 0.005."
+                hint={`0.001 – 0.05 (default ${STRATEGY_PARAMS_DEFAULTS.elis_min_improvement}).`}
+              >
+                <Input
+                  type="number" step="0.001" min="0.001" max="0.05"
+                  value={elisMinImprovement}
+                  onChange={(e) => patch({ elis_min_improvement: Number(e.target.value) })}
+                />
+              </Field>
+              <Field
+                label="P2 — Lock threshold"
+                tooltip="avg_up + avg_down bu değerin altına düşünce VE min(up_filled, dn_filled) > cost_basis ise pozisyon kilitli sayılır — yeni emir verilmez (Done). Garantili kâr lock'u."
+                hint={`0.85 – 0.99 (default ${STRATEGY_PARAMS_DEFAULTS.elis_lock_threshold}).`}
+              >
+                <Input
+                  type="number" step="0.01" min="0.85" max="0.99"
+                  value={elisLockThreshold}
+                  onChange={(e) => patch({ elis_lock_threshold: Number(e.target.value) })}
+                />
+              </Field>
+            </div>
+
+            {/* ── P5 + P6 ─── */}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <Field
+                label="P5 — Vol threshold"
+                tooltip="bid-ask spread (ask − bid) bu eşiği aşarsa OB ince sayılır ve döngü atlanır. Her iki tarafın spreadi birden kontrol edilir."
+                hint={`0.01 – 0.20 (default ${STRATEGY_PARAMS_DEFAULTS.elis_vol_threshold}).`}
+              >
+                <Input
+                  type="number" step="0.01" min="0.01" max="0.20"
+                  value={elisVolThreshold}
+                  onChange={(e) => patch({ elis_vol_threshold: Number(e.target.value) })}
+                />
+              </Field>
+              <Field
+                label="P5 — BSI filter eşiği"
+                tooltip="|BSI| bu eşiği aşarsa: BSI > +threshold → UP baskısı, DOWN alımı engellenir; BSI < -threshold → DOWN baskısı, UP alımı engellenir. BSI None ise filter pas geçer."
+                hint={`0.10 – 1.00 (default ${STRATEGY_PARAMS_DEFAULTS.elis_bsi_filter_threshold}).`}
+              >
+                <Input
+                  type="number" step="0.05" min="0.10" max="1.00"
+                  value={elisBsiFilterThreshold}
+                  onChange={(e) => patch({ elis_bsi_filter_threshold: Number(e.target.value) })}
+                />
+              </Field>
+              <Field
+                label="P6 — Stale order (ms)"
+                tooltip="Bu süreden daha eski açık elis emirleri 2sn timer beklenmeden zorla iptal edilir. Ghost order birikimini önler."
+                hint={`5 000 – 60 000 ms (default ${STRATEGY_PARAMS_DEFAULTS.elis_max_order_age_ms}).`}
+              >
+                <Input
+                  type="number" step="5000" min="5000" max="60000"
+                  value={elisMaxOrderAgeMs}
+                  onChange={(e) => patch({ elis_max_order_age_ms: Number(e.target.value) })}
                 />
               </Field>
             </div>
@@ -149,29 +207,27 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
             <p className="font-medium text-foreground">Elis — nasıl çalışır?</p>
             <ul className="list-disc space-y-1 pl-4">
               <li>
-                <strong>Koşul:</strong> <code>up_bid + dn_bid &lt; $1.00</code>{" "}
-                ve her iki bid <code>min_price</code> üzerinde ise döngü aktif.
+                <strong>Koşul:</strong> <code>up_bid + dn_bid &lt; $1.00</code> →
+                dominant taraf ask (taker), weaker taraf bid (maker) GTC emir. Fill = garantili kâr.
               </li>
               <li>
-                <strong>Maker bid emri:</strong> UP tarafına <code>up_best_bid</code>,
-                DOWN tarafına <code>dn_best_bid</code> fiyatından GTC limit
-                emir. Fill olursa toplam maliyet {"<"} $1.00 — garantili kâr.
+                <strong>P4 Improvement:</strong> Mevcut fill varsa yeni alım{" "}
+                <code>avg pair cost</code>&apos;u <code>min_improvement</code> kadar
+                düşürmedikçe emir verilmez.
               </li>
               <li>
-                <strong>Birikim mekanizması:</strong> Emir boyutu ={" "}
-                <code>base_size + accum</code>. Her döngü sonunda dolmayan
-                kısım <code>accum</code>&apos;a eklenir; bir sonraki loop&apos;ta
-                base üstüne ilave edilir.
+                <strong>P5 Filters:</strong> Vol filter — spread geniş ise OB ince,
+                atla. BSI filter — aşırı tek yönlü akışta karşı tarafı engelle.
               </li>
               <li>
-                <strong>Loop döngüsü:</strong>{" "}
-                <code>trade_cooldown_ms</code> (default 2sn) sonra tüm açık
-                elis emirleri iptal, Idle&apos;a dön, yeni koşul kontrolü.
+                <strong>P2 Lock:</strong>{" "}
+                <code>avg_up + avg_down &lt; lock_threshold</code> VE{" "}
+                <code>pair_count &gt; cost_basis</code> → garantili kâr kilitlendi,
+                Done&apos;a geç.
               </li>
               <li>
-                <strong>Pencere stop:</strong> Kapanıştan{" "}
-                <code>stop_before_end_secs</code> önce tüm yeni emirler durur;
-                Done&apos;a geçilir.
+                <strong>P6 Stale:</strong> <code>max_order_age_ms</code>&apos;den
+                eski emirler zorla iptal edilir (ghost order koruması).
               </li>
             </ul>
           </div>

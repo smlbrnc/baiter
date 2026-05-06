@@ -122,22 +122,36 @@ pub struct StrategyParams {
     #[serde(default)]
     pub pyramid_usdc: Option<f64>,
 
-    // === Elis (Dutch Book Spread Capture) — docs/elis.md §5 ===
-    /// Bid-ask spread eşiği (her iki taraf). Default: 0.02
-    #[serde(default)]
-    pub elis_spread_threshold: Option<f64>,
-    /// Taraf başına max emir büyüklüğü (share). Default: 20.0
+    // === Elis (Dutch Book Bid Loop) — docs/gabagool.md ===
+    /// Taraf başına temel emir büyüklüğü (share). Default: 20.0
     #[serde(default)]
     pub elis_max_buy_order_size: Option<f64>,
-    /// Emir → iptal arası bekleme (ms). Default: 5000
+    /// Loop süresi: emir → iptal arası bekleme (ms). Default: 2000
     #[serde(default)]
     pub elis_trade_cooldown_ms: Option<u64>,
-    /// Pozisyon dengeleme agresifliği (0=pasif, 1=max). Default: 0.7
-    #[serde(default)]
-    pub elis_balance_factor: Option<f64>,
-    /// Pencere kapanmadan bu kadar saniye önce dur. Default: 60.0
+    /// Pencere kapanmadan bu kadar saniye önce dur. Default: 30.0
     #[serde(default)]
     pub elis_stop_before_end_secs: Option<f64>,
+    /// P4: avg pair cost'u bu kadar düşürmeyen alım yapılmaz. Default: 0.005
+    #[serde(default)]
+    pub elis_min_improvement: Option<f64>,
+    /// P5 Vol filter: bid-ask spread bu eşiği aşarsa NoOp (OB ince). Default: 0.05
+    #[serde(default)]
+    pub elis_vol_threshold: Option<f64>,
+    /// P5 BSI filter: |BSI| bu eşiği aşarsa karşı tarafı engelle. Default: 0.50
+    #[serde(default)]
+    pub elis_bsi_filter_threshold: Option<f64>,
+    /// P2 Lock threshold: avg_sum bu değerin altına düşünce pozisyon kilitli sayılır. Default: 0.98
+    #[serde(default)]
+    pub elis_lock_threshold: Option<f64>,
+    /// P6 Stale cleanup: emirler bu süreden eskiyse zorla iptal (ms). Default: 30000
+    #[serde(default)]
+    pub elis_max_order_age_ms: Option<u64>,
+    // Eski alanlar (backend artık kullanmıyor, DB uyumu için tutuldu)
+    #[serde(default)]
+    pub elis_spread_threshold: Option<f64>,
+    #[serde(default)]
+    pub elis_balance_factor: Option<f64>,
 
     // === Bonereaper parametreleri ===
     /// BSI mutlak değer eşiği — yön kararı için primer sinyal. Default: 0.30
@@ -263,16 +277,29 @@ impl StrategyParams {
 }
 
 /// Elis stratejisi parametreleri — `StrategyParams`'tan resolve edilir.
-/// Dutch Book Bid Loop parametreleri.
+/// Dutch Book Bid Loop + Gabagool pattern'ları (P2/P4/P5/P6).
 #[derive(Debug, Clone, Copy)]
 pub struct ElisParams {
     /// Taraf başına temel emir büyüklüğü (share). Önceki loop'ta dolmayan
     /// miktar bu taban üstüne eklenir. Default: 20.0
     pub max_buy_order_size: f64,
-    /// Emir gönderme → iptal arası loop süresi (ms). Default: 2000
+    /// Loop süresi: emir gönderme → iptal arası (ms). Default: 2000
     pub trade_cooldown_ms: u64,
     /// Pencere kapanmadan bu kadar saniye önce döngüyü durdur. Default: 30.0
     pub stop_before_end_secs: f64,
+    /// P4: Improvement threshold — avg pair cost bu kadar düşmüyorsa emir yok.
+    /// Default: 0.005
+    pub min_improvement: f64,
+    /// P5 Vol filter: bid-ask spread bu eşiği aşarsa OB ince sayılır. Default: 0.05
+    pub vol_threshold: f64,
+    /// P5 BSI filter: |BSI| bu eşiği aşarsa karşı taraf engellenir. Default: 0.50
+    pub bsi_filter_threshold: f64,
+    /// P2 Lock threshold: `avg_up + avg_down` bu değerin altına düşünce pozisyon
+    /// kilitli sayılır ve yeni emir verilmez. Default: 0.98
+    pub lock_threshold: f64,
+    /// P6 Stale cleanup: bu süreden daha eski emirler zorla iptal edilir (ms).
+    /// Default: 30_000
+    pub max_order_age_ms: u64,
 }
 
 impl Default for ElisParams {
@@ -281,6 +308,11 @@ impl Default for ElisParams {
             max_buy_order_size: 20.0,
             trade_cooldown_ms: 2000,
             stop_before_end_secs: 30.0,
+            min_improvement: 0.005,
+            vol_threshold: 0.05,
+            bsi_filter_threshold: 0.50,
+            lock_threshold: 0.98,
+            max_order_age_ms: 30_000,
         }
     }
 }
@@ -294,6 +326,11 @@ impl ElisParams {
             max_buy_order_size: p.elis_max_buy_order_size.unwrap_or(d.max_buy_order_size),
             trade_cooldown_ms: p.elis_trade_cooldown_ms.unwrap_or(d.trade_cooldown_ms),
             stop_before_end_secs: p.elis_stop_before_end_secs.unwrap_or(d.stop_before_end_secs),
+            min_improvement: p.elis_min_improvement.unwrap_or(d.min_improvement),
+            vol_threshold: p.elis_vol_threshold.unwrap_or(d.vol_threshold),
+            bsi_filter_threshold: p.elis_bsi_filter_threshold.unwrap_or(d.bsi_filter_threshold),
+            lock_threshold: p.elis_lock_threshold.unwrap_or(d.lock_threshold),
+            max_order_age_ms: p.elis_max_order_age_ms.unwrap_or(d.max_order_age_ms),
         }
     }
 }
