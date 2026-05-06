@@ -32,6 +32,10 @@ const STALE_SPREAD_MAX: f64 = 0.05;
 /// sinyal, imbalance'ı azaltacak yönde ateşlenir (ters sinyal).
 /// Gerçek bot CHE/DOM ≈ 0.91x — %50 sınırı makul bir denge noktası.
 const IMBALANCE_CAP: f64 = 0.50;
+/// Proaktif seyreltme eşiği: karşı taraf bid bu değerin altında ise ve
+/// avg_sum < 1.0 koşulu sağlanırsa sinyal emriyle birlikte seyreltme emri verilir.
+/// Gerçek bot analizi: CHE alımlarının %51'i bid < 0.45 fiyat bandında.
+const SEYRELTME_THRESHOLD: f64 = 0.45;
 
 // Reason etiketleri — `format!()` allocation'larını eler (hot path'te tick başına 1 alloc tasarrufu).
 #[inline]
@@ -39,6 +43,14 @@ const fn reason_signal(dir: Outcome) -> &'static str {
     match dir {
         Outcome::Up => "bonereaper:signal:up",
         Outcome::Down => "bonereaper:signal:down",
+    }
+}
+
+#[inline]
+const fn reason_seyreltme(dir: Outcome) -> &'static str {
+    match dir {
+        Outcome::Up => "bonereaper:seyreltme:up",
+        Outcome::Down => "bonereaper:seyreltme:down",
     }
 }
 
@@ -202,15 +214,14 @@ impl BonereaperEngine {
                     }
 
                     if let Some(order) = signal_order(&st, ctx, new_dir) {
+                        let mut places = vec![order];
+                        if let Some(s) = seyreltme_order(ctx, new_dir) { places.push(s); }
                         if cancel_ids.is_empty() {
-                            return (BonereaperState::Active(st), Decision::PlaceOrders(vec![order]));
+                            return (BonereaperState::Active(st), Decision::PlaceOrders(places));
                         }
                         return (
                             BonereaperState::Active(st),
-                            Decision::CancelAndPlace {
-                                cancels: cancel_ids,
-                                places: vec![order],
-                            },
+                            Decision::CancelAndPlace { cancels: cancel_ids, places },
                         );
                     }
                     if !cancel_ids.is_empty() {
@@ -228,15 +239,14 @@ impl BonereaperEngine {
                 }
 
                 if let Some(order) = signal_order(&st, ctx, new_dir) {
+                    let mut places = vec![order];
+                    if let Some(s) = seyreltme_order(ctx, new_dir) { places.push(s); }
                     if stale_signal_ids.is_empty() {
-                        return (BonereaperState::Active(st), Decision::PlaceOrders(vec![order]));
+                        return (BonereaperState::Active(st), Decision::PlaceOrders(places));
                     }
                     return (
                         BonereaperState::Active(st),
-                        Decision::CancelAndPlace {
-                            cancels: stale_signal_ids,
-                            places: vec![order],
-                        },
+                        Decision::CancelAndPlace { cancels: stale_signal_ids, places },
                     );
                 }
 
@@ -449,6 +459,33 @@ fn make_buy(
 
 /// Current bid'den `STALE_SPREAD_MAX`'tan fazla sapan signal emirlerini iptal et.
 /// Karşı taraf bid ≤ CHEAP_HEDGE_THRESHOLD ise ucuza hedge emri ver.
+
+/// Proaktif seyreltme: karşı taraf ucuzsa (bid < SEYRELTME_THRESHOLD) ve
+/// bu alım avg_sum'u < 1.0'da tutuyorsa sinyal emriyle birlikte küçük emir ver.
+/// Gerçek bot: CHE alımlarının %51'i bid < 0.45 bandında, avg_sum yönetimi amacıyla.
+fn seyreltme_order(ctx: &StrategyContext<'_>, signal_dir: Outcome) -> Option<PlannedOrder> {
+    let opp = signal_dir.opposite();
+    let opp_bid = ctx.best_bid(opp);
+    if opp_bid <= 0.0 || opp_bid >= SEYRELTME_THRESHOLD {
+        return None;
+    }
+    let m = ctx.metrics;
+    // Karşı tarafta zaten fill varsa avg kontrolü yap
+    let (opp_filled, opp_cost, sig_avg) = match opp {
+        Outcome::Up   => (m.up_filled,   m.avg_up   * m.up_filled,   m.avg_down),
+        Outcome::Down => (m.down_filled, m.avg_down * m.down_filled, m.avg_up),
+    };
+    if opp_filled <= 0.0 {
+        return None; // Karşı tarafta fill yok, seyreltme anlamsız
+    }
+    let size = (ctx.order_usdc / opp_bid).ceil();
+    let new_avg_opp = (opp_cost + opp_bid * size) / (opp_filled + size);
+    // Sadece avg_sum < 1.0'da kalıyorsa seyrelt
+    if new_avg_opp + sig_avg >= 1.0 {
+        return None;
+    }
+    make_buy(ctx, opp, opp_bid, size, reason_seyreltme(opp))
+}
 
 fn cancel_stale(ctx: &StrategyContext<'_>) -> Decision {
     let mut ids: Vec<String> = Vec::with_capacity(ctx.open_orders.len());
