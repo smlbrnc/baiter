@@ -30,7 +30,8 @@ const TICK_INTERVAL_SECS: u64 = 2;
 const STALE_SPREAD_MAX: f64 = 0.05;
 /// Cheap hedge eşiği: karşı taraf bid bu değerin altında ise sinyal emriyle
 /// birlikte ek bir hedge emri de verilir — avg_sum seyreltme + risk dağıtma.
-const CHEAP_HEDGE_THRESHOLD: f64 = 0.35;
+/// 0.20: sadece çok ucuz fiyatlarda (DOWN ~0.80'e yakınsarken) tetiklenir.
+const CHEAP_HEDGE_THRESHOLD: f64 = 0.20;
 
 // Reason etiketleri — `format!()` allocation'larını eler (hot path'te tick başına 1 alloc tasarrufu).
 #[inline]
@@ -449,12 +450,22 @@ fn make_buy(
 /// Current bid'den `STALE_SPREAD_MAX`'tan fazla sapan signal emirlerini iptal et.
 /// Karşı taraf bid ≤ CHEAP_HEDGE_THRESHOLD ise ucuza hedge emri ver.
 /// avg_sum filtresi uygulanmaz — ucuz alım her zaman avg_sum'u düşürür.
+/// Lot: signal emriyle aynı USDC değeri → fiyat farkından kaynaklanan
+/// aşırı birikim önlenir (DOWN@0.07 signal lot'unun 10x'i değil).
 fn cheap_hedge_order(ctx: &StrategyContext<'_>, dir: Outcome) -> Option<PlannedOrder> {
     let bid = ctx.best_bid(dir);
     if bid <= 0.0 || bid > CHEAP_HEDGE_THRESHOLD {
         return None;
     }
-    let size = (ctx.order_usdc / bid).ceil();
+    // Signal lotunu referans al: signal fiyatındaki eşdeğer USDC değeri
+    let signal_bid = ctx.best_bid(dir.opposite());
+    let signal_size = if signal_bid > 0.0 {
+        (ctx.order_usdc / signal_bid).ceil()
+    } else {
+        (ctx.order_usdc / bid).ceil()
+    };
+    // Hedge share sayısı signal share sayısına eşit (USDC değil share bazlı denge)
+    let size = signal_size;
     make_buy(ctx, dir, bid, size, reason_hedge(dir))
 }
 
