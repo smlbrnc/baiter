@@ -281,17 +281,20 @@ fn improvement_ok(
     let m = ctx.metrics;
 
     if m.up_filled == 0.0 && m.down_filled == 0.0 {
-        // İlk giriş: her iki tarafın fiili fiyat toplamı < 1.0 olmalı.
-        return up_price + dn_price < 1.0;
+        // İlk giriş: sum_bid < 1.0 zaten üstte kontrol edildi; allow.
+        // (up_ask + dn_bid ≈ 1.00 olduğu için burada extra fiyat kontrolü
+        //  yapılırsa hiç trade yapılamaz.)
+        return true;
     }
 
     if m.down_filled == 0.0 {
-        // DOWN ilk kez girecek: avg_up + dn_price < 1.0 garantisi ara.
+        // UP dolu, DOWN ilk kez girecek: avg_up + dn_price < 1.0 olmalı.
+        // Bu kontrol olmadan avg_up=0.54 + dn_ask=0.55 → avg_sum=1.09 olabilir.
         return m.avg_up + dn_price < 1.0;
     }
 
     if m.up_filled == 0.0 {
-        // UP ilk kez girecek: avg_down + up_price < 1.0 garantisi ara.
+        // DOWN dolu, UP ilk kez girecek: avg_down + up_price < 1.0 olmalı.
         return m.avg_down + up_price < 1.0;
     }
 
