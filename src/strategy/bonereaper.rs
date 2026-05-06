@@ -146,7 +146,7 @@ impl BonereaperEngine {
                     && m.up_filled > 0.0
                     && m.down_filled > 0.0
                     && (m.up_filled - m.down_filled).abs()
-                        < ctx.strategy_params.bonereaper_rebalance_trigger()
+                        < ctx.strategy_params.bonereaper_profit_lock_imbalance()
                 {
                     return (BonereaperState::Active(st), Decision::NoOp);
                 }

@@ -85,75 +85,37 @@ export interface StrategyParams {
 
   // ── Bonereaper ───────────────────────────────────────────────────────────
   /**
-   * BSI mutlak değer eşiği — primer yön kararı sinyali.
-   * |BSI| >= threshold → BSI yönü; aksi halde bid karşılaştırması.
-   * Default 0.30.
-   */
-  bonereaper_bsi_threshold?: number | null;
-  /**
-   * Scoop tetikleyici — kapanışa ≤100s kaldığında karşı tarafın ask'ı
-   * bu eşiğin altına düşerse büyük lot scoop emri verilir.
-   * Default 0.25.
-   */
-  bonereaper_scoop_threshold?: number | null;
-  /**
-   * Lottery tail emri aktif mi? Kapanışa ≤15s kaldığında
-   * herhangi bir tarafın ask ≤ $0.02 ise 10 000sh emir verilir.
-   * Yüksek risk — opt-in, default false.
-   */
-  bonereaper_lottery_enabled?: boolean | null;
-  /**
-   * Signal emirlerinde dominant taraf (bid > 0.50) için taker (ask) kullanılsın mı?
-   * Default true — live'da anında fill.
+   * Signal emirlerinde taker (ask) kullanılsın mı? Default true — live'da
+   * anında fill. `false` ise best_bid'den maker GTC emir verilir.
    */
   bonereaper_signal_taker?: boolean | null;
   /**
-   * Rebalance emirlerinde dominant taraf (bid > 0.50) için taker (ask) kullanılsın mı?
-   * Default true — kritik imbalance düzeltmesinde anında fill.
+   * Profit-lock için imbalance eşiği (share). |up_filled − down_filled| bu
+   * değerin altında VE her iki tarafta da fill varsa profit_lock aktifse
+   * yeni emir durur. Default 50.
    */
-  bonereaper_rebalance_taker?: boolean | null;
+  bonereaper_profit_lock_imbalance?: number | null;
   /**
-   * Rebalance tetiklenme eşiği (share). |UP_filled - DOWN_filled| ≥ bu değer
-   * olunca rebalance devreye girer. Eski sabit 5'ti — çok düşük, her tick
-   * tetiklenip signal'a karşı çalışıyordu. Default 50: 24 market grid search
-   * optimum (50→+$628, 20→+$513, 200→+$743 ama riskli).
-   */
-  bonereaper_rebalance_trigger?: number | null;
-  /**
-   * Signal güçlü iken (|effective_score - 5| > 2.5) rebalance pasif mi olsun?
-   * `false` (default) → pasif (signal güveniliyor, hedge yapılmaz, kayıp önler).
-   * `true` → her zaman aktif (eski davranış, signal/rebalance birlikte çalışır).
-   */
-  bonereaper_rebalance_when_signal_strong?: boolean | null;
-  /**
-   * Signal yön onayı için kaç ardışık tick gerekli? K=1 → mevcut anlık karar.
-   * K=2 (default) → yeni yön için 2 ardışık tick onayı; flip-flop'u azaltır.
+   * Signal yön onayı için kaç ardışık tick gerekli? K=1 (default) → anlık
+   * karar (real bot uyumlu). K=2+ → yeni yön için K ardışık tick onayı.
    */
   bonereaper_signal_persistence_k?: number | null;
   /**
-   * Convergence guard sliding window (decision tick sayısı, ~2 saniye/tick).
-   * Bu kadar tick içinde herhangi bir tick conv idiyse guard aktif kalır.
-   * N=1 → mevcut anlık kontrol; N=5 (default) → ~10 saniye stabil koruma.
-   */
-  bonereaper_conv_guard_window?: number | null;
-  /**
    * Polymarket UP_bid sinyalinin yön kararındaki ağırlığı [0, 1].
-   * Hibrit formül: `signal × (1-w) + market × w`. 0 = sadece Binance/OKX (eski);
-   * 0.7 (default) = Polymarket dominant — 82 market analizinde tick doğruluğu
-   * %55→%76 (+21 puan).
+   * Hibrit formül: `signal × (1-w) + market × w`. 0 = sadece Binance/OKX;
+   * 0.7 (default) = Polymarket dominant.
    */
   bonereaper_signal_w_market?: number | null;
   /**
-   * Composite skor EMA smoothing α ∈ (0, 1]. 1.0 (default) = smoothing yok —
-   * persistence K=2 zaten gürültü filtresi, EMA üst üste lag yaratıp kayıp veriyor.
-   * 24 market grid search optimum α=1.0, K=2 (+$530 vs α=0.10 +$465).
-   * 0.10-0.30 daha pürüzsüz ama yön değişiminde geç kalır.
+   * Composite skor EMA smoothing α ∈ (0, 1]. 1.0 (default) = smoothing yok
+   * (real bot uyumlu, anlık tepki). 0.5 → daha yumuşak ama yön değişiminde
+   * gecikme.
    */
   bonereaper_signal_ema_alpha?: number | null;
   /**
-   * Profit lock: aktif ise her iki tarafta da fill oluşup imbalance rebalance
-   * trigger altına düştüğünde yeni emir verilmez, pozisyon korunur.
-   * Default: false.
+   * Profit lock: aktif ise her iki tarafta da fill oluşup imbalance
+   * `bonereaper_profit_lock_imbalance` altına düştüğünde yeni emir durur.
+   * Pozisyon korunur. Default: false.
    */
   bonereaper_profit_lock?: boolean | null;
 }
@@ -483,15 +445,9 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   elis_lock_threshold: 0.98,
   elis_max_order_age_ms: 30000,
   // Bonereaper
-  bonereaper_bsi_threshold: 0.30,
-  bonereaper_scoop_threshold: 0.25,
-  bonereaper_lottery_enabled: false,
   bonereaper_signal_taker: true,
-  bonereaper_rebalance_taker: true,
-  bonereaper_rebalance_trigger: 50,
-  bonereaper_rebalance_when_signal_strong: false,
-  bonereaper_signal_persistence_k: 2,
-  bonereaper_conv_guard_window: 5,
+  bonereaper_profit_lock_imbalance: 50,
+  bonereaper_signal_persistence_k: 1,
   bonereaper_signal_w_market: 0.7,
   bonereaper_signal_ema_alpha: 1.0,
   bonereaper_profit_lock: false,

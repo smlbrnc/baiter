@@ -154,56 +154,31 @@ pub struct StrategyParams {
     pub elis_balance_factor: Option<f64>,
 
     // === Bonereaper parametreleri ===
-    /// BSI mutlak değer eşiği — yön kararı için primer sinyal. Default: 0.30
-    #[serde(default)]
-    pub bonereaper_bsi_threshold: Option<f64>,
-    /// Scoop tetikleyici — karşı tarafın ask fiyatı bu eşiğin altında ise scoop. Default: 0.25
-    #[serde(default)]
-    pub bonereaper_scoop_threshold: Option<f64>,
-    /// Lottery tail emri aktif mi? Default: false (yüksek risk — opt-in)
-    #[serde(default)]
-    pub bonereaper_lottery_enabled: Option<bool>,
-    /// Signal emirlerinde dominant taraf (bid > 0.50) için taker (ask) kullanılsın mı?
-    /// Default: true (live'da anında fill).
+    /// Signal emirlerinde taker (ask) kullanılsın mı? Default: true (live'da anında fill).
+    /// `false` ise best_bid'den maker GTC emir verilir.
     #[serde(default)]
     pub bonereaper_signal_taker: Option<bool>,
-    /// Rebalance emirlerinde dominant taraf (bid > 0.50) için taker (ask) kullanılsın mı?
-    /// Default: true (kritik imbalance düzeltmesinde anında fill).
+    /// Profit-lock için imbalance eşiği (share). |up_filled − down_filled| bu değerin
+    /// altında VE her iki tarafta da fill varsa profit_lock devreye girer.
+    /// Default 50.0.
     #[serde(default)]
-    pub bonereaper_rebalance_taker: Option<bool>,
-    /// Rebalance tetiklenme eşiği (share). Bu kadar imbalance oluşunca devreye girer.
-    /// Default 50.0 — 24 market grid search optimum; rebalance signal'a karşı çalıştığı
-    /// için yüksek trigger (=daha az tetik) daha iyi PnL veriyor (50: +$628, 20: +$513).
-    #[serde(default)]
-    pub bonereaper_rebalance_trigger: Option<f64>,
-    /// Signal güçlü iken (|effective_score - 5| > 2.5) rebalance pasif mi?
-    /// `false` → pasif (default, kayıp önler), `true` → her zaman aktif (eski davranış).
-    #[serde(default)]
-    pub bonereaper_rebalance_when_signal_strong: Option<bool>,
-    /// Signal yön onayı için kaç ardışık tick gerekli? K=1 mevcut anlık karar.
-    /// K=2 (default) → yeni yön için 2 ardışık tick onayı; flip-flop'u azaltır.
+    pub bonereaper_profit_lock_imbalance: Option<f64>,
+    /// Signal yön onayı için kaç ardışık tick gerekli? K=1 (default) anlık karar.
+    /// K=2+ → yeni yön için K ardışık tick onayı; flip-flop'u azaltır.
     #[serde(default)]
     pub bonereaper_signal_persistence_k: Option<u32>,
-    /// Convergence guard sliding window (tick sayısı). Bu kadar tick içinde herhangi
-    /// bir tick conv idiyse guard aktif. N=1 → mevcut anlık kontrol; N=5 (default)
-    /// conv intermittent durumlarda guard'ı stabil tutar.
-    #[serde(default)]
-    pub bonereaper_conv_guard_window: Option<u32>,
     /// Polymarket UP_bid sinyalinin composite içindeki ağırlığı [0, 1].
-    /// Yön kararı: `signal × (1-w) + market × w`. 0 = sadece Binance/OKX (eski);
-    /// 0.7 (default) = Polymarket dominant — 82 market analizinde %55→%76 doğruluk.
+    /// Yön kararı: `signal × (1-w) + market × w`. 0 = sadece Binance/OKX;
+    /// 0.7 (default) = Polymarket dominant.
     #[serde(default)]
     pub bonereaper_signal_w_market: Option<f64>,
-    /// Composite skor EMA smoothing α ∈ (0, 1]. 1.0 (default) = smoothing yok
-    /// — 24 market grid search'te en yüksek PnL veren değer (persistence K zaten
-    /// gürültü filtreliyor, EMA üst üste fazla → lag yaratıp kayıp). 0.10-0.30
-    /// arası daha pürüzsüz ama yön değişiminde geç kalır.
+    /// Composite skor EMA smoothing α ∈ (0, 1]. 1.0 (default) = smoothing yok.
+    /// 0.5 → yumuşak ama yön değişiminde gecikme.
     #[serde(default)]
     pub bonereaper_signal_ema_alpha: Option<f64>,
-    /// Profit lock: aktif ise her iki tarafta da fill oluşup imbalance rebalance
-    /// trigger'ın altına düştüğünde sinyal ve rebalance emirleri durur.
-    /// Market sonuna kadar mevcut pozisyon korunur, yeni emir verilmez.
-    /// Default: false (devre dışı).
+    /// Profit lock: aktif ise her iki tarafta da fill oluşup imbalance
+    /// `bonereaper_profit_lock_imbalance` altına düştüğünde sinyal emirleri durur.
+    /// Market sonuna kadar mevcut pozisyon korunur. Default: false.
     #[serde(default)]
     pub bonereaper_profit_lock: Option<bool>,
 }
@@ -237,32 +212,14 @@ impl StrategyParams {
     }
 
     // === Bonereaper accessors ===
-    pub fn bonereaper_bsi_threshold(&self) -> f64 {
-        self.bonereaper_bsi_threshold.unwrap_or(0.30).clamp(0.05, 2.0)
-    }
-    pub fn bonereaper_scoop_threshold(&self) -> f64 {
-        self.bonereaper_scoop_threshold.unwrap_or(0.25).clamp(0.05, 0.50)
-    }
-    pub fn bonereaper_lottery_enabled(&self) -> bool {
-        self.bonereaper_lottery_enabled.unwrap_or(false)
-    }
     pub fn bonereaper_signal_taker(&self) -> bool {
         self.bonereaper_signal_taker.unwrap_or(true)
     }
-    pub fn bonereaper_rebalance_taker(&self) -> bool {
-        self.bonereaper_rebalance_taker.unwrap_or(true)
-    }
-    pub fn bonereaper_rebalance_trigger(&self) -> f64 {
-        self.bonereaper_rebalance_trigger.unwrap_or(50.0).clamp(1.0, 200.0)
-    }
-    pub fn bonereaper_rebalance_when_signal_strong(&self) -> bool {
-        self.bonereaper_rebalance_when_signal_strong.unwrap_or(false)
+    pub fn bonereaper_profit_lock_imbalance(&self) -> f64 {
+        self.bonereaper_profit_lock_imbalance.unwrap_or(50.0).clamp(1.0, 200.0)
     }
     pub fn bonereaper_signal_persistence_k(&self) -> u32 {
         self.bonereaper_signal_persistence_k.unwrap_or(1).clamp(1, 20)
-    }
-    pub fn bonereaper_conv_guard_window(&self) -> u32 {
-        self.bonereaper_conv_guard_window.unwrap_or(5).clamp(1, 60)
     }
     pub fn bonereaper_signal_w_market(&self) -> f64 {
         self.bonereaper_signal_w_market.unwrap_or(0.7).clamp(0.0, 1.0)
@@ -270,7 +227,6 @@ impl StrategyParams {
     pub fn bonereaper_signal_ema_alpha(&self) -> f64 {
         self.bonereaper_signal_ema_alpha.unwrap_or(1.0).clamp(0.01, 1.0)
     }
-
     pub fn bonereaper_profit_lock(&self) -> bool {
         self.bonereaper_profit_lock.unwrap_or(false)
     }

@@ -56,24 +56,14 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
     params.elis_max_order_age_ms ?? STRATEGY_PARAMS_DEFAULTS.elis_max_order_age_ms;
 
   // ── Bonereaper ────────────────────────────────────────────────────────
-  const bonereaperBsiThreshold =
-    params.bonereaper_bsi_threshold ?? STRATEGY_PARAMS_DEFAULTS.bonereaper_bsi_threshold;
-  const bonereaperScoopThreshold =
-    params.bonereaper_scoop_threshold ?? STRATEGY_PARAMS_DEFAULTS.bonereaper_scoop_threshold;
-  const bonereaperLotteryEnabled =
-    params.bonereaper_lottery_enabled ?? STRATEGY_PARAMS_DEFAULTS.bonereaper_lottery_enabled;
   const bonereaperSignalTaker =
     params.bonereaper_signal_taker ?? STRATEGY_PARAMS_DEFAULTS.bonereaper_signal_taker;
-  const bonereaperRebalanceTaker =
-    params.bonereaper_rebalance_taker ?? STRATEGY_PARAMS_DEFAULTS.bonereaper_rebalance_taker;
-  const bonereaperRebalanceTrigger =
-    params.bonereaper_rebalance_trigger ?? STRATEGY_PARAMS_DEFAULTS.bonereaper_rebalance_trigger;
+  const bonereaperProfitLockImbalance =
+    params.bonereaper_profit_lock_imbalance ??
+    STRATEGY_PARAMS_DEFAULTS.bonereaper_profit_lock_imbalance;
   const bonereaperSignalPersistenceK =
     params.bonereaper_signal_persistence_k ??
     STRATEGY_PARAMS_DEFAULTS.bonereaper_signal_persistence_k;
-  const bonereaperConvGuardWindow =
-    params.bonereaper_conv_guard_window ??
-    STRATEGY_PARAMS_DEFAULTS.bonereaper_conv_guard_window;
   const bonereaperSignalWMarket =
     params.bonereaper_signal_w_market ??
     STRATEGY_PARAMS_DEFAULTS.bonereaper_signal_w_market;
@@ -360,89 +350,47 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
           <div>
             <SectionLabel icon={Target} title="Bonereaper parametreleri" />
             <p className="text-muted-foreground mt-1 text-sm">
-              5 dakikalık BTC-updown marketi için 2 saniyelik decision loop.
+              5 dakikalık BTC-updown marketi için 1 saniyelik decision loop.
               BUY-only; çıkış REDEEM ile kapanışta gerçekleşir.
             </p>
           </div>
 
           <div className="bg-muted/25 space-y-4 rounded-md border border-border/40 p-3">
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field
-                label="BSI eşiği"
-                tooltip="Binance BSI (Buy-Side Imbalance) mutlak değeri bu eşiği aşarsa BSI yönünde pozisyon kurulur (BSI > 0 → UP, BSI < 0 → DOWN). Eşiği aşmazsa best-bid karşılaştırması kullanılır. Default 0.30."
-                hint="0.05 – 2.00 (default 0.30)."
-              >
-                <Input
-                  type="number"
-                  step="0.05"
-                  min="0.05"
-                  max="2.00"
-                  value={bonereaperBsiThreshold}
-                  onChange={(e) =>
-                    patch({ bonereaper_bsi_threshold: Number(e.target.value) })
-                  }
-                />
-              </Field>
-              <Field
-                label="Scoop eşiği"
-                tooltip="Kapanışa ≤100s kaldığında karşı tarafın ask fiyatı bu eşiğin altına düşerse büyük lot scoop emri verilir. Karşı taraf settle'a yaklaşınca ucuzlar — scoop bu fırsatı yakalar. Default 0.25."
-                hint="0.05 – 0.50 (default 0.25)."
-              >
-                <Input
-                  type="number"
-                  step="0.01"
-                  min="0.05"
-                  max="0.50"
-                  value={bonereaperScoopThreshold}
-                  onChange={(e) =>
-                    patch({ bonereaper_scoop_threshold: Number(e.target.value) })
-                  }
-                />
-              </Field>
-            </div>
-
-            <ToggleRow
-              checked={bonereaperLotteryEnabled}
-              onChange={(v) => patch({ bonereaper_lottery_enabled: v })}
-              title="Lottery tail emri (riskli)"
-              description="Kapanışa ≤15s kaldığında herhangi bir tarafın ask ≤ $0.02 ise 10 000sh emir verilir. Beklenen değer teoride pozitif (100× ödül) ancak pratik başarı oranı düşük."
-              tooltip="Gözlemlenen tek örnekte 10 101sh @ $0.01 emri verildi, DOWN kazandı → −$101. Opt-in — bilinçli açın."
-            />
             <ToggleRow
               checked={bonereaperSignalTaker}
               onChange={(v) => patch({ bonereaper_signal_taker: v })}
-              title="Signal — dominant tarafta taker (ask)"
-              description="Sinyal yönünde fiyat > 0.50 (yükselen taraf) ise ask fiyatından taker emir verilir. Live modda anında fill; kaçan pozisyonu önler. Default: açık."
-              tooltip="bid > 0.50 ise ask fiyatı kullanılır (spread genellikle $0.01). bid ≤ 0.50 ise maker bid kullanılır."
+              title="Signal — taker (ask) kullan"
+              description="Açık ise her sinyal emri ask fiyatından (taker, anında fill). Kapalı ise bid fiyatından maker GTC limit emir verilir. Default: açık."
+              tooltip="Taker = anında fill ama %2 fee. Maker = fee 0% ama dolma garantisi yok."
             />
+
             <ToggleRow
-              checked={bonereaperRebalanceTaker}
-              onChange={(v) => patch({ bonereaper_rebalance_taker: v })}
-              title="Rebalance — dominant tarafta taker (ask)"
-              description="İmbalance düzeltme emirlerinde deficit taraf > 0.50 ise ask fiyatından taker emir verilir. Büyük dengesizliği hızla kapamak için kritik. Default: açık."
-              tooltip="Rebalance; UP/DOWN pozisyon farkı ≥ rebalance_trigger olunca tetiklenir. Deficit taraf yükselen ise maker bid fill'i geciktirir."
+              checked={bonereaperProfitLock}
+              onChange={(v) => patch({ bonereaper_profit_lock: v })}
+              title="Profit Lock"
+              description="Her iki tarafta da fill oluşup imbalance eşiğin altına düşünce yeni sinyal emirleri durur. Market sonuna kadar mevcut pozisyon korunur."
             />
 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Field
-                label="Rebalance trigger (share)"
-                tooltip="|UP_filled - DOWN_filled| ≥ bu değer olunca rebalance devreye girer. Eski sabit 5'ti — çok düşük, her tick tetiklenip karşı tarafa yığma yapıyordu. 24 market grid search'te trigger ne kadar yüksekse PnL o kadar iyi (rebalance signal'a karşı çalışıyordu). Default 50: dengeli — büyük dengesizliklerde devreye girer, küçükleri yok sayar. Aşırı yüksek (200+) rebalance'ı pratik olarak kapatır."
-                hint={`1 – 200 share (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_rebalance_trigger}).`}
+                label="Profit-lock imbalance (share)"
+                tooltip="|UP_filled - DOWN_filled| bu değerin altında VE her iki tarafta fill varsa profit_lock devreye girer (yeni emir verilmez). Profit Lock kapalı iken kullanılmaz."
+                hint={`1 – 200 share (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_profit_lock_imbalance}).`}
               >
                 <Input
                   type="number"
                   step="1"
                   min="1"
                   max="200"
-                  value={bonereaperRebalanceTrigger}
+                  value={bonereaperProfitLockImbalance}
                   onChange={(e) =>
-                    patch({ bonereaper_rebalance_trigger: Number(e.target.value) })
+                    patch({ bonereaper_profit_lock_imbalance: Number(e.target.value) })
                   }
                 />
               </Field>
               <Field
                 label="Signal persistence K (tick)"
-                tooltip="Yeni yön için kaç ardışık decision tick (~2sn/tick) onayı gerekli. K=1 → mevcut anlık karar (her tick yön değişebilir). K=2 → yumuşak filtre, flip-flop'u %30-50 azaltır. K=3+ → daha agresif, kazanç sessionlarda riskli."
+                tooltip="Yeni yön için kaç ardışık decision tick (1sn/tick) onayı gerekli. K=1 (default) → anlık karar, real bot uyumlu. K=2+ → flip-flop azaltır ama yön değişiminde gecikme yaratır."
                 hint={`1 – 20 tick (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_signal_persistence_k}).`}
               >
                 <Input
@@ -462,34 +410,8 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
 
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Field
-                label="Conv guard window (tick)"
-                tooltip="Convergence guard sliding window. Bu kadar son tick içinde herhangi bir tick'te bir taraf bid > 0.80 idiyse o tarafa karşı koruma aktif kalır. N=1 → mevcut anlık kontrol (conv geri çekildiğinde guard kapanır). N=5 (~10sn) intermittent conv durumlarda sürekli koruma sağlar."
-                hint={`1 – 60 tick (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_conv_guard_window}).`}
-              >
-                <Input
-                  type="number"
-                  step="1"
-                  min="1"
-                  max="60"
-                  value={bonereaperConvGuardWindow}
-                  onChange={(e) =>
-                    patch({ bonereaper_conv_guard_window: Number(e.target.value) })
-                  }
-                />
-              </Field>
-            </div>
-
-            <ToggleRow
-              checked={bonereaperProfitLock}
-              onChange={(v) => patch({ bonereaper_profit_lock: v })}
-              title="Profit Lock"
-              description="Her iki tarafta da fill oluşup imbalance rebalance trigger altına düşünce yeni sinyal ve rebalance emirleri durur. Market sonuna kadar mevcut pozisyon korunur."
-            />
-
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field
                 label="Polymarket sinyal ağırlığı"
-                tooltip="Yön kararında Polymarket UP_bid trend'inin Binance/OKX composite'a göre ağırlığı. Hibrit: signal×(1-w) + market×w. 82 market analizinde Polymarket sinyali %76 doğruluk verdi, composite %55. 0 = sadece Binance/OKX (eski), 1 = sadece Polymarket trend, 0.7 default optimum."
+                tooltip="Yön kararında Polymarket UP_bid trend'inin Binance/OKX composite'a göre ağırlığı. Hibrit: signal×(1-w) + market×w. 0 = sadece Binance/OKX, 1 = sadece Polymarket trend, 0.7 default."
                 hint={`0.0 – 1.0 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_signal_w_market}).`}
               >
                 <Input
@@ -505,7 +427,7 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
               </Field>
               <Field
                 label="Sinyal EMA smoothing α"
-                tooltip="Composite skoru EMA filtreden geçirir: ema = α×hybrid + (1-α)×prev_ema. α=1.0 (default) smoothing yok — persistence K zaten gürültü filtresi yaptığı için EMA üst üste lag yaratıyor. 24 market grid search'te en iyi PnL α=1.0, K=2 (+$530 vs α=0.10 +$465). 0.10-0.30 daha pürüzsüz ama yön değişiminde geç kalır."
+                tooltip="Composite skoru EMA filtreden geçirir: ema = α×hybrid + (1-α)×prev_ema. α=1.0 (default) smoothing yok — real bot uyumlu, anlık tepki. 0.5 → daha yumuşak ama yön değişiminde gecikme."
                 hint={`0.05 – 1.0 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_signal_ema_alpha}).`}
               >
                 <Input
@@ -526,31 +448,31 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
             <p className="font-medium text-foreground">Bonereaper — nasıl çalışır?</p>
             <ul className="list-disc space-y-1 pl-4">
               <li>
-                <strong>2 saniyelik döngü:</strong> Her çift saniyede bir karar
-                verilir; tek saniye tick'leri atlanır.
+                <strong>1 saniyelik döngü:</strong> Her saniyede karar verilir.
               </li>
               <li>
-                <strong>Yön kararı (tek seferlik):</strong> İlk OB snapshot'ında
-                BSI (|BSI| ≥ eşik) veya bid karşılaştırmasıyla UP/DOWN seçilir;
-                market boyunca değişmez.
+                <strong>Sinyal yön kararı:</strong> Hibrit composite (Binance/OKX × (1−w) + Polymarket UP_bid trend × w),
+                EMA smoothing, K-tick persistence. Real bot davranışıyla uyumlu (K=1, α=1.0).
               </li>
               <li>
-                <strong>Opening grid:</strong> Her iki tarafa mevcut ask'tan
-                GTC limit emir — Dutch Book tetikleyici. Piyasa hareket edince
-                stale emirler fill olur.
+                <strong>Dutch Book önceliği:</strong> <code>up_ask + dn_ask &lt; $1.00</code> ise
+                her iki tarafa eş zamanlı taker GTC emir → garantili kâr marjı.
               </li>
               <li>
-                <strong>Rebalance:</strong> UP/DOWN pozisyon farkı ≥ 50 share
-                olunca açık tarafa telafi emri verilir.
+                <strong>Signal emri (dinamik size):</strong> Sinyal kuvvetine göre 2x-7x ($10-$35);
+                multiplier = 2 + 5×|signal_ema|. Real bot medyan $10.54, p90 $32 ile uyumlu.
               </li>
               <li>
-                <strong>Scoop:</strong> Kapanışa ≤100s, karşı ask ≤{" "}
-                <code>scoop_threshold</code> → tiered lot (ask ne kadar
-                ucuzsa o kadar büyük).
+                <strong>avg_sum filtresi:</strong> Her iki tarafta pozisyon varken yeni emir
+                <code>new_avg + opp_avg &lt; 1.25</code> kontrolü (real bot p90 ~1.20).
               </li>
               <li>
-                <strong>Dutch Book:</strong> up_ask + dn_ask &lt; $1.00 →
-                her iki tarafa eş zamanlı 40-45sh emir → garantili kâr marjı.
+                <strong>Profit lock:</strong> Aktifken her iki tarafta fill + imbalance
+                eşiğin altına düşünce sinyal emirleri durur, pozisyon korunur.
+              </li>
+              <li>
+                <strong>Stale cancel:</strong> Açık signal emirleri bid'den 0.05'ten fazla
+                saparsa iptal edilir (price drift koruması).
               </li>
             </ul>
           </div>
