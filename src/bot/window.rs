@@ -207,8 +207,8 @@ struct WindowStreams {
 
 fn connect_streams(ctx: &Ctx, session: &MarketSession, label: &str) -> WindowStreams {
     ipc::log_line(label, "🔌 Connecting to Market WebSocket...");
-    let (event_tx, event_rx) = mpsc::channel::<PolymarketEvent>(1024);
-    let (book_tx, book_rx) = mpsc::channel::<PolymarketEvent>(256);
+    let (event_tx, event_rx) = mpsc::channel::<PolymarketEvent>(4096);
+    let (book_tx, book_rx) = mpsc::channel::<PolymarketEvent>(2048);
     let chans = WsChannels { book_tx, event_tx };
     let ws_base = ctx.env_.clob_ws_base.clone();
     let market_ws = tokio::spawn(run_market_ws(

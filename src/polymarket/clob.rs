@@ -47,6 +47,7 @@ pub fn shared_http_client() -> Client {
         .http2_keep_alive_interval(Duration::from_secs(20))
         .http2_keep_alive_timeout(Duration::from_secs(5))
         .http2_keep_alive_while_idle(true)
+        .connect_timeout(Duration::from_secs(3))
         .timeout(Duration::from_secs(10))
         .user_agent("baiter-pro/0.1")
         .build()

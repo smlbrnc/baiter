@@ -61,6 +61,15 @@ dotenvy = "0.15.7"
 chrono-tz = { version = "0.10.4", default-features = false }
 rand = "0.10.1"
 async-trait = "0.1.89"
+smallvec = { version = "1.15.1", features = ["serde"] }
 
 [dev-dependencies]
 tokio = { version = "1.52.1", features = ["rt-multi-thread", "macros", "test-util"] }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+panic = "abort"
+strip = true
+overflow-checks = false

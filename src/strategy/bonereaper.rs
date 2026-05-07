@@ -15,7 +15,10 @@
 //! `bonereaper:signal:{up,down}` — sinyal yönlü opener (her döngü)
 //! `bonereaper:dutch:{up,down}`  — Dutch Book arbitraj
 
+use std::collections::VecDeque;
+
 use serde::{Deserialize, Serialize};
+use smallvec::SmallVec;
 
 use super::common::{Decision, OpenOrder, PlannedOrder, StrategyContext};
 use crate::types::{OrderType, Outcome, Side};
@@ -77,11 +80,11 @@ const fn reason_signal(dir: Outcome) -> &'static str {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum BonereaperState {
-    /// OB henüz hazır değil; ilk tick beklenıyor.
+    /// OB henüz hazır değil; ilk tick bekleniyor.
     Idle,
     /// Market aktif — sinyal döngüsü çalışıyor.
     Active(Box<BonereaperActive>),
-    /// Market kapandı ve POST_MARKET_WAIT aşıldı.
+    /// Market kapandı / pasif (mevcut akışta kullanılmıyor; geriye uyumlu).
     Done,
 }
 
@@ -93,9 +96,9 @@ impl Default for BonereaperState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BonereaperActive {
-    /// Son 2-sn döngüsünde verilen sinyal yönü (yön değişimi tespiti için).
+    /// Son tick'te verilen sinyal yönü (yön değişimi tespiti için).
     pub last_signal_dir: Option<Outcome>,
-    /// Son işlem yapılan çift saniye (2-sn gate için).
+    /// Son işlem yapılan saniye (1-sn TICK gate için).
     pub last_acted_even_sec: u64,
     /// Persistence K-tick onayı için kullanılan onaylanmış (confirmed) yön.
     /// `None` → henüz hiç sinyal görülmedi.
@@ -116,9 +119,9 @@ pub struct BonereaperActive {
     #[serde(default)]
     pub last_signal_trade_ms: u64,
     /// Multi-timeframe momentum hesabı için son 240 saniyenin composite (effective_score)
-    /// değerleri. FIFO buffer; max 240 entry. V3 stili linear regression slope hesabı için.
+    /// değerleri. VecDeque FIFO; pop_front O(1). V3 stili linear regression slope hesabı için.
     #[serde(default)]
-    pub composite_history: Vec<f64>,
+    pub composite_history: VecDeque<f64>,
 }
 
 // ─────────────────────────────────────────────
@@ -153,7 +156,7 @@ impl BonereaperEngine {
                     pending_count: 0,
                     signal_ema: None,
                     last_signal_trade_ms: 0,
-                    composite_history: Vec::with_capacity(240),
+                    composite_history: VecDeque::with_capacity(COMPOSITE_HISTORY_MAX),
                 };
                 (BonereaperState::Active(Box::new(active)), Decision::NoOp)
             }
@@ -165,9 +168,13 @@ impl BonereaperEngine {
                     return (BonereaperState::Active(st), Decision::NoOp);
                 }
 
-                // ── 2-SANİYE GATE ───────────────────────────────────────────
-                if rel_secs % TICK_INTERVAL_SECS != 0 {
-                    return (BonereaperState::Active(st), Decision::NoOp);
+                // ── TICK GATE (1 sn) ─────────────────────────────────────────
+                // TICK_INTERVAL_SECS değişebilir (config); modulo gerçek hesap.
+                #[allow(clippy::modulo_one)]
+                {
+                    if rel_secs % TICK_INTERVAL_SECS != 0 {
+                        return (BonereaperState::Active(st), Decision::NoOp);
+                    }
                 }
                 if rel_secs == st.last_acted_even_sec {
                     return (BonereaperState::Active(st), Decision::NoOp);
@@ -243,10 +250,11 @@ impl BonereaperEngine {
                 } else {
                     0
                 };
-                if comp_dir == 0 || mkt_dir == 0 || slope_dir == 0
-                    || comp_dir != mkt_dir
-                    || mkt_dir != slope_dir
-                {
+                // Tüm sıfır check + farklılık check tek değişkende toplandı:
+                //   comp_dir == 0 ise: ilk koşul tetiklenir
+                //   mkt_dir/slope_dir == 0 ise: comp_dir != 0 olduğundan != ile yakalanır
+                //   comp/mkt/slope farklıysa: != koşulları yakalar
+                if comp_dir == 0 || comp_dir != mkt_dir || comp_dir != slope_dir {
                     let stale = cancel_stale(ctx);
                     return (BonereaperState::Active(st), stale);
                 }
@@ -254,12 +262,16 @@ impl BonereaperEngine {
                 // ── V3 TREND FILTER ──────────────────────────────────────────
                 // Counter-trend zayıf sinyal: BLOK. Son 60sn composite ortalaması ile
                 // mevcut sinyal yönü ters ise ve smoothed < 0.40 ise trade alma.
-                if st.composite_history.len() >= TREND_FILTER_LOOKBACK {
-                    let n = st.composite_history.len();
-                    let trend_avg: f64 = st.composite_history[n - TREND_FILTER_LOOKBACK..]
+                // VecDeque slice yerine iter().skip() — alloc'suz erişim.
+                let hist_len = st.composite_history.len();
+                if hist_len >= TREND_FILTER_LOOKBACK {
+                    let trend_sum: f64 = st
+                        .composite_history
                         .iter()
-                        .sum::<f64>()
-                        / TREND_FILTER_LOOKBACK as f64;
+                        .skip(hist_len - TREND_FILTER_LOOKBACK)
+                        .copied()
+                        .sum();
+                    let trend_avg = trend_sum / TREND_FILTER_LOOKBACK as f64;
                     let trend_dir: i8 = if trend_avg > TREND_FILTER_NEUTRAL { 1 } else { -1 };
                     let signal_dir_now: i8 = if smoothed > 0.0 { 1 } else { -1 };
                     if trend_dir != signal_dir_now && smoothed_abs < TREND_FILTER_OVERRIDE {
@@ -275,11 +287,11 @@ impl BonereaperEngine {
                 if prev_dir == Some(new_dir.opposite()) {
                     // Eski yöndeki signal emirlerini iptal + yeni emir tek adımda.
                     // Yön değişimi cooldown'a tabi DEĞİL — anlık reaksiyon için.
-                    let mut cancel_ids: Vec<String> = Vec::with_capacity(ctx.open_orders.len());
+                    // SmallVec stack-allocated (≤8 element için heap'e gitmez).
+                    let mut cancel_ids: SmallVec<[String; 8]> = SmallVec::new();
+                    let opp = new_dir.opposite();
                     for o in ctx.open_orders.iter() {
-                        if o.reason.starts_with("bonereaper:signal:")
-                            && o.outcome == new_dir.opposite()
-                        {
+                        if o.outcome == opp && o.reason.starts_with("bonereaper:signal:") {
                             cancel_ids.push(o.id.clone());
                         }
                     }
@@ -292,13 +304,13 @@ impl BonereaperEngine {
                         return (
                             BonereaperState::Active(st),
                             Decision::CancelAndPlace {
-                                cancels: cancel_ids,
+                                cancels: cancel_ids.into_vec(),
                                 places: vec![order],
                             },
                         );
                     }
                     if !cancel_ids.is_empty() {
-                        return (BonereaperState::Active(st), Decision::CancelOrders(cancel_ids));
+                        return (BonereaperState::Active(st), Decision::CancelOrders(cancel_ids.into_vec()));
                     }
                     return (BonereaperState::Active(st), Decision::NoOp);
                 }
@@ -314,7 +326,7 @@ impl BonereaperEngine {
                 }
 
                 // Aynı yön: mevcut signal emirlerini iptal et (fiyat tazeleme) + yenisini koy.
-                let mut stale_signal_ids: Vec<String> = Vec::with_capacity(ctx.open_orders.len());
+                let mut stale_signal_ids: SmallVec<[String; 8]> = SmallVec::new();
                 for o in ctx.open_orders.iter() {
                     if o.reason.starts_with("bonereaper:signal:") {
                         stale_signal_ids.push(o.id.clone());
@@ -329,7 +341,7 @@ impl BonereaperEngine {
                     return (
                         BonereaperState::Active(st),
                         Decision::CancelAndPlace {
-                            cancels: stale_signal_ids,
+                            cancels: stale_signal_ids.into_vec(),
                             places: vec![order],
                         },
                     );
@@ -368,11 +380,11 @@ fn signal_direction_persistent(
     ctx: &StrategyContext<'_>,
     k: u32,
 ) -> Outcome {
-    // 1. Composite history güncelle (FIFO, max 240 entry).
-    st.composite_history.push(ctx.effective_score);
-    if st.composite_history.len() > COMPOSITE_HISTORY_MAX {
-        st.composite_history.remove(0);
+    // 1. Composite history güncelle (FIFO, max 240 entry, VecDeque O(1)).
+    if st.composite_history.len() >= COMPOSITE_HISTORY_MAX {
+        st.composite_history.pop_front();
     }
+    st.composite_history.push_back(ctx.effective_score);
 
     // 2. Multi-timeframe momentum (akademik v3 stili).
     let momentum_signal = multi_tf_momentum(&st.composite_history);
@@ -512,14 +524,14 @@ fn check_dutch_book(ctx: &StrategyContext<'_>) -> Option<Vec<PlannedOrder>> {
         return None;
     }
     let size = (ctx.order_usdc / up_ask.min(dn_ask)).floor();
-    let mut orders = Vec::with_capacity(2);
+    let mut orders: SmallVec<[PlannedOrder; 2]> = SmallVec::new();
     if let Some(o) = make_buy(ctx, Outcome::Up, up_ask, size, "bonereaper:dutch:up") {
         orders.push(o);
     }
     if let Some(o) = make_buy(ctx, Outcome::Down, dn_ask, size, "bonereaper:dutch:down") {
         orders.push(o);
     }
-    if orders.is_empty() { None } else { Some(orders) }
+    if orders.is_empty() { None } else { Some(orders.into_vec()) }
 }
 
 // ─────────────────────────────────────────────
@@ -566,10 +578,11 @@ fn make_buy(
 }
 
 /// Current bid'den `STALE_SPREAD_MAX`'tan fazla sapan signal emirlerini iptal et.
+/// SmallVec stack-allocated; 8'den fazla open signal order nadirdir.
 fn cancel_stale(ctx: &StrategyContext<'_>) -> Decision {
-    let mut ids: Vec<String> = Vec::with_capacity(ctx.open_orders.len());
+    let mut ids: SmallVec<[String; 8]> = SmallVec::new();
     for o in ctx.open_orders.iter() {
-        if !o.reason.starts_with("bonereaper:signal:") || o.side != Side::Buy {
+        if o.side != Side::Buy || !o.reason.starts_with("bonereaper:signal:") {
             continue;
         }
         let cur_bid = ctx.best_bid(o.outcome);
@@ -577,46 +590,57 @@ fn cancel_stale(ctx: &StrategyContext<'_>) -> Decision {
             ids.push(o.id.clone());
         }
     }
-    if ids.is_empty() { Decision::NoOp } else { Decision::CancelOrders(ids) }
+    if ids.is_empty() { Decision::NoOp } else { Decision::CancelOrders(ids.into_vec()) }
 }
 
 // ─────────────────────────────────────────────
 // V3 Triple Gate Helpers — Multi-timeframe momentum
 // ─────────────────────────────────────────────
 
-/// Linear regression slope hesabı (least squares).
-/// Sıralı değerler için en iyi fit doğrunun eğimini döndürür.
-fn linear_regression_slope(values: &[f64]) -> f64 {
-    let n = values.len();
+/// Linear regression slope hesabı (least squares) — VecDeque tail'ine yakın
+/// `n` element üzerinde çalışır. `denom` matematiksel formula ile O(1) hesaplanır:
+///
+/// Σ(i - x_mean)² for i in 0..n  =  n × (n² − 1) / 12
+///
+/// Bu yüzden tek `for` loop gerekir (numerator için). Veri kaynağı `VecDeque` slice
+/// olabilir veya bir `&[f64]`; iter API ile çift slice (head/tail) durumu da handle edilir.
+#[inline]
+fn linear_regression_slope_iter<I>(iter: I, n: usize) -> f64
+where
+    I: Iterator<Item = f64> + Clone,
+{
     if n < 2 {
         return 0.0;
     }
     let n_f = n as f64;
     let x_mean = (n_f - 1.0) / 2.0;
-    let y_mean: f64 = values.iter().sum::<f64>() / n_f;
-    let mut num = 0.0;
-    let mut denom = 0.0;
-    for (i, v) in values.iter().enumerate() {
-        let dx = i as f64 - x_mean;
-        num += dx * (v - y_mean);
-        denom += dx * dx;
+    let y_mean: f64 = iter.clone().sum::<f64>() / n_f;
+    // O(1) denominator: Σ(i - x_mean)² = n(n² − 1) / 12
+    let denom = n_f * (n_f * n_f - 1.0) / 12.0;
+    if denom == 0.0 {
+        return 0.0;
     }
-    if denom == 0.0 { 0.0 } else { num / denom }
+    let mut num = 0.0;
+    for (i, v) in iter.enumerate() {
+        num += (i as f64 - x_mean) * (v - y_mean);
+    }
+    num / denom
 }
 
-/// Multi-timeframe momentum sinyali — composite history üzerinde 30s/60s/120s/240s
-/// linear regression slope'larının ağırlıklı toplamı. v3 stilinde long lookback dominant.
-/// Sonuç clamp[-1, +1].
-fn multi_tf_momentum(history: &[f64]) -> f64 {
+/// Multi-timeframe momentum sinyali — composite history (VecDeque) üzerinde
+/// 30s/60s/120s/240s linear regression slope'larının ağırlıklı toplamı.
+/// v3 stilinde long lookback dominant. Sonuç clamp[-1, +1].
+fn multi_tf_momentum(history: &VecDeque<f64>) -> f64 {
     let mut signal = 0.0;
+    let len = history.len();
     for (tf, w) in MULTI_TF_LOOKBACKS.iter().zip(MULTI_TF_WEIGHTS.iter()) {
-        let len = history.len();
-        let slope = if len >= *tf {
-            let recent = &history[len - tf..];
-            (linear_regression_slope(recent) * 50.0).clamp(-1.0, 1.0)
-        } else {
-            0.0
-        };
+        if len < *tf {
+            continue;
+        }
+        // VecDeque'nin son `tf` elemanını iter ile geç (alloc'suz).
+        let skip = len - tf;
+        let iter = history.iter().skip(skip).copied();
+        let slope = (linear_regression_slope_iter(iter, *tf) * 50.0).clamp(-1.0, 1.0);
         signal += slope * w;
     }
     signal.clamp(-1.0, 1.0)
