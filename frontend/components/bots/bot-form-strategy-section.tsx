@@ -56,6 +56,8 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
     params.elis_max_order_age_ms ?? STRATEGY_PARAMS_DEFAULTS.elis_max_order_age_ms;
   const elisImpFailCooldownMs =
     params.elis_imp_fail_cooldown_ms ?? STRATEGY_PARAMS_DEFAULTS.elis_imp_fail_cooldown_ms;
+  const elisImbalanceTakerThreshold =
+    params.elis_imbalance_taker_threshold ?? STRATEGY_PARAMS_DEFAULTS.elis_imbalance_taker_threshold;
 
   // ── Bonereaper ────────────────────────────────────────────────────────
   const bonereaperSignalTaker =
@@ -193,18 +195,31 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
               </Field>
             </div>
 
-            {/* P4 Improvement fail cooldown */}
-            <Field
-              label="P4 — Improvement fail cooldown (ms)"
-              tooltip="P4 improvement başarısız olunca (avg pair cost yeterince düşmüyorsa) bu süre kadar yeni emir verilmez. Mevcut maker emirlere dolma fırsatı tanır. 97 market simülasyonu: 30sn → $146 PnL (2sn NoOp: $73)."
-              hint={`5 000 – 60 000 ms (default ${STRATEGY_PARAMS_DEFAULTS.elis_imp_fail_cooldown_ms}).`}
-            >
-              <Input
-                type="number" step="5000" min="5000" max="60000"
-                value={elisImpFailCooldownMs}
-                onChange={(e) => patch({ elis_imp_fail_cooldown_ms: Number(e.target.value) })}
-              />
-            </Field>
+            {/* P4 Improvement fail cooldown + Inventory taker threshold */}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              <Field
+                label="P4 — Improvement fail cooldown (ms)"
+                tooltip="P4 improvement başarısız olunca (avg pair cost yeterince düşmüyorsa) bu süre kadar yeni emir verilmez. Mevcut maker emirlere dolma fırsatı tanır. 97 market simülasyonu: 30sn → $146 PnL (2sn NoOp: $73)."
+                hint={`5 000 – 60 000 ms (default ${STRATEGY_PARAMS_DEFAULTS.elis_imp_fail_cooldown_ms}).`}
+              >
+                <Input
+                  type="number" step="5000" min="5000" max="60000"
+                  value={elisImpFailCooldownMs}
+                  onChange={(e) => patch({ elis_imp_fail_cooldown_ms: Number(e.target.value) })}
+                />
+              </Field>
+              <Field
+                label="Inventory taker threshold (share)"
+                tooltip="|up_filled - down_filled| bu eşiği aşarsa weaker side ASK fiyatından (taker) alınır → anında dengeleme. Avellaneda-Stoikov inventory skew + cascade exit hibrit yaklaşımı. 0 = kapalı. 54 market simülasyonu: thr=100 → +%57 PnL ($47→$74), 0 zarar."
+                hint={`0 (kapalı) veya 50–200 share (default ${STRATEGY_PARAMS_DEFAULTS.elis_imbalance_taker_threshold}).`}
+              >
+                <Input
+                  type="number" step="20" min="0" max="500"
+                  value={elisImbalanceTakerThreshold}
+                  onChange={(e) => patch({ elis_imbalance_taker_threshold: Number(e.target.value) })}
+                />
+              </Field>
+            </div>
           </div>
 
           {/* Elis özet kartı */}
@@ -234,6 +249,12 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                 <strong>P4 Imp.Fail Cooldown:</strong> Improvement geçemeyince{" "}
                 <code>imp_fail_cooldown_ms</code> (30sn) bekle — mevcut maker
                 emirlere dolma fırsatı. Sim: 2× daha yüksek PnL.
+              </li>
+              <li>
+                <strong>Inventory Taker (Avellaneda-Stoikov):</strong>{" "}
+                <code>|q| &gt; threshold</code> (default 100) ise weaker side ASK
+                ile anında doldurulur (cascade exit). Tek-taraflı pozisyon
+                varyansını engeller. Sim: +%57 PnL.
               </li>
               <li>
                 <strong>P6 Stale:</strong> <code>max_order_age_ms</code>&apos;den

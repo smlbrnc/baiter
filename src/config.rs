@@ -152,6 +152,12 @@ pub struct StrategyParams {
     /// fırsat verir. Simülasyon optimumu: 30_000. Default: 30000
     #[serde(default)]
     pub elis_imp_fail_cooldown_ms: Option<u64>,
+    /// Inventory imbalance taker threshold: |up_filled - down_filled| bu eşiği
+    /// aşarsa weaker side ASK fiyatından (taker) alınır → anında dengeleme.
+    /// Avellaneda-Stoikov inventory skew + cascade exit hibrit yaklaşımı.
+    /// Bot 67 simülasyonu: thr=100 → +%57 PnL, 0 zarar. Default: 100
+    #[serde(default)]
+    pub elis_imbalance_taker_threshold: Option<f64>,
     // Eski alanlar (backend artık kullanmıyor, DB uyumu için tutuldu)
     #[serde(default)]
     pub elis_spread_threshold: Option<f64>,
@@ -265,6 +271,9 @@ pub struct ElisParams {
     /// Mevcut maker emirlere dolma fırsatı verir. Sim optimumu: 30_000.
     /// Default: 30_000
     pub imp_fail_cooldown_ms: u64,
+    /// Inventory imbalance taker threshold: |q| > threshold ise weaker side
+    /// ASK'tan alınır (anında dengeleme). 0 = kapalı. Default: 100.0
+    pub imbalance_taker_threshold: f64,
 }
 
 impl Default for ElisParams {
@@ -279,6 +288,7 @@ impl Default for ElisParams {
             lock_threshold: 0.98,
             max_order_age_ms: 30_000,
             imp_fail_cooldown_ms: 30_000,
+            imbalance_taker_threshold: 100.0,
         }
     }
 }
@@ -298,6 +308,7 @@ impl ElisParams {
             lock_threshold: p.elis_lock_threshold.unwrap_or(d.lock_threshold),
             max_order_age_ms: p.elis_max_order_age_ms.unwrap_or(d.max_order_age_ms),
             imp_fail_cooldown_ms: p.elis_imp_fail_cooldown_ms.unwrap_or(d.imp_fail_cooldown_ms),
+            imbalance_taker_threshold: p.elis_imbalance_taker_threshold.unwrap_or(d.imbalance_taker_threshold),
         }
     }
 }

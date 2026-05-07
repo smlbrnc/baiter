@@ -164,13 +164,28 @@ impl ElisEngine {
                 if !bsi_both_ok(ctx, p.bsi_filter_threshold) { noop!(); }
 
                 // Fiyat seçimi: dominant → ask (taker), weaker → bid (maker).
-                let (up_price, dn_price) = if up_bid > dn_bid {
+                let (mut up_price, mut dn_price) = if up_bid > dn_bid {
                     (ctx.up_best_ask, dn_bid)
                 } else if dn_bid > up_bid {
                     (up_bid, ctx.down_best_ask)
                 } else {
                     (up_bid, dn_bid)
                 };
+
+                // ── INVENTORY-ADJUSTED PRICING (Avellaneda-Stoikov inspired) ──
+                // |q| > threshold ise weaker side ASK'tan alınır (anında dengeleme).
+                // Bot 67 simulation: thr=100 → +%57 PnL, 0 zarar.
+                // q > 0 (UP fazla) → DOWN @ ASK (taker) | q < 0 → UP @ ASK (taker)
+                if p.imbalance_taker_threshold > 0.0 {
+                    let q = ctx.metrics.up_filled - ctx.metrics.down_filled;
+                    if q.abs() > p.imbalance_taker_threshold {
+                        if q > 0.0 {
+                            dn_price = ctx.down_best_ask;  // DOWN'u taker yap
+                        } else {
+                            up_price = ctx.up_best_ask;    // UP'ı taker yap
+                        }
+                    }
+                }
 
                 // Emir boyutu: max(base + accum, min_shares_for_1usd_notional).
                 let base = p.max_buy_order_size;

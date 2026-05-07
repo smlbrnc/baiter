@@ -87,6 +87,12 @@ export interface StrategyParams {
    * Mevcut maker emirlere dolma fırsatı verir. Sim optimumu 30000. Default 30000.
    */
   elis_imp_fail_cooldown_ms?: number | null;
+  /**
+   * Inventory imbalance taker threshold: |up_filled - down_filled| bu eşiği
+   * aşarsa weaker side ASK fiyatından (taker) alınır. Avellaneda-Stoikov +
+   * cascade exit hibrit. 0 = kapalı. Sim optimumu 100. Default 100.
+   */
+  elis_imbalance_taker_threshold?: number | null;
 
   // ── Bonereaper ───────────────────────────────────────────────────────────
   /**
@@ -450,6 +456,7 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   elis_lock_threshold: 0.98,
   elis_max_order_age_ms: 30000,
   elis_imp_fail_cooldown_ms: 30000,
+  elis_imbalance_taker_threshold: 100,
   // Bonereaper
   bonereaper_signal_taker: true,
   bonereaper_profit_lock_imbalance: 50,
