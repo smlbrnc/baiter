@@ -31,6 +31,17 @@ const STALE_SPREAD_MAX: f64 = 0.05;
 /// Yön değişiminde bu cooldown atlanır (anlık reaksiyon için).
 /// 3sn → ~100 trade/5dk markette (real bot medyan 73 trade/market ile uyumlu).
 const SAME_DIR_COOLDOWN_MS: u64 = 3000;
+/// Sinyal kuvveti minimum eşiği (|signal_ema|).
+/// Bu eşiğin altında sinyal "kararsız" sayılır ve trade alınmaz.
+/// Real bot pattern: 7 saatte sadece 23 BTC 5m market açtı; biz 84 açtık.
+/// Filter kararsız (UP_bid 0.40-0.60 nötr) marketleri pas geçer.
+/// Simülasyon (118 market): cost -%36, PnL +%141, win rate +11 puan.
+const SIGNAL_STRENGTH_MIN: f64 = 0.20;
+/// Dynamic size multiplier eşikleri — signal kuvvetine göre 1x/2x/3x size.
+/// Real bot pattern: medyan $12 trade ama p90 $48 (büyük volume güçlü sinyallerde).
+/// Multiplier ile order_usdc * 1/2/3 kullanılır.
+const DYNAMIC_SIZE_STRONG: f64 = 0.7;  // > 0.7 → 3x
+const DYNAMIC_SIZE_MEDIUM: f64 = 0.5;  // > 0.5 → 2x
 
 // Reason etiketleri — `format!()` allocation'larını eler (hot path'te tick başına 1 alloc tasarrufu).
 #[inline]
@@ -172,6 +183,16 @@ impl BonereaperEngine {
 
                 let persistence_k = ctx.strategy_params.bonereaper_signal_persistence_k();
                 let new_dir = signal_direction_persistent(&mut st, ctx, persistence_k);
+
+                // ── SIGNAL STRENGTH FILTER ───────────────────────────────────
+                // Sinyal kuvveti (|signal_ema|) eşik altında ise market "kararsız"
+                // sayılır ve trade alınmaz. Real bot da bu marketlere girmiyor
+                // (UP_bid ≈ 0.50 nötr bölge). Simülasyon: cost -%36, PnL +%141.
+                let smoothed_abs = st.signal_ema.unwrap_or(0.0).abs();
+                if smoothed_abs < SIGNAL_STRENGTH_MIN {
+                    let stale = cancel_stale(ctx);
+                    return (BonereaperState::Active(st), stale);
+                }
 
                 // Yön değiştiyse eski signal emirlerini iptal et.
                 let prev_dir = st.last_signal_dir;
@@ -338,21 +359,25 @@ fn signal_direction_persistent(
 }
 
 
-/// Sinyal yönünde emir — sabit size + asimetrik avg_sum filtresi.
+/// Sinyal yönünde emir — dinamik size + asimetrik avg_sum filtresi.
 ///
 /// **Fiyat:** `signal_taker=true` → `best_ask` (taker, anında fill).
 ///             `signal_taker=false` → `best_bid` (maker, GTC limit).
 ///
-/// **Boyut (sabit):** `size = ceil(order_usdc / price)` — `order_usdc` botun
-/// genel ayarı (default 10). Real bot medyan $12.32 ile uyumlu (5dk markette
-/// ~100 trade × $10 = $1000 cost; real bot ortalaması ~$1700/market).
+/// **Boyut (dinamik 1x/2x/3x):** Signal kuvvetine göre çarpan:
+///   - `|signal_ema| > 0.7` → 3x (çok güçlü sinyal)
+///   - `|signal_ema| > 0.5` → 2x (güçlü sinyal)
+///   - aksi → 1x (default)
+///
+/// `size = ceil(order_usdc * multiplier / price)`. order_usdc default 10
+/// → dinamik aralık $10-$30. Real bot medyan $12, p90 $48 ile uyumlu.
 ///
 /// **avg_sum filtresi (yalnız pahalı taraf, bid > 0.50):**
 ///   Karşı tarafta zaten pozisyon varsa (`opp_filled > 0`) ve mevcut yönde de
 ///   pozisyon varsa (`cur_filled > 0`), yeni alımın etkisiyle `new_avg + opp_avg ≥ 1.25`
 ///   olacaksa emir verilmez. Real bot p90 ~1.20'ye yakın eşik.
 fn signal_order(
-    _st: &BonereaperActive,
+    st: &BonereaperActive,
     ctx: &StrategyContext<'_>,
     dir: Outcome,
 ) -> Option<PlannedOrder> {
@@ -368,7 +393,16 @@ fn signal_order(
     if price <= 0.0 {
         return None;
     }
-    let size = (ctx.order_usdc / price).ceil();
+    let s = st.signal_ema.unwrap_or(0.0).abs();
+    let multiplier = if s > DYNAMIC_SIZE_STRONG {
+        3.0
+    } else if s > DYNAMIC_SIZE_MEDIUM {
+        2.0
+    } else {
+        1.0
+    };
+    let usdc = ctx.order_usdc * multiplier;
+    let size = (usdc / price).ceil();
     if bid > 0.50 {
         let m = ctx.metrics;
         let (cur_filled, cur_avg, opp_filled, opp_avg) = match dir {
