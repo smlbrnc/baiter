@@ -192,18 +192,15 @@ impl ElisEngine {
                 };
 
                 let base = p.max_buy_order_size;
-                // Minimum notional koruması: `size * price < api_min_order_size` durumunda
-                // emir reddedilir. Her fiyat seviyesinde en az api_min_order_size kadar
-                // notional üretecek şekilde size'ı tabanla karşılaştır.
-                // Örnek: min=5 USDC, price=0.24 → min_shares=ceil(5/0.24)=21
-                let min_up = if up_price > 0.0 {
-                    (ctx.api_min_order_size / up_price).ceil()
-                } else { 1.0 };
-                let min_dn = if dn_price > 0.0 {
-                    (ctx.api_min_order_size / dn_price).ceil()
-                } else { 1.0 };
-                let up_size = (base + accum_up).max(min_up);
-                let dn_size = (base + accum_dn).max(min_dn);
+                // Polymarket minimum notional: notional kesinlikle $1.00 ÜZERİNDE olmalı
+                // (= strictly > $1.00). `floor(1.0 / price) + 1` her zaman bunu garanti eder.
+                // Örn: price=0.05 → floor(20)+1=21, 21×0.05=$1.05 > $1 ✓
+                //      price=0.24 → floor(4.16)+1=5,  5×0.24=$1.20  > $1 ✓
+                let min_shares = |p: f64| -> f64 {
+                    if p <= 0.0 { 2.0 } else { (1.0_f64 / p).floor() + 1.0 }
+                };
+                let up_size = (base + accum_up).max(min_shares(up_price));
+                let dn_size = (base + accum_dn).max(min_shares(dn_price));
 
                 // ── P4: Improvement-based decision ───────────────────────────
                 // Mevcut fill varsa yeni alımın avg pair cost'u yeterince
