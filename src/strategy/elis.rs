@@ -192,8 +192,18 @@ impl ElisEngine {
                 };
 
                 let base = p.max_buy_order_size;
-                let up_size = base + accum_up;
-                let dn_size = base + accum_dn;
+                // Minimum notional koruması: `size * price < api_min_order_size` durumunda
+                // emir reddedilir. Her fiyat seviyesinde en az api_min_order_size kadar
+                // notional üretecek şekilde size'ı tabanla karşılaştır.
+                // Örnek: min=5 USDC, price=0.24 → min_shares=ceil(5/0.24)=21
+                let min_up = if up_price > 0.0 {
+                    (ctx.api_min_order_size / up_price).ceil()
+                } else { 1.0 };
+                let min_dn = if dn_price > 0.0 {
+                    (ctx.api_min_order_size / dn_price).ceil()
+                } else { 1.0 };
+                let up_size = (base + accum_up).max(min_up);
+                let dn_size = (base + accum_dn).max(min_dn);
 
                 // ── P4: Improvement-based decision ───────────────────────────
                 // Mevcut fill varsa yeni alımın avg pair cost'u yeterince
