@@ -173,8 +173,14 @@ impl ElisEngine {
                     return (ElisState::Idle { accum_up, accum_dn }, Decision::NoOp);
                 }
 
-                // ── P5: BSI filter — aşırı tek yönlü akış kontrolü ───────────
+                // ── P5: BSI filter — ÇİFT ALIM ZORUNLULUĞU ─────────────────
+                // BSI bir tarafı blokluyorsa TOPLAM işlem yapılmaz.
+                // Tek taraflı alım → momentum bahsi (dutch book değil) → zarar riski.
+                // Her iki tarafın aynı anda alınabilmesi gerekir.
                 let (up_allowed, dn_allowed) = bsi_filter(ctx, p.bsi_filter_threshold);
+                if !up_allowed || !dn_allowed {
+                    return (ElisState::Idle { accum_up, accum_dn }, Decision::NoOp);
+                }
 
                 // Dominant taraf ask, weaker taraf bid'den emir.
                 let (up_price, dn_price) = if up_bid > dn_bid {
@@ -185,15 +191,9 @@ impl ElisEngine {
                     (up_bid, dn_bid)
                 };
 
-                // BSI filter: izin verilmeyen tarafı None yap.
                 let base = p.max_buy_order_size;
-                let up_size = if up_allowed { base + accum_up } else { 0.0 };
-                let dn_size = if dn_allowed { base + accum_dn } else { 0.0 };
-
-                // Her iki taraf da engelleniyorsa NoOp.
-                if up_size <= 0.0 && dn_size <= 0.0 {
-                    return (ElisState::Idle { accum_up, accum_dn }, Decision::NoOp);
-                }
+                let up_size = base + accum_up;
+                let dn_size = base + accum_dn;
 
                 // ── P4: Improvement-based decision ───────────────────────────
                 // Mevcut fill varsa yeni alımın avg pair cost'u yeterince
