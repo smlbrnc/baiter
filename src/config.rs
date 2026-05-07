@@ -262,7 +262,7 @@ impl Default for ElisParams {
     fn default() -> Self {
         Self {
             max_buy_order_size: 20.0,
-            trade_cooldown_ms: 2000,
+            trade_cooldown_ms: 4000,
             stop_before_end_secs: 30.0,
             min_improvement: 0.005,
             vol_threshold: 0.05,

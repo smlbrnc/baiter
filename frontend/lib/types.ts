@@ -437,7 +437,7 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   pyramid_fak_delta: 0.025,
   // Elis
   elis_max_buy_order_size: 20,
-  elis_trade_cooldown_ms: 2000,
+  elis_trade_cooldown_ms: 4000,
   elis_stop_before_end_secs: 30,
   elis_min_improvement: 0.005,
   elis_vol_threshold: 0.05,
