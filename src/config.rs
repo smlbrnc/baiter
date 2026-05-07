@@ -147,6 +147,11 @@ pub struct StrategyParams {
     /// P6 Stale cleanup: emirler bu süreden eskiyse zorla iptal (ms). Default: 30000
     #[serde(default)]
     pub elis_max_order_age_ms: Option<u64>,
+    /// P4 Improvement fail cooldown: improvement geçemeyince bu süre boyunca
+    /// yeni emir verilmez (ms). Uzun bekleme mevcut maker emirlerin dolmasına
+    /// fırsat verir. Simülasyon optimumu: 30_000. Default: 30000
+    #[serde(default)]
+    pub elis_imp_fail_cooldown_ms: Option<u64>,
     // Eski alanlar (backend artık kullanmıyor, DB uyumu için tutuldu)
     #[serde(default)]
     pub elis_spread_threshold: Option<f64>,
@@ -256,6 +261,10 @@ pub struct ElisParams {
     /// P6 Stale cleanup: bu süreden daha eski emirler zorla iptal edilir (ms).
     /// Default: 30_000
     pub max_order_age_ms: u64,
+    /// P4 Improvement fail cooldown: improvement geçemeyince bu süre NoOp (ms).
+    /// Mevcut maker emirlere dolma fırsatı verir. Sim optimumu: 30_000.
+    /// Default: 30_000
+    pub imp_fail_cooldown_ms: u64,
 }
 
 impl Default for ElisParams {
@@ -269,6 +278,7 @@ impl Default for ElisParams {
             bsi_filter_threshold: 0.50,
             lock_threshold: 0.98,
             max_order_age_ms: 30_000,
+            imp_fail_cooldown_ms: 30_000,
         }
     }
 }
@@ -287,6 +297,7 @@ impl ElisParams {
             bsi_filter_threshold: p.elis_bsi_filter_threshold.unwrap_or(d.bsi_filter_threshold),
             lock_threshold: p.elis_lock_threshold.unwrap_or(d.lock_threshold),
             max_order_age_ms: p.elis_max_order_age_ms.unwrap_or(d.max_order_age_ms),
+            imp_fail_cooldown_ms: p.elis_imp_fail_cooldown_ms.unwrap_or(d.imp_fail_cooldown_ms),
         }
     }
 }

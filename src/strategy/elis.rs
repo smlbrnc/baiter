@@ -43,7 +43,9 @@ const MAX_ACCUM_MULTIPLIER: f64 = 5.0;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ElisState {
-    Idle { accum_up: f64, accum_dn: f64 },
+    /// Fırsat bekleniyor.
+    /// `backoff_until_ms`: improvement fail sonrası NoOp bekle (0 = bekleme yok).
+    Idle { accum_up: f64, accum_dn: f64, #[serde(default)] backoff_until_ms: u64 },
     Ordering { placed_at_ms: u64, accum_up: f64, accum_dn: f64 },
     Done,
 }
@@ -51,7 +53,7 @@ pub enum ElisState {
 impl Default for ElisState {
     #[inline]
     fn default() -> Self {
-        Self::Idle { accum_up: 0.0, accum_dn: 0.0 }
+        Self::Idle { accum_up: 0.0, accum_dn: 0.0, backoff_until_ms: 0 }
     }
 }
 
@@ -103,17 +105,26 @@ impl ElisEngine {
                     ElisState::Idle {
                         accum_up: unfilled_up.min(base * MAX_ACCUM_MULTIPLIER),
                         accum_dn: unfilled_dn.min(base * MAX_ACCUM_MULTIPLIER),
+                        backoff_until_ms: 0,  // yeni loop → backoff sıfırla
                     },
                     decision,
                 )
             }
 
             // ── Fırsat tara: ucuz kontroller önce ───────────────────────────
-            ElisState::Idle { accum_up, accum_dn } => {
+            ElisState::Idle { accum_up, accum_dn, backoff_until_ms } => {
                 macro_rules! noop {
                     () => {
-                        return (ElisState::Idle { accum_up, accum_dn }, Decision::NoOp)
+                        return (ElisState::Idle { accum_up, accum_dn, backoff_until_ms: 0 }, Decision::NoOp)
                     };
+                }
+
+                // P4 improvement fail backoff: improvement geçemeyince uzun bekle.
+                if backoff_until_ms > 0 && ctx.now_ms < backoff_until_ms {
+                    return (
+                        ElisState::Idle { accum_up, accum_dn, backoff_until_ms },
+                        Decision::NoOp,
+                    );
                 }
 
                 if is_window_stop(ctx, &p) {
@@ -153,12 +164,12 @@ impl ElisEngine {
                 if !bsi_both_ok(ctx, p.bsi_filter_threshold) { noop!(); }
 
                 // Fiyat seçimi: dominant → ask (taker), weaker → bid (maker).
-                let (up_price, dn_price, up_is_taker) = if up_bid > dn_bid {
-                    (ctx.up_best_ask, dn_bid, true)
+                let (up_price, dn_price) = if up_bid > dn_bid {
+                    (ctx.up_best_ask, dn_bid)
                 } else if dn_bid > up_bid {
-                    (up_bid, ctx.down_best_ask, false)
+                    (up_bid, ctx.down_best_ask)
                 } else {
-                    (up_bid, dn_bid, true) // eşit: UP taker sayıyoruz
+                    (up_bid, dn_bid)
                 };
 
                 // Emir boyutu: max(base + accum, min_shares_for_1usd_notional).
@@ -166,9 +177,14 @@ impl ElisEngine {
                 let up_size = (base + accum_up).max(min_shares(up_price));
                 let dn_size = (base + accum_dn).max(min_shares(dn_price));
 
-                // P4 Improvement — taker-only kontrol.
-                if !improvement_ok(ctx, up_price, up_size, dn_price, dn_size, p.min_improvement, up_is_taker) {
-                    noop!();
+                // P4 Improvement — geçemezse uzun backoff (B seçeneği).
+                // Mevcut maker emirlere dolma fırsatı verir (~30sn).
+                if !improvement_ok(ctx, up_price, up_size, dn_price, dn_size, p.min_improvement) {
+                    let backoff = ctx.now_ms + p.imp_fail_cooldown_ms;
+                    return (
+                        ElisState::Idle { accum_up, accum_dn, backoff_until_ms: backoff },
+                        Decision::NoOp,
+                    );
                 }
 
                 // Emirleri oluştur (en geç adım — alloc yalnızca burada).
@@ -207,21 +223,9 @@ fn is_profit_locked(ctx: &StrategyContext<'_>, threshold: f64) -> bool {
 }
 
 /// P4 — Improvement check.
-///
 /// - both_empty → always ok (entry condition already checked)
 /// - one_side_empty → avg_existing + new_price < 1.0 (zarar güvencesi)
-/// - both_filled → **TAKER-ONLY** improvement kontrolü:
-///
-/// **Neden taker-only?**
-/// Eski "her iki taraf doluyor" projeksiyonu yanlış varsayım yapıyordu.
-/// Maker emir (weaker taraf) dolduktan ÖNCE cooldown ateşleniyor → maker fill
-/// hiç gerçekleşmeyebilir. Sadece taker'ın (dominant, anlık fill) etkisini
-/// dikkate almak gerekir; maker bonus — eğer dolarsa avg daha da iyileşir.
-///
-/// Örnek hata: avg_sum=1.00, UP @ 0.65 (taker), DOWN @ 0.35 (maker)
-///   - Eski: projected=0.62+0.38=1.00, improvement=0 → ALLOWS
-///   - Gerçek: UP fills @ 0.65 → avg_up=0.62, DOWN dolmadı → actual_sum=1.03 ZARAR
-///   - Taker-only: 0.62 + 0.41(mevcut) = 1.03 → improvement=-0.03 → BLOCKED ✓
+/// - both_filled → current_pair - projected_pair ≥ min_improvement
 #[inline]
 fn improvement_ok(
     ctx: &StrategyContext<'_>,
@@ -230,52 +234,17 @@ fn improvement_ok(
     dn_price: f64,
     dn_size: f64,
     min_imp: f64,
-    up_is_taker: bool,  // true: UP dominant (ask), false: DOWN dominant (ask)
 ) -> bool {
     let m = ctx.metrics;
 
     if m.up_filled == 0.0 && m.down_filled == 0.0 { return true; }
+    if m.down_filled == 0.0 { return m.avg_up  + dn_price < 1.0; }
+    if m.up_filled   == 0.0 { return m.avg_down + up_price < 1.0; }
 
-    // Tek taraf boşken kritik sorun: metrics stale olabilir.
-    // UP taker bu loop'ta dolacaksa avg_up değişecek. Bunu projekte et.
-    //
-    // Ör: avg_up=0.53 (önceki loop), bu loop UP @ 0.55 taker + DOWN @ 0.46 maker
-    //   → Stale kontrol: 0.53 + 0.46 = 0.99 → ALLOWS
-    //   → Gerçek: UP fills → avg_up=0.54 → 0.54 + 0.46 = 1.00 → zarar
-    // Düzeltme: taker fill sonrası avg'yi kullan.
-    if m.down_filled == 0.0 {
-        // DOWN hiç dolmadı; UP dolmuş durumda.
-        // Bu loop UP taker ise, fill sonrası projected avg_up ile kontrol et.
-        let eff_avg_up = if up_is_taker {
-            wavg(m.avg_up, m.up_filled, up_price, up_size)
-        } else {
-            m.avg_up  // UP maker — fill garantisi yok, mevcut avg kullan
-        };
-        return eff_avg_up + dn_price < 1.0;
-    }
-
-    if m.up_filled == 0.0 {
-        // UP hiç dolmadı; DOWN dolmuş durumda.
-        let eff_avg_dn = if !up_is_taker {
-            wavg(m.avg_down, m.down_filled, dn_price, dn_size)
-        } else {
-            m.avg_down
-        };
-        return up_price + eff_avg_dn < 1.0;
-    }
-
-    // Her iki taraf dolu: taker-only zarar kontrolü + tam projeksiyon iyileşmesi.
     let cur = m.avg_sum();
-    let (taker_new_avg, other_avg) = if up_is_taker {
-        (wavg(m.avg_up,   m.up_filled,   up_price, up_size), m.avg_down)
-    } else {
-        (wavg(m.avg_down, m.down_filled, dn_price, dn_size), m.avg_up)
-    };
-    let taker_safe = taker_new_avg + other_avg < 1.0;
     let new_u = wavg(m.avg_up,   m.up_filled,   up_price, up_size);
     let new_d = wavg(m.avg_down, m.down_filled, dn_price, dn_size);
-    let full_ok = cur - (new_u + new_d) >= min_imp;
-    taker_safe && full_ok
+    cur - (new_u + new_d) >= min_imp
 }
 
 /// Ağırlıklı ortalama (VWAP).

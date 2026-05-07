@@ -221,6 +221,7 @@ export function BotFormMarketSection({
                           elis_bsi_filter_threshold: p.elis_bsi_filter_threshold ?? 0.50,
                           elis_lock_threshold: p.elis_lock_threshold ?? 0.98,
                           elis_max_order_age_ms: p.elis_max_order_age_ms ?? 30000,
+                          elis_imp_fail_cooldown_ms: p.elis_imp_fail_cooldown_ms ?? 30000,
                         };
                       }
                       return next;

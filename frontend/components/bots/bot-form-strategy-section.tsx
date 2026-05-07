@@ -54,6 +54,8 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
     params.elis_lock_threshold ?? STRATEGY_PARAMS_DEFAULTS.elis_lock_threshold;
   const elisMaxOrderAgeMs =
     params.elis_max_order_age_ms ?? STRATEGY_PARAMS_DEFAULTS.elis_max_order_age_ms;
+  const elisImpFailCooldownMs =
+    params.elis_imp_fail_cooldown_ms ?? STRATEGY_PARAMS_DEFAULTS.elis_imp_fail_cooldown_ms;
 
   // ── Bonereaper ────────────────────────────────────────────────────────
   const bonereaperSignalTaker =
@@ -190,6 +192,19 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                 />
               </Field>
             </div>
+
+            {/* P4 Improvement fail cooldown */}
+            <Field
+              label="P4 — Improvement fail cooldown (ms)"
+              tooltip="P4 improvement başarısız olunca (avg pair cost yeterince düşmüyorsa) bu süre kadar yeni emir verilmez. Mevcut maker emirlere dolma fırsatı tanır. 97 market simülasyonu: 30sn → $146 PnL (2sn NoOp: $73)."
+              hint={`5 000 – 60 000 ms (default ${STRATEGY_PARAMS_DEFAULTS.elis_imp_fail_cooldown_ms}).`}
+            >
+              <Input
+                type="number" step="5000" min="5000" max="60000"
+                value={elisImpFailCooldownMs}
+                onChange={(e) => patch({ elis_imp_fail_cooldown_ms: Number(e.target.value) })}
+              />
+            </Field>
           </div>
 
           {/* Elis özet kartı */}
@@ -214,6 +229,11 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                 <code>avg_up + avg_down &lt; lock_threshold</code> VE{" "}
                 <code>pair_count &gt; cost_basis</code> → garantili kâr kilitlendi,
                 Done&apos;a geç.
+              </li>
+              <li>
+                <strong>P4 Imp.Fail Cooldown:</strong> Improvement geçemeyince{" "}
+                <code>imp_fail_cooldown_ms</code> (30sn) bekle — mevcut maker
+                emirlere dolma fırsatı. Sim: 2× daha yüksek PnL.
               </li>
               <li>
                 <strong>P6 Stale:</strong> <code>max_order_age_ms</code>&apos;den
