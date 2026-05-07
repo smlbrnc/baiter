@@ -32,16 +32,34 @@ const STALE_SPREAD_MAX: f64 = 0.05;
 /// 3sn → ~100 trade/5dk markette (real bot medyan 73 trade/market ile uyumlu).
 const SAME_DIR_COOLDOWN_MS: u64 = 3000;
 /// Sinyal kuvveti minimum eşiği (|signal_ema|).
-/// Bu eşiğin altında sinyal "kararsız" sayılır ve trade alınmaz.
-/// Real bot pattern: 7 saatte sadece 23 BTC 5m market açtı; biz 84 açtık.
-/// Filter kararsız (UP_bid 0.40-0.60 nötr) marketleri pas geçer.
-/// Simülasyon (118 market): cost -%36, PnL +%141, win rate +11 puan.
-const SIGNAL_STRENGTH_MIN: f64 = 0.20;
+/// V3 stilinde 0.25'e yükseltildi (akademik araştırma: raised threshold = noise filter).
+/// Simülasyon (Bot 61 + Bot 63): WR %3-6 puan artış, ROI +%0.64 puan iyileşme.
+const SIGNAL_STRENGTH_MIN: f64 = 0.25;
 /// Dynamic size multiplier eşikleri — signal kuvvetine göre 1x/2x/3x size.
 /// Real bot pattern: medyan $12 trade ama p90 $48 (büyük volume güçlü sinyallerde).
-/// Multiplier ile order_usdc * 1/2/3 kullanılır.
 const DYNAMIC_SIZE_STRONG: f64 = 0.7;  // > 0.7 → 3x
 const DYNAMIC_SIZE_MEDIUM: f64 = 0.5;  // > 0.5 → 2x
+
+/// V3 Triple Gate eşikleri — 3 farklı sinyal aynı yönde olmalı:
+/// - composite (Binance/OKX) > UP_THR veya < DOWN_THR
+/// - market_skor (UP_bid) UP > 0.55, DOWN < 0.45
+/// - multi-tf slope > +0.20 veya < -0.20
+const TRIPLE_GATE_COMPOSITE_UP: f64 = 5.5;
+const TRIPLE_GATE_COMPOSITE_DOWN: f64 = 4.5;
+const TRIPLE_GATE_BID_UP: f64 = 0.55;
+const TRIPLE_GATE_BID_DOWN: f64 = 0.45;
+const TRIPLE_GATE_SLOPE_THRESHOLD: f64 = 0.20;
+/// Multi-tf momentum lookback'leri (saniye) ve ağırlıkları.
+/// Akademik v3 stili: long lookback dominant, kısa horizonda mean-reversion riski azalır.
+const MULTI_TF_LOOKBACKS: [usize; 4] = [30, 60, 120, 240];
+const MULTI_TF_WEIGHTS: [f64; 4] = [0.10, 0.20, 0.30, 0.40];
+/// Counter-trend signal block — son 60 saniye composite ortalaması ile signal yönü
+/// karşılaştırılır; ters yön + zayıf sinyal (|smoothed| < 0.40) ise BLOK.
+const TREND_FILTER_LOOKBACK: usize = 60;
+const TREND_FILTER_NEUTRAL: f64 = 5.0;
+const TREND_FILTER_OVERRIDE: f64 = 0.40;
+/// Composite history maksimum boyut (FIFO buffer).
+const COMPOSITE_HISTORY_MAX: usize = 240;
 
 // Reason etiketleri — `format!()` allocation'larını eler (hot path'te tick başına 1 alloc tasarrufu).
 #[inline]
@@ -97,6 +115,10 @@ pub struct BonereaperActive {
     /// 0 = henüz emir verilmedi (cooldown bypass).
     #[serde(default)]
     pub last_signal_trade_ms: u64,
+    /// Multi-timeframe momentum hesabı için son 240 saniyenin composite (effective_score)
+    /// değerleri. FIFO buffer; max 240 entry. V3 stili linear regression slope hesabı için.
+    #[serde(default)]
+    pub composite_history: Vec<f64>,
 }
 
 // ─────────────────────────────────────────────
@@ -131,6 +153,7 @@ impl BonereaperEngine {
                     pending_count: 0,
                     signal_ema: None,
                     last_signal_trade_ms: 0,
+                    composite_history: Vec::with_capacity(240),
                 };
                 (BonereaperState::Active(Box::new(active)), Decision::NoOp)
             }
@@ -185,13 +208,64 @@ impl BonereaperEngine {
                 let new_dir = signal_direction_persistent(&mut st, ctx, persistence_k);
 
                 // ── SIGNAL STRENGTH FILTER ───────────────────────────────────
-                // Sinyal kuvveti (|signal_ema|) eşik altında ise market "kararsız"
-                // sayılır ve trade alınmaz. Real bot da bu marketlere girmiyor
-                // (UP_bid ≈ 0.50 nötr bölge). Simülasyon: cost -%36, PnL +%141.
-                let smoothed_abs = st.signal_ema.unwrap_or(0.0).abs();
+                // Sinyal kuvveti (|signal_ema|) eşik altında ise market "kararsız".
+                let smoothed = st.signal_ema.unwrap_or(0.0);
+                let smoothed_abs = smoothed.abs();
                 if smoothed_abs < SIGNAL_STRENGTH_MIN {
                     let stale = cancel_stale(ctx);
                     return (BonereaperState::Active(st), stale);
+                }
+
+                // ── V3 TRIPLE GATE ───────────────────────────────────────────
+                // 3 sinyal aynı yönde olmalı:
+                //   - composite (Binance/OKX) > 5.5 (UP) veya < 4.5 (DOWN)
+                //   - market_skor (UP_bid) > 0.55 (UP) veya < 0.45 (DOWN)
+                //   - multi-tf slope > +0.20 (UP) veya < -0.20 (DOWN)
+                // Akademik araştırma kanıtı (Liu Mar 2026): WR +%5, ROI +%0.6.
+                let comp_dir: i8 = if ctx.effective_score > TRIPLE_GATE_COMPOSITE_UP {
+                    1
+                } else if ctx.effective_score < TRIPLE_GATE_COMPOSITE_DOWN {
+                    -1
+                } else {
+                    0
+                };
+                let mkt_dir: i8 = if ctx.up_best_bid > TRIPLE_GATE_BID_UP {
+                    1
+                } else if ctx.up_best_bid > 0.0 && ctx.up_best_bid < TRIPLE_GATE_BID_DOWN {
+                    -1
+                } else {
+                    0
+                };
+                let slope_dir: i8 = if smoothed > TRIPLE_GATE_SLOPE_THRESHOLD {
+                    1
+                } else if smoothed < -TRIPLE_GATE_SLOPE_THRESHOLD {
+                    -1
+                } else {
+                    0
+                };
+                if comp_dir == 0 || mkt_dir == 0 || slope_dir == 0
+                    || comp_dir != mkt_dir
+                    || mkt_dir != slope_dir
+                {
+                    let stale = cancel_stale(ctx);
+                    return (BonereaperState::Active(st), stale);
+                }
+
+                // ── V3 TREND FILTER ──────────────────────────────────────────
+                // Counter-trend zayıf sinyal: BLOK. Son 60sn composite ortalaması ile
+                // mevcut sinyal yönü ters ise ve smoothed < 0.40 ise trade alma.
+                if st.composite_history.len() >= TREND_FILTER_LOOKBACK {
+                    let n = st.composite_history.len();
+                    let trend_avg: f64 = st.composite_history[n - TREND_FILTER_LOOKBACK..]
+                        .iter()
+                        .sum::<f64>()
+                        / TREND_FILTER_LOOKBACK as f64;
+                    let trend_dir: i8 = if trend_avg > TREND_FILTER_NEUTRAL { 1 } else { -1 };
+                    let signal_dir_now: i8 = if smoothed > 0.0 { 1 } else { -1 };
+                    if trend_dir != signal_dir_now && smoothed_abs < TREND_FILTER_OVERRIDE {
+                        let stale = cancel_stale(ctx);
+                        return (BonereaperState::Active(st), stale);
+                    }
                 }
 
                 // Yön değiştiyse eski signal emirlerini iptal et.
@@ -273,40 +347,45 @@ impl BonereaperEngine {
 // Sinyal yön kararı
 // ─────────────────────────────────────────────
 
-/// Hibrit + EMA + persistence-aware sinyal yön kararı.
+/// V3 Triple Gate sinyal yön kararı.
 ///
-/// 1. Hibrit composite: `signal_skor × (1 - w_market) + market_skor × w_market`
-///    - signal_skor: Binance/OKX composite [(effective_score-5)/5] ∈ [-1, +1]
-///    - market_skor: Polymarket UP_bid trendi [(up_bid-0.5) × 2] ∈ [-1, +1]
-///    82 market tick analizinde Polymarket sinyalı %76 doğru, composite %55.
+/// Akademik araştırma temelli (Liu, Mar 2026 — Polymarket 5min BTC analizi).
 ///
-/// 2. EMA smoothing: `ema = α × hybrid + (1-α) × prev_ema`
-///    Bimodal score'ları yumuşatır, gürültüyü filtreler.
+/// 1. **Composite history kayıt**: `effective_score` son 240 sn FIFO buffer'a yazılır.
 ///
-/// 3. Persistence (K-tick onay):
-///    - `K=1` → anlık karar (her tick yön değiştirebilir).
-///    - `K=2+` → mevcut yön korunur; ters yön için K ardışık tick onayı gerekir.
+/// 2. **Multi-timeframe momentum**: 30s/60s/120s/240s linear regression slope'ları
+///    [0.10, 0.20, 0.30, 0.40] ağırlıklarla toplanır → `momentum_signal ∈ [-1, +1]`.
+///    Long lookback dominant (kısa horizon mean-reversion riski azalır).
+///
+/// 3. **Hibrit smoothed**: `momentum × 0.5 + market_skor × 0.5`
+///    market_skor = Polymarket UP_bid trendi.
+///
+/// 4. **EMA smoothing** + **K-tick persistence**: Mevcut sistem korunur (alpha, K config).
+///
+/// **Triple Gate** ve **trend filter** `decide` içinde uygulanır.
 fn signal_direction_persistent(
     st: &mut BonereaperActive,
     ctx: &StrategyContext<'_>,
     k: u32,
 ) -> Outcome {
-    // Hibrit skor: composite (Binance/OKX) + Polymarket UP_bid trendi.
-    let signal_skor = ((ctx.effective_score - 5.0) / 5.0).clamp(-1.0, 1.0);
-    // KRİTİK: Book hazır değilse market_skor = 0 (nötr).
-    // Aksi halde UP_bid=0 → market_skor=-1 → EMA aşırı DN bias.
+    // 1. Composite history güncelle (FIFO, max 240 entry).
+    st.composite_history.push(ctx.effective_score);
+    if st.composite_history.len() > COMPOSITE_HISTORY_MAX {
+        st.composite_history.remove(0);
+    }
+
+    // 2. Multi-timeframe momentum (akademik v3 stili).
+    let momentum_signal = multi_tf_momentum(&st.composite_history);
+
+    // 3. Hibrit: momentum + market_skor (UP_bid trendi).
     let market_skor = if ctx.up_best_bid <= 0.0 || ctx.down_best_bid <= 0.0 {
         0.0
     } else {
         ((ctx.up_best_bid - 0.5) * 2.0).clamp(-1.0, 1.0)
     };
-    let w_market = ctx.strategy_params.bonereaper_signal_w_market();
-    let w_signal = 1.0 - w_market;
-    let hybrid_skor = signal_skor * w_signal + market_skor * w_market;
+    let hybrid_skor = momentum_signal * 0.5 + market_skor * 0.5;
 
-    // EMA smoothing. İlk tick'te EMA = ham hibrit (warm-start).
-    // market_skor book hazır olmadan 0 döndüğü için ilk tick'te ekstrem değer
-    // alma riski ortadan kalkar — bias yok.
+    // EMA smoothing (config alpha — default 1.0 = anlık).
     let alpha = ctx.strategy_params.bonereaper_signal_ema_alpha();
     let smoothed = match st.signal_ema {
         Some(prev) => alpha * hybrid_skor + (1.0 - alpha) * prev,
@@ -499,6 +578,48 @@ fn cancel_stale(ctx: &StrategyContext<'_>) -> Decision {
         }
     }
     if ids.is_empty() { Decision::NoOp } else { Decision::CancelOrders(ids) }
+}
+
+// ─────────────────────────────────────────────
+// V3 Triple Gate Helpers — Multi-timeframe momentum
+// ─────────────────────────────────────────────
+
+/// Linear regression slope hesabı (least squares).
+/// Sıralı değerler için en iyi fit doğrunun eğimini döndürür.
+fn linear_regression_slope(values: &[f64]) -> f64 {
+    let n = values.len();
+    if n < 2 {
+        return 0.0;
+    }
+    let n_f = n as f64;
+    let x_mean = (n_f - 1.0) / 2.0;
+    let y_mean: f64 = values.iter().sum::<f64>() / n_f;
+    let mut num = 0.0;
+    let mut denom = 0.0;
+    for (i, v) in values.iter().enumerate() {
+        let dx = i as f64 - x_mean;
+        num += dx * (v - y_mean);
+        denom += dx * dx;
+    }
+    if denom == 0.0 { 0.0 } else { num / denom }
+}
+
+/// Multi-timeframe momentum sinyali — composite history üzerinde 30s/60s/120s/240s
+/// linear regression slope'larının ağırlıklı toplamı. v3 stilinde long lookback dominant.
+/// Sonuç clamp[-1, +1].
+fn multi_tf_momentum(history: &[f64]) -> f64 {
+    let mut signal = 0.0;
+    for (tf, w) in MULTI_TF_LOOKBACKS.iter().zip(MULTI_TF_WEIGHTS.iter()) {
+        let len = history.len();
+        let slope = if len >= *tf {
+            let recent = &history[len - tf..];
+            (linear_regression_slope(recent) * 50.0).clamp(-1.0, 1.0)
+        } else {
+            0.0
+        };
+        signal += slope * w;
+    }
+    signal.clamp(-1.0, 1.0)
 }
 
 /// Derleyici uyarısını bastır.
