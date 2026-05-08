@@ -183,12 +183,25 @@ impl GravieEngine {
                     return (GravieState::Active(st), Decision::NoOp);
                 }
 
+                // PATCH A — Lose-side ASK cap (asymmetric trend reversal guard).
+                // Bir tarafın ask'ı eşiğin üstüne çıktığında market o tarafı %X+
+                // olası görüyor. "Ucuz" karşı tarafa daha çok yatırım = collapse riski.
+                if ctx.up_best_ask.max(ctx.down_best_ask) >= p.opp_ask_stop_threshold {
+                    return (GravieState::Active(st), Decision::NoOp);
+                }
+
                 // Karar: hangi side, hangi reason?
                 let plan = decide_buy(&st, ctx, &p);
                 let Some(buy_plan) = plan else {
                     return (GravieState::Active(st), Decision::NoOp);
                 };
-                let order = match make_fak_buy(ctx, buy_plan.dir, buy_plan.price, buy_plan.reason) {
+                let order = match make_fak_buy(
+                    ctx,
+                    buy_plan.dir,
+                    buy_plan.price,
+                    buy_plan.reason,
+                    p.max_fak_size,
+                ) {
                     Some(o) => o,
                     None => return (GravieState::Active(st), Decision::NoOp),
                 };
@@ -335,16 +348,25 @@ fn decide_buy(
 
 /// FAK (Fill-And-Kill) BUY emir. Anında fill olmazsa iptal — multi-fill burst
 /// pattern'ine uygun. `size = ceil(order_usdc / price)` (price-aware sizing).
+///
+/// PATCH C — `max_fak_size > 0` ise size üstten cap'lenir; düşen fiyatlarda
+/// (örn. price=0.05 → 200 share) tek emirle aşırı likidite emilmesini önler.
 fn make_fak_buy(
     ctx: &StrategyContext<'_>,
     outcome: Outcome,
     price: f64,
     reason: &'static str,
+    max_fak_size: f64,
 ) -> Option<PlannedOrder> {
     if price <= 0.0 || price > 1.0 {
         return None;
     }
-    let size = (ctx.order_usdc / price).ceil();
+    let raw_size = (ctx.order_usdc / price).ceil();
+    let size = if max_fak_size > 0.0 {
+        raw_size.min(max_fak_size)
+    } else {
+        raw_size
+    };
     if size <= 0.0 {
         return None;
     }

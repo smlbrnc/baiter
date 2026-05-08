@@ -180,6 +180,21 @@ export interface StrategyParams {
    * Default: 1.05 (sim'de 1.20 çok geç oluyor; sıkı tutarak overpay engellenir).
    */
   gravie_sum_avg_ceiling?: number | null
+  /**
+   * PATCH A — Lose-side ASK cap (asymmetric trend reversal guard).
+   * `max(up_ask, dn_ask) ≥ X` ise tüm yeni emirler durur. Bir tarafın
+   * fiyatı bu eşiğin üstüne çıktığında market o tarafı `≥X` olası görüyor;
+   * "ucuz" görünen karşı tarafa daha fazla yatırım = collapse riski.
+   * Default: 0.95 (yumuşak guard, sadece extreme collapse'ı yakalar;
+   * big-win market'leri korur). 1.0 = devre dışı.
+   */
+  gravie_opp_ask_stop_threshold?: number | null
+  /**
+   * PATCH C — FAK emir başına maksimum share. Düşen fiyatlarda
+   * `ceil(usdc/price)` patlamasını önler (örn. price=0.05 → 200 share).
+   * 0 = sınırsız (devre dışı). Default: 50.
+   */
+  gravie_max_fak_size?: number | null
 }
 
 export interface BotRow {
@@ -527,6 +542,8 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   gravie_balance_rebalance: 0.3,
   gravie_rebalance_ceiling_multiplier: 1.2,
   gravie_sum_avg_ceiling: 1.05,
+  gravie_opp_ask_stop_threshold: 0.95,
+  gravie_max_fak_size: 50,
 } as const
 
 // ── Bot İstatistikleri ────────────────────────────────────────────────────

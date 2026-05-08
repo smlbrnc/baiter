@@ -249,7 +249,8 @@ pub struct StrategyParams {
     /// `max(up_ask, dn_ask) >= X` ise tüm yeni emirler durur. Bir tarafın
     /// fiyatı bu eşiğin üstüne çıktığında market o tarafın olasılığını
     /// `>= X` görüyor demektir; "ucuz" görünen karşı tarafa daha fazla
-    /// pozisyon açmak collapse riskini büyütür. Default: 0.85.
+    /// pozisyon açmak collapse riskini büyütür. Default: 0.95 (yumuşak guard,
+    /// sadece extreme collapse'ı yakalar; big-win market'leri korur).
     /// 1.0 = devre dışı.
     #[serde(default)]
     pub gravie_opp_ask_stop_threshold: Option<f64>,
@@ -450,7 +451,7 @@ impl Default for GravieParams {
             balance_rebalance: 0.30,
             rebalance_ceiling_multiplier: 1.20,
             sum_avg_ceiling: 1.05,
-            opp_ask_stop_threshold: 0.85,
+            opp_ask_stop_threshold: 0.95,
             max_fak_size: 50.0,
         }
     }

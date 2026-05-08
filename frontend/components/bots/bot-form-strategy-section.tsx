@@ -99,6 +99,11 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const gravieSumAvgCeiling =
     params.gravie_sum_avg_ceiling ??
     STRATEGY_PARAMS_DEFAULTS.gravie_sum_avg_ceiling
+  const gravieOppAskStopThreshold =
+    params.gravie_opp_ask_stop_threshold ??
+    STRATEGY_PARAMS_DEFAULTS.gravie_opp_ask_stop_threshold
+  const gravieMaxFakSize =
+    params.gravie_max_fak_size ?? STRATEGY_PARAMS_DEFAULTS.gravie_max_fak_size
 
   // ── Bonereaper ────────────────────────────────────────────────────────
   const bonereaperSignalTaker =
@@ -871,6 +876,44 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                 />
               </Field>
             </div>
+
+            {/* Risk guards (Patch A + Patch C) */}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 border-t border-border/30 pt-4">
+              <Field
+                label="Lose-side ASK cap (Patch A)"
+                tooltip="ASIMETRIK TREND REVERSAL GUARD. max(up_ask, dn_ask) bu eşiğin üstüne çıkarsa tüm yeni emirler durur. Polymarket fiyatı = olasılık; bir taraf 0.95+ ise market o tarafı %95+ olası görüyor. Default 0.95 = YUMUŞAK guard: extreme collapse'ı yakalar, big-win'leri korur. 0.85 = TUTUCU (collapse mükemmel ama big-win'leri tıraşlar). 1.0 = DEVRE DIŞI."
+                hint={`0.50 – 1.00 (default ${STRATEGY_PARAMS_DEFAULTS.gravie_opp_ask_stop_threshold}).`}
+              >
+                <Input
+                  type="number"
+                  step="0.05"
+                  min="0.50"
+                  max="1.00"
+                  value={gravieOppAskStopThreshold}
+                  onChange={(e) =>
+                    patch({
+                      gravie_opp_ask_stop_threshold: Number(e.target.value),
+                    })
+                  }
+                />
+              </Field>
+              <Field
+                label="Max FAK size (Patch C)"
+                tooltip="FAK emir başına maksimum share. Düşen fiyatlarda ceil(usdc/price) patlamasını önler. Örn order_usdc=10, price=0.05 → 200 share; cap=50 ile 50 share. 0 = sınırsız (devre dışı)."
+                hint={`0 (sınırsız) veya 1 – 10 000 share (default ${STRATEGY_PARAMS_DEFAULTS.gravie_max_fak_size}).`}
+              >
+                <Input
+                  type="number"
+                  step="10"
+                  min="0"
+                  max="10000"
+                  value={gravieMaxFakSize}
+                  onChange={(e) =>
+                    patch({ gravie_max_fak_size: Number(e.target.value) })
+                  }
+                />
+              </Field>
+            </div>
           </div>
 
           <div className="space-y-2 rounded-md border border-border/40 bg-muted/10 px-3 py-2.5 text-xs leading-relaxed text-muted-foreground">
@@ -909,6 +952,14 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                 <strong>Sinyal kullanmaz:</strong> Bonereaper&apos;dan farklı
                 olarak Binance/OKX composite skor okumaz; saf orderbook
                 reaktif. Veri kaynağı bağımsızlığı = düşük operasyonel risk.
+              </li>
+              <li>
+                <strong>Risk Guards (Patch A + C):</strong>{" "}
+                <code>max(up_ask, dn_ask) ≥ 0.95</code> → tüm yeni emirler
+                durur (extreme collapse koruması, yumuşak default).{" "}
+                <code>FAK size ≤ 50</code> → düşen fiyatlarda likidite emici
+                patlamayı engeller. Daha sıkı koruma için 0.85; devre dışı için
+                1.0 yapın.
               </li>
             </ul>
           </div>
