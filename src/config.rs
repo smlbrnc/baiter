@@ -201,6 +201,12 @@ pub struct StrategyParams {
     /// PURE FREEZE eşiği — UP_bid'in geçişi flip sayar. Default: 0.5.
     #[serde(default)]
     pub bonereaper_freeze_threshold: Option<f64>,
+    /// Signal emri fiyat tavanı [0.50, 0.99]. Bu değerin üzerindeki ask
+    /// fiyatlarında sinyal emri verilmez. Aşırı pahalı dominant tarafta
+    /// birikim (0.92 DOWN@0.97 gibi) engellenir. Default: 0.92.
+    /// Not: Dutch Book emirleri bu filtreden muaftır (arbitraj garantilidir).
+    #[serde(default)]
+    pub bonereaper_signal_price_ceiling: Option<f64>,
 
     // === Gravie (Bot 66 davranış kopyası) ===
     /// Karar tick aralığı (sn). Bot 66 ortalama inter-arrival 4-5 sn.
@@ -239,6 +245,19 @@ pub struct StrategyParams {
     /// Default: 1.05 (sim'de 1.20 çok geç, sum_avg sürekli >1.0 oluyor).
     #[serde(default)]
     pub gravie_sum_avg_ceiling: Option<f64>,
+    /// PATCH A — Lose-side ASK cap (asymmetric trend reversal guard).
+    /// `max(up_ask, dn_ask) >= X` ise tüm yeni emirler durur. Bir tarafın
+    /// fiyatı bu eşiğin üstüne çıktığında market o tarafın olasılığını
+    /// `>= X` görüyor demektir; "ucuz" görünen karşı tarafa daha fazla
+    /// pozisyon açmak collapse riskini büyütür. Default: 0.85.
+    /// 1.0 = devre dışı.
+    #[serde(default)]
+    pub gravie_opp_ask_stop_threshold: Option<f64>,
+    /// PATCH C — FAK emir başına maksimum share. Düşen fiyatlarda
+    /// `ceil(usdc/price)` patlamasını önler (örn. price=0.05 → 200 share).
+    /// 0 = sınırsız (devre dışı). Default: 50.
+    #[serde(default)]
+    pub gravie_max_fak_size: Option<f64>,
 }
 
 impl StrategyParams {
@@ -292,7 +311,7 @@ impl StrategyParams {
             .clamp(0.01, 1.0)
     }
     pub fn bonereaper_profit_lock(&self) -> bool {
-        self.bonereaper_profit_lock.unwrap_or(false)
+        self.bonereaper_profit_lock.unwrap_or(true)
     }
     /// 0 = devre dışı; 1..=300 sınırlı. Default 45 sn.
     pub fn bonereaper_freeze_window_secs(&self) -> u32 {
@@ -303,6 +322,12 @@ impl StrategyParams {
         self.bonereaper_freeze_threshold
             .unwrap_or(0.5)
             .clamp(0.10, 0.90)
+    }
+    /// 0.50..0.99 sınırlı; default 0.92.
+    pub fn bonereaper_signal_price_ceiling(&self) -> f64 {
+        self.bonereaper_signal_price_ceiling
+            .unwrap_or(0.92)
+            .clamp(0.50, 0.99)
     }
 }
 
@@ -407,6 +432,10 @@ pub struct GravieParams {
     pub rebalance_ceiling_multiplier: f64,
     /// Sum-avg guard — bu eşiğin üstünde yeni emir verme.
     pub sum_avg_ceiling: f64,
+    /// PATCH A — Lose-side ASK cap. max(up_ask, dn_ask) >= X ise yeni emir yok.
+    pub opp_ask_stop_threshold: f64,
+    /// PATCH C — FAK emir başına max share. 0 = devre dışı.
+    pub max_fak_size: f64,
 }
 
 impl Default for GravieParams {
@@ -421,6 +450,8 @@ impl Default for GravieParams {
             balance_rebalance: 0.30,
             rebalance_ceiling_multiplier: 1.20,
             sum_avg_ceiling: 1.05,
+            opp_ask_stop_threshold: 0.85,
+            max_fak_size: 50.0,
         }
     }
 }
@@ -467,6 +498,14 @@ impl GravieParams {
                 .gravie_sum_avg_ceiling
                 .unwrap_or(d.sum_avg_ceiling)
                 .clamp(0.80, 1.50),
+            opp_ask_stop_threshold: p
+                .gravie_opp_ask_stop_threshold
+                .unwrap_or(d.opp_ask_stop_threshold)
+                .clamp(0.50, 1.00),
+            max_fak_size: p
+                .gravie_max_fak_size
+                .unwrap_or(d.max_fak_size)
+                .clamp(0.0, 10_000.0),
         }
     }
 }
