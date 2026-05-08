@@ -192,13 +192,20 @@ pub struct StrategyParams {
     /// Market sonuna kadar mevcut pozisyon korunur. Default: false.
     #[serde(default)]
     pub bonereaper_profit_lock: Option<bool>,
+    /// PURE FREEZE penceresi (sn). T-X anında UP_bid'den favori belirlenir,
+    /// pencere içinde favori sınırı ters yöne geçerse bot yeni signal emir vermez
+    /// (mevcut signal emirleri iptal edilir, hedge YOK). 0 = devre dışı.
+    /// Default: 45 (akademik test sonucu sweet spot).
+    #[serde(default)]
+    pub bonereaper_freeze_window_secs: Option<u32>,
+    /// PURE FREEZE eşiği — UP_bid'in geçişi flip sayar. Default: 0.5.
+    #[serde(default)]
+    pub bonereaper_freeze_threshold: Option<f64>,
 }
 
 impl StrategyParams {
     pub fn avg_threshold(&self) -> f64 {
-        self.profit_lock_pct
-            .map(|p| 1.0 - p.abs())
-            .unwrap_or(0.98)
+        self.profit_lock_pct.map(|p| 1.0 - p.abs()).unwrap_or(0.98)
     }
 
     /// RTDS Chainlink task'ını başlatmak için kontrol (sinyal hesabında kullanılmaz).
@@ -227,19 +234,37 @@ impl StrategyParams {
         self.bonereaper_signal_taker.unwrap_or(true)
     }
     pub fn bonereaper_profit_lock_imbalance(&self) -> f64 {
-        self.bonereaper_profit_lock_imbalance.unwrap_or(50.0).clamp(1.0, 200.0)
+        self.bonereaper_profit_lock_imbalance
+            .unwrap_or(50.0)
+            .clamp(1.0, 200.0)
     }
     pub fn bonereaper_signal_persistence_k(&self) -> u32 {
-        self.bonereaper_signal_persistence_k.unwrap_or(1).clamp(1, 20)
+        self.bonereaper_signal_persistence_k
+            .unwrap_or(1)
+            .clamp(1, 20)
     }
     pub fn bonereaper_signal_w_market(&self) -> f64 {
-        self.bonereaper_signal_w_market.unwrap_or(0.7).clamp(0.0, 1.0)
+        self.bonereaper_signal_w_market
+            .unwrap_or(0.7)
+            .clamp(0.0, 1.0)
     }
     pub fn bonereaper_signal_ema_alpha(&self) -> f64 {
-        self.bonereaper_signal_ema_alpha.unwrap_or(1.0).clamp(0.01, 1.0)
+        self.bonereaper_signal_ema_alpha
+            .unwrap_or(1.0)
+            .clamp(0.01, 1.0)
     }
     pub fn bonereaper_profit_lock(&self) -> bool {
         self.bonereaper_profit_lock.unwrap_or(false)
+    }
+    /// 0 = devre dışı; 1..=300 sınırlı. Default 45 sn.
+    pub fn bonereaper_freeze_window_secs(&self) -> u32 {
+        self.bonereaper_freeze_window_secs.unwrap_or(45).min(300)
+    }
+    /// 0.10..0.90 sınırlı; default 0.50.
+    pub fn bonereaper_freeze_threshold(&self) -> f64 {
+        self.bonereaper_freeze_threshold
+            .unwrap_or(0.5)
+            .clamp(0.10, 0.90)
     }
 }
 
@@ -301,14 +326,22 @@ impl ElisParams {
         Self {
             max_buy_order_size: p.elis_max_buy_order_size.unwrap_or(d.max_buy_order_size),
             trade_cooldown_ms: p.elis_trade_cooldown_ms.unwrap_or(d.trade_cooldown_ms),
-            stop_before_end_secs: p.elis_stop_before_end_secs.unwrap_or(d.stop_before_end_secs),
+            stop_before_end_secs: p
+                .elis_stop_before_end_secs
+                .unwrap_or(d.stop_before_end_secs),
             min_improvement: p.elis_min_improvement.unwrap_or(d.min_improvement),
             vol_threshold: p.elis_vol_threshold.unwrap_or(d.vol_threshold),
-            bsi_filter_threshold: p.elis_bsi_filter_threshold.unwrap_or(d.bsi_filter_threshold),
+            bsi_filter_threshold: p
+                .elis_bsi_filter_threshold
+                .unwrap_or(d.bsi_filter_threshold),
             lock_threshold: p.elis_lock_threshold.unwrap_or(d.lock_threshold),
             max_order_age_ms: p.elis_max_order_age_ms.unwrap_or(d.max_order_age_ms),
-            imp_fail_cooldown_ms: p.elis_imp_fail_cooldown_ms.unwrap_or(d.imp_fail_cooldown_ms),
-            imbalance_taker_threshold: p.elis_imbalance_taker_threshold.unwrap_or(d.imbalance_taker_threshold),
+            imp_fail_cooldown_ms: p
+                .elis_imp_fail_cooldown_ms
+                .unwrap_or(d.imp_fail_cooldown_ms),
+            imbalance_taker_threshold: p
+                .elis_imbalance_taker_threshold
+                .unwrap_or(d.imbalance_taker_threshold),
         }
     }
 }
