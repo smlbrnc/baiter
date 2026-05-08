@@ -559,13 +559,6 @@ fn signal_order(
     if price <= 0.0 {
         return None;
     }
-    // Fiyat tavanı filtresi: aşırı pahalı dominant tarafta birikim engeli.
-    // 0.93'ten DOWN almak → kazanılırsa 0.07 kâr, UP kazanırsa 0.93 kayıp (1:13 asimetri).
-    let price_ceiling = ctx.strategy_params.bonereaper_signal_price_ceiling();
-    if price > price_ceiling {
-        return None;
-    }
-
     let s = st.signal_ema.unwrap_or(0.0).abs();
     let multiplier = if s > DYNAMIC_SIZE_STRONG {
         3.0
@@ -605,10 +598,7 @@ fn check_dutch_book(ctx: &StrategyContext<'_>) -> Option<Vec<PlannedOrder>> {
     if !pair_cost_ok(ctx, Outcome::Up, up_ask) || !pair_cost_ok(ctx, Outcome::Down, dn_ask) {
         return None;
     }
-    // Boyut: PAHALI bacağa göre hesapla (max). Eski min hesabı skewed piyasada
-    // (örn. UP=0.12, DOWN=0.85) tek bacak partial fill riskinde 41 gibi dev
-    // pozisyon yaratıyordu. max ile normal signal trade boyutuna yakın kalır.
-    let size = (ctx.order_usdc / up_ask.max(dn_ask)).floor();
+    let size = (ctx.order_usdc / up_ask.min(dn_ask)).floor();
     let mut orders: SmallVec<[PlannedOrder; 2]> = SmallVec::new();
     if let Some(o) = make_buy(ctx, Outcome::Up, up_ask, size, "bonereaper:dutch:up") {
         orders.push(o);

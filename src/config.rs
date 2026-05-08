@@ -201,12 +201,6 @@ pub struct StrategyParams {
     /// PURE FREEZE eşiği — UP_bid'in geçişi flip sayar. Default: 0.5.
     #[serde(default)]
     pub bonereaper_freeze_threshold: Option<f64>,
-    /// Signal emri fiyat tavanı [0.50, 0.99]. Bu değerin üzerindeki ask
-    /// fiyatlarında sinyal emri verilmez. Aşırı pahalı dominant tarafta
-    /// birikim (0.92 DOWN@0.97 gibi) engellenir. Default: 0.92.
-    /// Not: Dutch Book emirleri bu filtreden muaftır (arbitraj garantilidir).
-    #[serde(default)]
-    pub bonereaper_signal_price_ceiling: Option<f64>,
 
     // === Gravie (Bot 66 davranış kopyası) ===
     /// Karar tick aralığı (sn). Bot 66 ortalama inter-arrival 4-5 sn.
@@ -249,8 +243,7 @@ pub struct StrategyParams {
     /// `max(up_ask, dn_ask) >= X` ise tüm yeni emirler durur. Bir tarafın
     /// fiyatı bu eşiğin üstüne çıktığında market o tarafın olasılığını
     /// `>= X` görüyor demektir; "ucuz" görünen karşı tarafa daha fazla
-    /// pozisyon açmak collapse riskini büyütür. Default: 0.95 (yumuşak guard,
-    /// sadece extreme collapse'ı yakalar; big-win market'leri korur).
+    /// pozisyon açmak collapse riskini büyütür. Default: 0.85.
     /// 1.0 = devre dışı.
     #[serde(default)]
     pub gravie_opp_ask_stop_threshold: Option<f64>,
@@ -312,7 +305,7 @@ impl StrategyParams {
             .clamp(0.01, 1.0)
     }
     pub fn bonereaper_profit_lock(&self) -> bool {
-        self.bonereaper_profit_lock.unwrap_or(true)
+        self.bonereaper_profit_lock.unwrap_or(false)
     }
     /// 0 = devre dışı; 1..=300 sınırlı. Default 45 sn.
     pub fn bonereaper_freeze_window_secs(&self) -> u32 {
@@ -323,12 +316,6 @@ impl StrategyParams {
         self.bonereaper_freeze_threshold
             .unwrap_or(0.5)
             .clamp(0.10, 0.90)
-    }
-    /// 0.50..0.99 sınırlı; default 0.92.
-    pub fn bonereaper_signal_price_ceiling(&self) -> f64 {
-        self.bonereaper_signal_price_ceiling
-            .unwrap_or(0.92)
-            .clamp(0.50, 0.99)
     }
 }
 
@@ -451,7 +438,7 @@ impl Default for GravieParams {
             balance_rebalance: 0.30,
             rebalance_ceiling_multiplier: 1.20,
             sum_avg_ceiling: 1.05,
-            opp_ask_stop_threshold: 0.95,
+            opp_ask_stop_threshold: 0.85,
             max_fak_size: 50.0,
         }
     }
