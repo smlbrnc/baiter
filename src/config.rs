@@ -286,7 +286,7 @@ impl StrategyParams {
     }
     pub fn bonereaper_profit_lock_imbalance(&self) -> f64 {
         self.bonereaper_profit_lock_imbalance
-            .unwrap_or(50.0)
+            .unwrap_or(30.0)
             .clamp(1.0, 200.0)
     }
     pub fn bonereaper_signal_persistence_k(&self) -> u32 {
@@ -305,7 +305,7 @@ impl StrategyParams {
             .clamp(0.01, 1.0)
     }
     pub fn bonereaper_profit_lock(&self) -> bool {
-        self.bonereaper_profit_lock.unwrap_or(false)
+        self.bonereaper_profit_lock.unwrap_or(true)
     }
     /// 0 = devre dışı; 1..=300 sınırlı. Default 45 sn.
     pub fn bonereaper_freeze_window_secs(&self) -> u32 {

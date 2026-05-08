@@ -539,9 +539,9 @@ fn signal_direction_persistent(
 /// → dinamik aralık $10-$30. Real bot medyan $12, p90 $48 ile uyumlu.
 ///
 /// **avg_sum filtresi (yalnız pahalı taraf, bid > 0.50):**
-///   Karşı tarafta zaten pozisyon varsa (`opp_filled > 0`) ve mevcut yönde de
-///   pozisyon varsa (`cur_filled > 0`), yeni alımın etkisiyle `new_avg + opp_avg ≥ 1.25`
-///   olacaksa emir verilmez. Real bot p90 ~1.20'ye yakın eşik.
+///   Karşı tarafta zaten pozisyon varsa (`opp_filled > 0`), mevcut yönde pozisyon
+///   olsun ya da olmasın, yeni alımın etkisiyle `new_avg + opp_avg ≥ 0.99`
+///   olacaksa emir verilmez. İlk cross-side alımı da dahil eder.
 fn signal_order(
     st: &BonereaperActive,
     ctx: &StrategyContext<'_>,
@@ -575,9 +575,13 @@ fn signal_order(
             Outcome::Up => (m.up_filled, m.avg_up, m.down_filled, m.avg_down),
             Outcome::Down => (m.down_filled, m.avg_down, m.up_filled, m.avg_up),
         };
-        if opp_filled > 0.0 && cur_filled > 0.0 {
-            let new_avg = (cur_avg * cur_filled + price * size) / (cur_filled + size);
-            if new_avg + opp_avg >= 1.25 {
+        if opp_filled > 0.0 {
+            let new_avg = if cur_filled > 0.0 {
+                (cur_avg * cur_filled + price * size) / (cur_filled + size)
+            } else {
+                price
+            };
+            if new_avg + opp_avg >= 0.99 {
                 return None;
             }
         }
