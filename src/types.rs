@@ -119,4 +119,5 @@ pub enum Strategy {
     Alis,
     Elis,
     Bonereaper,
+    Gravie,
 }

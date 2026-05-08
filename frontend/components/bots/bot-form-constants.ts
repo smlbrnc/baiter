@@ -27,6 +27,12 @@ export const STRATEGY_OPTIONS: {
     description:
       "5dk btc-updown için 1sn decision loop; hibrit composite + EMA sinyal yön kararı; Dutch Book + Signal (sabit order_usdc size, avg_sum<1.25); opt-in profit lock. BUY-only, çıkış REDEEM.",
   },
+  {
+    id: "gravie",
+    label: "Gravie",
+    description:
+      "Bot 66 (Lively-Authenticity) davranış kopyası: 5sn karar tick'i, dual-side BUY-only FAK taker, mid-price civarı ucuz-taraf entry, 38sn second-leg guard, T-90 cutoff, sum_avg ≥ 1.05'te dur, balance < 0.30'da rebalance. Sinyal kullanmaz (saf order book reaktif).",
+  },
 ]
 
 export const RUN_MODE_OPTIONS: {

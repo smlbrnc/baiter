@@ -7,6 +7,7 @@ use crate::ipc::{self, FrontendEvent};
 use crate::strategy::alis::{AlisEngine, AlisState};
 use crate::strategy::bonereaper::BonereaperEngine;
 use crate::strategy::elis::ElisEngine;
+use crate::strategy::gravie::GravieEngine;
 use crate::strategy::metrics::{MarketPnL, StrategyMetrics};
 use crate::strategy::{Decision, OpenOrder, PlannedOrder, StrategyContext, StrategyState};
 use crate::time::{now_ms, zone_pct, MarketZone};
@@ -161,6 +162,10 @@ impl MarketSession {
             StrategyState::Bonereaper(s) => {
                 let (ns, d) = BonereaperEngine::decide(s, &ctx);
                 (StrategyState::Bonereaper(ns), d)
+            }
+            StrategyState::Gravie(s) => {
+                let (ns, d) = GravieEngine::decide(s, &ctx);
+                (StrategyState::Gravie(ns), d)
             }
         };
         if let Some(method) = detect_alis_lock_transition(&prev_state, &next_state) {

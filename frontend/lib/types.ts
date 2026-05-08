@@ -5,7 +5,7 @@ export type Outcome = "UP" | "DOWN"
 export type Side = "BUY" | "SELL"
 
 export type RunMode = "live" | "dryrun"
-export type Strategy = "alis" | "elis" | "bonereaper"
+export type Strategy = "alis" | "elis" | "bonereaper" | "gravie"
 
 /**
  * `bots.strategy_params` JSON sütunu — backend `config::StrategyParams`.
@@ -138,6 +138,48 @@ export interface StrategyParams {
   bonereaper_freeze_window_secs?: number | null
   /** PURE FREEZE eşiği — UP_bid'in geçişi flip sayar. Default 0.5. */
   bonereaper_freeze_threshold?: number | null
+
+  // ── Gravie (Bot 66 davranış kopyası) ─────────────────────────────────────
+  /**
+   * Karar tick aralığı (sn). Bot 66 ortalama inter-arrival 4-5 sn.
+   * Default: 5.
+   */
+  gravie_tick_interval_secs?: number | null
+  /** Ardışık BUY emirleri arası minimum bekleme (ms). Default: 4000. */
+  gravie_buy_cooldown_ms?: number | null
+  /**
+   * Yeni leg açma için ask fiyat tavanı. Bot 66 first entry medyan 0.50,
+   * p75 ≈ 0.575 — sıkı kalibrasyon. Default: 0.65.
+   */
+  gravie_entry_ask_ceiling?: number | null
+  /**
+   * Second-leg guard süresi (ms). İlk leg sonrası karşı tarafa
+   * otomatik geçiş için min bekleme. Bot 66 5m median 38 sn. Default: 38000.
+   */
+  gravie_second_leg_guard_ms?: number | null
+  /**
+   * Second-leg karşı taraf fiyat tetikleyicisi — opp_ask bu eşiğin
+   * altına inerse guard beklenmeden flip. Bot 66 opp_first_px ≈ 0.50.
+   * Default: 0.55.
+   */
+  gravie_second_leg_opp_trigger?: number | null
+  /**
+   * Kapanışa bu kadar sn kala yeni emir verme. Bot 66 5m median T-78,
+   * %58 ≤ T-90. Default: 90.
+   */
+  gravie_t_cutoff_secs?: number | null
+  /**
+   * Balance eşiği — `min/max` bunun altındaysa az tarafa zorunlu rebalance.
+   * Default: 0.30 (sim'de 0.45 ile %42 trade rebalance idi; daralt).
+   */
+  gravie_balance_rebalance?: number | null
+  /** Rebalance modunda entry ceiling esneme oranı. Default: 1.20. */
+  gravie_rebalance_ceiling_multiplier?: number | null
+  /**
+   * Sum-avg guard — `avg_up + avg_dn ≥ X` ise yeni emir verme.
+   * Default: 1.05 (sim'de 1.20 çok geç oluyor; sıkı tutarak overpay engellenir).
+   */
+  gravie_sum_avg_ceiling?: number | null
 }
 
 export interface BotRow {
@@ -475,6 +517,16 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   bonereaper_profit_lock: false,
   bonereaper_freeze_window_secs: 45,
   bonereaper_freeze_threshold: 0.5,
+  // Gravie (Bot 66 davranış kopyası — optimum kalibre)
+  gravie_tick_interval_secs: 5,
+  gravie_buy_cooldown_ms: 4000,
+  gravie_entry_ask_ceiling: 0.65,
+  gravie_second_leg_guard_ms: 38000,
+  gravie_second_leg_opp_trigger: 0.55,
+  gravie_t_cutoff_secs: 90,
+  gravie_balance_rebalance: 0.3,
+  gravie_rebalance_ceiling_multiplier: 1.2,
+  gravie_sum_avg_ceiling: 1.05,
 } as const
 
 // ── Bot İstatistikleri ────────────────────────────────────────────────────

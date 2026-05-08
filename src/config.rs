@@ -201,6 +201,44 @@ pub struct StrategyParams {
     /// PURE FREEZE eşiği — UP_bid'in geçişi flip sayar. Default: 0.5.
     #[serde(default)]
     pub bonereaper_freeze_threshold: Option<f64>,
+
+    // === Gravie (Bot 66 davranış kopyası) ===
+    /// Karar tick aralığı (sn). Bot 66 ortalama inter-arrival 4-5 sn.
+    /// Default: 5.
+    #[serde(default)]
+    pub gravie_tick_interval_secs: Option<u64>,
+    /// Ardışık BUY emirleri arası minimum bekleme (ms). Default: 4000.
+    #[serde(default)]
+    pub gravie_buy_cooldown_ms: Option<u64>,
+    /// Yeni leg açma için ask fiyat tavanı. Bot 66 first entry medyan 0.50,
+    /// p75 0.575 — sıkı kalibrasyon. Default: 0.65.
+    #[serde(default)]
+    pub gravie_entry_ask_ceiling: Option<f64>,
+    /// Second-leg guard süresi (ms). İlk leg sonrası karşı tarafa
+    /// otomatik geçiş için minimum bekleme. Bot 66 5m median 38 sn.
+    /// Default: 38000.
+    #[serde(default)]
+    pub gravie_second_leg_guard_ms: Option<u64>,
+    /// Second-leg karşı taraf fiyat tetikleyicisi — opp_ask bu eşiğin
+    /// altına inerse guard beklenmeden flip. Bot 66 opp_first_px ~0.50.
+    /// Default: 0.55.
+    #[serde(default)]
+    pub gravie_second_leg_opp_trigger: Option<f64>,
+    /// Kapanışa bu kadar sn kala yeni emir verme. Bot 66 5m median T-78,
+    /// %58 ≤ T-90. Default: 90.
+    #[serde(default)]
+    pub gravie_t_cutoff_secs: Option<f64>,
+    /// Balance eşiği — `min/max` bunun altındaysa az tarafa zorunlu rebalance.
+    /// Default: 0.30 (sim'de %42 rebalance trade idi; daralt).
+    #[serde(default)]
+    pub gravie_balance_rebalance: Option<f64>,
+    /// Rebalance modunda entry ceiling multiplier (esneme). Default: 1.20.
+    #[serde(default)]
+    pub gravie_rebalance_ceiling_multiplier: Option<f64>,
+    /// Sum-avg guard — `avg_up + avg_dn ≥ X` ise yeni emir verme.
+    /// Default: 1.05 (sim'de 1.20 çok geç, sum_avg sürekli >1.0 oluyor).
+    #[serde(default)]
+    pub gravie_sum_avg_ceiling: Option<f64>,
 }
 
 impl StrategyParams {
@@ -342,6 +380,93 @@ impl ElisParams {
             imbalance_taker_threshold: p
                 .elis_imbalance_taker_threshold
                 .unwrap_or(d.imbalance_taker_threshold),
+        }
+    }
+}
+
+/// Gravie stratejisi parametreleri — `StrategyParams`'tan resolve edilir.
+/// Bot 66 (`Lively-Authenticity`) davranış kalibrasyonu; default'lar
+/// mikro davranış sondajından (data/bot66_micro_analysis.json) türetilmiştir.
+#[derive(Debug, Clone, Copy)]
+pub struct GravieParams {
+    /// Karar tick aralığı (sn). Bot 66 ortalama inter-arrival 4-5 sn.
+    pub tick_interval_secs: u64,
+    /// Ardışık BUY emirleri arası minimum bekleme (ms).
+    pub buy_cooldown_ms: u64,
+    /// Yeni leg açma için ask fiyat tavanı.
+    pub entry_ask_ceiling: f64,
+    /// Second-leg guard süresi (ms).
+    pub second_leg_guard_ms: u64,
+    /// Second-leg karşı taraf fiyat tetikleyicisi.
+    pub second_leg_opp_trigger: f64,
+    /// Kapanışa bu kadar sn kala yeni emir verme.
+    pub t_cutoff_secs: f64,
+    /// Balance eşiği — bunun altında rebalance.
+    pub balance_rebalance: f64,
+    /// Rebalance modunda entry ceiling multiplier.
+    pub rebalance_ceiling_multiplier: f64,
+    /// Sum-avg guard — bu eşiğin üstünde yeni emir verme.
+    pub sum_avg_ceiling: f64,
+}
+
+impl Default for GravieParams {
+    fn default() -> Self {
+        Self {
+            tick_interval_secs: 5,
+            buy_cooldown_ms: 4_000,
+            entry_ask_ceiling: 0.65,
+            second_leg_guard_ms: 38_000,
+            second_leg_opp_trigger: 0.55,
+            t_cutoff_secs: 90.0,
+            balance_rebalance: 0.30,
+            rebalance_ceiling_multiplier: 1.20,
+            sum_avg_ceiling: 1.05,
+        }
+    }
+}
+
+impl GravieParams {
+    /// `StrategyParams`'tan opsiyonel override'ları uygular; eksik alanlar default kalır.
+    #[inline(always)]
+    pub fn from_strategy_params(p: &StrategyParams) -> Self {
+        let d = Self::default();
+        Self {
+            tick_interval_secs: p
+                .gravie_tick_interval_secs
+                .unwrap_or(d.tick_interval_secs)
+                .clamp(1, 60),
+            buy_cooldown_ms: p
+                .gravie_buy_cooldown_ms
+                .unwrap_or(d.buy_cooldown_ms)
+                .clamp(500, 60_000),
+            entry_ask_ceiling: p
+                .gravie_entry_ask_ceiling
+                .unwrap_or(d.entry_ask_ceiling)
+                .clamp(0.10, 0.99),
+            second_leg_guard_ms: p
+                .gravie_second_leg_guard_ms
+                .unwrap_or(d.second_leg_guard_ms)
+                .clamp(0, 600_000),
+            second_leg_opp_trigger: p
+                .gravie_second_leg_opp_trigger
+                .unwrap_or(d.second_leg_opp_trigger)
+                .clamp(0.10, 0.95),
+            t_cutoff_secs: p
+                .gravie_t_cutoff_secs
+                .unwrap_or(d.t_cutoff_secs)
+                .clamp(0.0, 600.0),
+            balance_rebalance: p
+                .gravie_balance_rebalance
+                .unwrap_or(d.balance_rebalance)
+                .clamp(0.0, 1.0),
+            rebalance_ceiling_multiplier: p
+                .gravie_rebalance_ceiling_multiplier
+                .unwrap_or(d.rebalance_ceiling_multiplier)
+                .clamp(1.0, 2.0),
+            sum_avg_ceiling: p
+                .gravie_sum_avg_ceiling
+                .unwrap_or(d.sum_avg_ceiling)
+                .clamp(0.80, 1.50),
         }
     }
 }
