@@ -1,7 +1,7 @@
-"use client";
+"use client"
 
-import { useCallback, useState } from "react";
-import { useParams } from "next/navigation";
+import { useCallback, useState } from "react"
+import { useParams } from "next/navigation"
 import {
   CircleStop,
   LineChart,
@@ -9,71 +9,66 @@ import {
   Play,
   ScrollText,
   Settings as SettingsIcon,
-} from "lucide-react";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
+} from "lucide-react"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
 import {
   BotDetailHeader,
   PageBackButton,
-} from "@/components/bots/bot-detail-header";
-import {
-  Tabs,
-  TabsContent,
-  TabsList,
-  TabsTrigger,
-} from "@/components/ui/tabs";
-import { BotSettingsCards } from "@/components/bots/bot-settings-cards";
-import { LogStream } from "@/components/bots/log-stream";
-import { SessionsTable } from "@/components/bots/sessions-table";
-import { BotSettingsEditForm } from "@/components/bots/bot-settings-edit-form";
-import { api } from "@/lib/api";
-import { useBot } from "@/lib/hooks";
+} from "@/components/bots/bot-detail-header"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { BotSettingsCards } from "@/components/bots/bot-settings-cards"
+import { LogStream } from "@/components/bots/log-stream"
+import { SessionsTable } from "@/components/bots/sessions-table"
+import { BotSettingsEditForm } from "@/components/bots/bot-settings-edit-form"
+import { api } from "@/lib/api"
+import { useBot } from "@/lib/hooks"
 
 export default function BotSummaryPage() {
-  const { id } = useParams<{ id: string }>();
-  const botId = Number(id);
-  const { bot, mutate } = useBot(Number.isFinite(botId) ? botId : null);
-  const [pending, setPending] = useState(false);
+  const { id } = useParams<{ id: string }>()
+  const botId = Number(id)
+  const { bot, mutate } = useBot(Number.isFinite(botId) ? botId : null)
+  const [pending, setPending] = useState(false)
 
   const doStart = useCallback(async () => {
-    if (!bot || pending) return;
-    const prevState = bot.state;
-    mutate({ state: "RUNNING" });
-    setPending(true);
+    if (!bot || pending) return
+    const prevState = bot.state
+    mutate({ state: "RUNNING" })
+    setPending(true)
     try {
-      await api.startBot(bot.id);
+      await api.startBot(bot.id)
     } catch {
-      mutate({ state: prevState });
+      mutate({ state: prevState })
     } finally {
-      setPending(false);
+      setPending(false)
     }
-  }, [bot, pending, mutate]);
+  }, [bot, pending, mutate])
 
   const doStop = useCallback(async () => {
-    if (!bot || pending) return;
-    const prevState = bot.state;
-    mutate({ state: "STOPPED" });
-    setPending(true);
+    if (!bot || pending) return
+    const prevState = bot.state
+    mutate({ state: "STOPPED" })
+    setPending(true)
     try {
-      await api.stopBot(bot.id);
+      await api.stopBot(bot.id)
     } catch {
-      mutate({ state: prevState });
+      mutate({ state: prevState })
     } finally {
-      setPending(false);
+      setPending(false)
     }
-  }, [bot, pending, mutate]);
+  }, [bot, pending, mutate])
 
   if (!bot) {
     return (
       <div className="flex flex-col gap-3">
         <PageBackButton />
-        <p className="text-muted-foreground text-sm">Yükleniyor…</p>
+        <p className="text-sm text-muted-foreground">Yükleniyor…</p>
       </div>
-    );
+    )
   }
 
   const badgeBase =
-    "h-5 border px-1.5 text-[10px] font-semibold uppercase tracking-wide";
+    "h-5 border px-1.5 text-[10px] font-semibold uppercase tracking-wide"
 
   return (
     <div className="space-y-4">
@@ -140,7 +135,7 @@ export default function BotSummaryPage() {
       />
 
       <Tabs defaultValue="markets" className="w-full">
-        <div className="border-border/50 border-b">
+        <div className="border-b border-border/50">
           <TabsList
             variant="line"
             className="!h-10 w-full justify-start gap-1 rounded-none !p-0"
@@ -169,7 +164,7 @@ export default function BotSummaryPage() {
         </TabsContent>
       </Tabs>
     </div>
-  );
+  )
 }
 
 /**
@@ -180,9 +175,9 @@ function TabTrigger({
   icon,
   label,
 }: {
-  value: string;
-  icon: React.ReactNode;
-  label: string;
+  value: string
+  icon: React.ReactNode
+  label: string
 }) {
   return (
     <TabsTrigger
@@ -192,5 +187,5 @@ function TabTrigger({
       {icon}
       {label}
     </TabsTrigger>
-  );
+  )
 }

@@ -30,14 +30,7 @@ impl StrategyMetrics {
     /// MATCHED fill event'ini absorbla. `side=Sell` → pozisyondan çıkış:
     /// `*_filled` azalır (0'a clamp), VWAP **değişmez** (kalan pozisyonun
     /// ortalama maliyeti korunur). `size` her zaman pozitif.
-    pub fn ingest_fill(
-        &mut self,
-        outcome: Outcome,
-        side: Side,
-        price: f64,
-        size: f64,
-        fee: f64,
-    ) {
+    pub fn ingest_fill(&mut self, outcome: Outcome, side: Side, price: f64, size: f64, fee: f64) {
         let signed = match side {
             Side::Buy => size,
             Side::Sell => -size,
@@ -47,8 +40,7 @@ impl StrategyMetrics {
                 if matches!(side, Side::Buy) {
                     let new_total = self.up_filled + size;
                     if new_total > 0.0 {
-                        self.avg_up =
-                            (self.avg_up * self.up_filled + price * size) / new_total;
+                        self.avg_up = (self.avg_up * self.up_filled + price * size) / new_total;
                     }
                 }
                 self.up_filled = (self.up_filled + signed).max(0.0);

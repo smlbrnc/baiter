@@ -1,24 +1,24 @@
-import type { Metadata } from "next";
-import { Geist_Mono, Inter } from "next/font/google";
+import type { Metadata } from "next"
+import { Geist_Mono, Inter } from "next/font/google"
 
-import "./globals.css";
-import { ThemeProvider } from "@/components/theme-provider";
-import { AppSidebar } from "@/components/app-sidebar";
-import { TooltipProvider } from "@/components/ui/tooltip";
-import { cn } from "@/lib/utils";
+import "./globals.css"
+import { ThemeProvider } from "@/components/theme-provider"
+import { AppSidebar } from "@/components/app-sidebar"
+import { TooltipProvider } from "@/components/ui/tooltip"
+import { cn } from "@/lib/utils"
 
-const inter = Inter({ subsets: ["latin"], variable: "--font-sans" });
-const fontMono = Geist_Mono({ subsets: ["latin"], variable: "--font-mono" });
+const inter = Inter({ subsets: ["latin"], variable: "--font-sans" })
+const fontMono = Geist_Mono({ subsets: ["latin"], variable: "--font-mono" })
 
 export const metadata: Metadata = {
   title: "Baiter Pro",
   description: "Polymarket CLOB multi-bot dashboard",
-};
+}
 
 export default function RootLayout({
   children,
 }: Readonly<{
-  children: React.ReactNode;
+  children: React.ReactNode
 }>) {
   return (
     <html
@@ -28,23 +28,23 @@ export default function RootLayout({
         "antialiased",
         fontMono.variable,
         "font-sans",
-        inter.variable,
+        inter.variable
       )}
     >
       <body>
         <ThemeProvider>
           <TooltipProvider delayDuration={200}>
-          <div className="bg-background text-foreground flex min-h-svh">
-            <AppSidebar />
-            <main className="bg-muted/30 flex-1 overflow-auto">
-              <div className="mx-auto max-w-7xl px-3 py-5 sm:px-5 lg:px-6 lg:py-6">
-                {children}
-              </div>
-            </main>
-          </div>
+            <div className="flex min-h-svh bg-background text-foreground">
+              <AppSidebar />
+              <main className="flex-1 overflow-auto bg-muted/30">
+                <div className="mx-auto max-w-7xl px-3 py-5 sm:px-5 lg:px-6 lg:py-6">
+                  {children}
+                </div>
+              </main>
+            </div>
           </TooltipProvider>
         </ThemeProvider>
       </body>
     </html>
-  );
+  )
 }

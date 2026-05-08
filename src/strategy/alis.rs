@@ -36,7 +36,7 @@ use serde::{Deserialize, Serialize};
 
 use super::common::{Decision, OpenOrder, PlannedOrder, StrategyContext};
 use crate::time::MarketZone;
-use crate::types::{Outcome, OrderType, Side};
+use crate::types::{OrderType, Outcome, Side};
 
 /// FAK pyramid deneme sayısının tükenip tükenmediğini kontrol eder (ilk deneme + 2 retry).
 fn pyramid_retry(used: u8) -> bool {
@@ -244,10 +244,7 @@ fn min_size_for_notional(min_notional: f64, price: f64) -> f64 {
 
 // ---------- Profit-lock check ----------
 
-fn profit_lock_check(
-    state: AlisState,
-    ctx: &StrategyContext<'_>,
-) -> Option<(AlisState, Decision)> {
+fn profit_lock_check(state: AlisState, ctx: &StrategyContext<'_>) -> Option<(AlisState, Decision)> {
     if matches!(state, AlisState::Locked | AlisState::Done) {
         return None;
     }
@@ -422,11 +419,7 @@ fn reconcile_parity(state: AlisState, ctx: &StrategyContext<'_>) -> Option<Decis
     if avg_d <= 0.0 {
         return None;
     }
-    let target_price = clamp_price(
-        ctx.avg_threshold - avg_d,
-        ctx.min_price,
-        ctx.max_price,
-    );
+    let target_price = clamp_price(ctx.avg_threshold - avg_d, ctx.min_price, ctx.max_price);
 
     // Hedge tamamen yoksa (API reddi veya timing hatası yüzünden open_orders'dan
     // düştüyse) yeni emir ver; iptal edilecek birşey yok.
@@ -483,21 +476,13 @@ fn place_open_pair(ctx: &StrategyContext<'_>) -> (AlisState, Decision) {
     }
 
     let open_delta = ctx.strategy_params.open_delta_or_default();
-    let intent_price = clamp_price(
-        intent_ask + open_delta,
-        ctx.min_price,
-        ctx.max_price,
-    );
+    let intent_price = clamp_price(intent_ask + open_delta, ctx.min_price, ctx.max_price);
     // Hedge'i planlanan limit (`intent_price`) değil beklenen fill (`intent_ask`)
     // üzerinden hesapla: cross olan BUY emiri `best_ask`'ten dolar, dolayısıyla
     // gerçek `avg_d == intent_ask`. Aksi halde requote_open_pair ilk tick'te
     // hedge'i `safe = avg_threshold - intent_ask`'e taşımak için boşa cancel/place
     // yapar.
-    let pair_price = clamp_price(
-        ctx.avg_threshold - intent_ask,
-        ctx.min_price,
-        ctx.max_price,
-    );
+    let pair_price = clamp_price(ctx.avg_threshold - intent_ask, ctx.min_price, ctx.max_price);
     if intent_price <= 0.0 || pair_price <= 0.0 {
         return (AlisState::Pending, Decision::NoOp);
     }
@@ -555,11 +540,7 @@ fn try_avg_down(state: AlisState, ctx: &StrategyContext<'_>) -> (AlisState, Deci
         return (state, Decision::NoOp);
     };
 
-    if ctx
-        .now_ms
-        .saturating_sub(ctx.last_averaging_ms)
-        < ctx.cooldown_threshold
-    {
+    if ctx.now_ms.saturating_sub(ctx.last_averaging_ms) < ctx.cooldown_threshold {
         return (state, Decision::NoOp);
     }
 
@@ -581,9 +562,7 @@ fn try_avg_down(state: AlisState, ctx: &StrategyContext<'_>) -> (AlisState, Deci
         .open_orders
         .iter()
         .filter(|o| {
-            o.outcome == dom
-                && o.reason.starts_with("alis:")
-                && (o.size - o.size_matched) > 0.0
+            o.outcome == dom && o.reason.starts_with("alis:") && (o.size - o.size_matched) > 0.0
         })
         .collect();
     if pending.is_empty() {
@@ -666,11 +645,7 @@ fn try_pyramid(
         return (state, Decision::NoOp);
     };
 
-    if ctx
-        .now_ms
-        .saturating_sub(ctx.last_averaging_ms)
-        < ctx.cooldown_threshold
-    {
+    if ctx.now_ms.saturating_sub(ctx.last_averaging_ms) < ctx.cooldown_threshold {
         return (state, Decision::NoOp);
     }
 
@@ -720,10 +695,8 @@ fn try_pyramid(
     let new_state = AlisState::PositionOpen {
         dominant_dir,
         avg_down_used,
-        agg_pyramid: agg_pyramid
-            + if phase == MarketZone::AggTrade { 1 } else { 0 },
-        fak_pyramid: fak_pyramid
-            + if phase == MarketZone::FakTrade { 1 } else { 0 },
+        agg_pyramid: agg_pyramid + if phase == MarketZone::AggTrade { 1 } else { 0 },
+        fak_pyramid: fak_pyramid + if phase == MarketZone::FakTrade { 1 } else { 0 },
         score_sum,
         score_samples,
     };

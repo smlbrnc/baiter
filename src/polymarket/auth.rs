@@ -151,10 +151,12 @@ pub async fn derive_api_key(
     nonce: u64,
 ) -> Result<DeriveResult, AppError> {
     let timestamp = now_secs().to_string();
-    let (signer_address, signature) =
-        sign_clob_auth(private_key_hex, &timestamp, nonce).await?;
+    let (signer_address, signature) = sign_clob_auth(private_key_hex, &timestamp, nonce).await?;
 
-    let url = format!("{}/auth/derive-api-key", clob_base_url.trim_end_matches('/'));
+    let url = format!(
+        "{}/auth/derive-api-key",
+        clob_base_url.trim_end_matches('/')
+    );
     let resp = http
         .get(&url)
         .header("POLY_ADDRESS", &signer_address)

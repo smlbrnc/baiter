@@ -15,9 +15,7 @@ use crate::types::{Outcome, Side};
 pub mod executor;
 pub mod passive;
 
-pub use executor::{
-    execute, ExecuteOutput, Executor, LiveExecutor, Simulator, DRYRUN_FEE_RATE,
-};
+pub use executor::{execute, ExecuteOutput, Executor, LiveExecutor, Simulator, DRYRUN_FEE_RATE};
 pub use passive::simulate_passive_fills;
 
 /// Yürütülen emir sonucu — fill olmamışsa `fill_price/size` planned değerlerini taşır.
@@ -178,12 +176,13 @@ impl MarketSession {
 
 /// Alis lock pasiftir; method etiketi `prev`'e göre türetilir.
 /// `OpenPlaced → Locked` = simetrik fill, `PositionOpen → Locked` = hedge fill.
-fn detect_alis_lock_transition(
-    prev: &StrategyState,
-    next: &StrategyState,
-) -> Option<&'static str> {
-    let StrategyState::Alis(prev_alis) = prev else { return None };
-    let StrategyState::Alis(next_alis) = next else { return None };
+fn detect_alis_lock_transition(prev: &StrategyState, next: &StrategyState) -> Option<&'static str> {
+    let StrategyState::Alis(prev_alis) = prev else {
+        return None;
+    };
+    let StrategyState::Alis(next_alis) = next else {
+        return None;
+    };
     if *next_alis != AlisState::Locked || *prev_alis == AlisState::Locked {
         return None;
     }
@@ -248,4 +247,3 @@ pub fn update_top_of_book(
         false
     }
 }
-

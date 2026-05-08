@@ -168,7 +168,11 @@ impl LiveExecutor {
                     label,
                     format!(
                         "⚠️ cancel rejected id={nc_id} reason={reason_s}{}",
-                        if terminal { " [terminal → pruning]" } else { "" }
+                        if terminal {
+                            " [terminal → pruning]"
+                        } else {
+                            ""
+                        }
                     ),
                 );
                 if terminal {
@@ -312,12 +316,8 @@ pub async fn execute(
     let mut out = ExecuteOutput::default();
     match decision {
         Decision::NoOp => {}
-        Decision::PlaceOrders(orders) => {
-            place_batch(session, executor, orders, &mut out).await?
-        }
-        Decision::CancelOrders(ids) => {
-            cancel_batch(session, executor, &ids, &mut out).await?
-        }
+        Decision::PlaceOrders(orders) => place_batch(session, executor, orders, &mut out).await?,
+        Decision::CancelOrders(ids) => cancel_batch(session, executor, &ids, &mut out).await?,
         Decision::CancelAndPlace { cancels, places } => {
             let has_terminal_cancel = if !cancels.is_empty() {
                 cancel_batch(session, executor, &cancels, &mut out).await?;
@@ -325,9 +325,8 @@ pub async fn execute(
                     r.not_canceled
                         .as_object()
                         .map(|m| {
-                            m.values().any(|v| {
-                                is_terminal_not_canceled(v.as_str().unwrap_or(""))
-                            })
+                            m.values()
+                                .any(|v| is_terminal_not_canceled(v.as_str().unwrap_or("")))
                         })
                         .unwrap_or(false)
                 })
@@ -409,4 +408,3 @@ async fn cancel_batch(
     }
     Ok(())
 }
-

@@ -57,7 +57,12 @@ pub async fn start_bot(state: Arc<AppState>, bot_id: i64) -> Result<(), AppError
             return Ok(());
         }
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
-        children.insert(bot_id, BotHandle { shutdown: shutdown_tx });
+        children.insert(
+            bot_id,
+            BotHandle {
+                shutdown: shutdown_tx,
+            },
+        );
         shutdown_rx
     };
     let st = state.clone();

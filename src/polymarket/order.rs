@@ -37,8 +37,7 @@ alloy::sol! {
 }
 
 /// Statik metadata = `bytes32(0)` hex prefiks'li yazımı; her order'da alloc'sız kullanılır.
-const METADATA_HEX: &str =
-    "0x0000000000000000000000000000000000000000000000000000000000000000";
+const METADATA_HEX: &str = "0x0000000000000000000000000000000000000000000000000000000000000000";
 
 /// Boot'ta bir kez kurulan imza materyali; her order için signer parse + domain inşası eler.
 pub struct SignerCache {
@@ -59,11 +58,12 @@ pub struct SignerCache {
 impl SignerCache {
     /// `Credentials` + `chain_id`'den boot anında bir kez kur.
     pub fn from_creds(creds: &Credentials, chain_id: u64) -> Result<Self, AppError> {
-        let signer: PrivateKeySigner = creds
-            .polygon_private_key
-            .trim_start_matches("0x")
-            .parse()
-            .map_err(|e| AppError::Auth(format!("private key parse: {e}")))?;
+        let signer: PrivateKeySigner =
+            creds
+                .polygon_private_key
+                .trim_start_matches("0x")
+                .parse()
+                .map_err(|e| AppError::Auth(format!("private key parse: {e}")))?;
         let signer_addr = signer.address();
         let maker_addr = match creds.signature_type {
             0 => signer_addr,
@@ -265,8 +265,7 @@ fn parse_bytes32(hex_str: &str) -> Result<FixedBytes<32>, AppError> {
             stripped.len()
         )));
     }
-    let bytes = hex::decode(stripped)
-        .map_err(|e| AppError::Auth(format!("bytes32 hex decode: {e}")))?;
+    let bytes =
+        hex::decode(stripped).map_err(|e| AppError::Auth(format!("bytes32 hex decode: {e}")))?;
     Ok(FixedBytes::<32>::from_slice(&bytes))
 }
-

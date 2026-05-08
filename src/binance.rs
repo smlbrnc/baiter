@@ -34,7 +34,11 @@ pub struct BinanceSignalState {
 
 impl Default for BinanceSignalState {
     fn default() -> Self {
-        Self { imbalance: 0.0, cvd: 0.0, warmup: true }
+        Self {
+            imbalance: 0.0,
+            cvd: 0.0,
+            warmup: true,
+        }
     }
 }
 
@@ -85,21 +89,34 @@ impl CvdEngine {
 
     fn ingest(&mut self, ts_ms: u64, qty: f64, is_buy: bool) {
         self.trades.push_back(TradeEntry { ts_ms, qty, is_buy });
-        if is_buy { self.buy_vol += qty; } else { self.sell_vol += qty; }
+        if is_buy {
+            self.buy_vol += qty;
+        } else {
+            self.sell_vol += qty;
+        }
         self.total_count += 1;
 
         let cutoff = ts_ms.saturating_sub(self.window_ms);
         while let Some(front) = self.trades.front() {
-            if front.ts_ms >= cutoff { break; }
+            if front.ts_ms >= cutoff {
+                break;
+            }
             let e = self.trades.pop_front().unwrap();
-            if e.is_buy { self.buy_vol = (self.buy_vol - e.qty).max(0.0); }
-            else        { self.sell_vol = (self.sell_vol - e.qty).max(0.0); }
+            if e.is_buy {
+                self.buy_vol = (self.buy_vol - e.qty).max(0.0);
+            } else {
+                self.sell_vol = (self.sell_vol - e.qty).max(0.0);
+            }
         }
     }
 
     fn snapshot(&self) -> (f64, f64, bool) {
         let total = self.buy_vol + self.sell_vol;
-        let imbalance = if total > 0.0 { (self.buy_vol - self.sell_vol) / total } else { 0.0 };
+        let imbalance = if total > 0.0 {
+            (self.buy_vol - self.sell_vol) / total
+        } else {
+            0.0
+        };
         let cvd = self.buy_vol - self.sell_vol;
         let warmup = self.total_count < WARMUP_TRADES;
         (imbalance, cvd, warmup)
@@ -118,8 +135,14 @@ pub async fn run_binance_signal(symbol: &str, state: SharedSignalState, bot_id: 
             format!("🛰️  Binance CVD ws bağlanıyor (symbol={symbol}) → {url}"),
         );
         match connect_stream(&url, &state, &label).await {
-            Ok(()) => ipc::log_line(&label, format!("⚠️  Binance ws kapandı, {backoff}s içinde yeniden bağlanılacak")),
-            Err(e) => ipc::log_line(&label, format!("❌ Binance ws hatası: {e} ({backoff}s içinde yeniden)")),
+            Ok(()) => ipc::log_line(
+                &label,
+                format!("⚠️  Binance ws kapandı, {backoff}s içinde yeniden bağlanılacak"),
+            ),
+            Err(e) => ipc::log_line(
+                &label,
+                format!("❌ Binance ws hatası: {e} ({backoff}s içinde yeniden)"),
+            ),
         }
         {
             let mut s = state.write().await;
@@ -135,11 +158,11 @@ async fn connect_stream(
     state: &SharedSignalState,
     label: &str,
 ) -> Result<(), anyhow::Error> {
-    let (ws_stream, _) =
-        match timeout(CONNECT_TIMEOUT, tokio_tungstenite::connect_async(url)).await {
-            Ok(res) => res?,
-            Err(_) => return Err(anyhow::anyhow!("connect_async timeout (10s)")),
-        };
+    let (ws_stream, _) = match timeout(CONNECT_TIMEOUT, tokio_tungstenite::connect_async(url)).await
+    {
+        Ok(res) => res?,
+        Err(_) => return Err(anyhow::anyhow!("connect_async timeout (10s)")),
+    };
     let (mut write, mut read) = ws_stream.split();
     let mut engine = CvdEngine::new();
     let mut prev_warmup = true;
@@ -148,13 +171,18 @@ async fn connect_stream(
         let next = match timeout(FRAME_IDLE_TIMEOUT, read.next()).await {
             Ok(Some(msg)) => msg,
             Ok(None) => return Ok(()),
-            Err(_) => return Err(anyhow::anyhow!(
-                "binance ws idle > {}s (aggTrade frame yok)",
-                FRAME_IDLE_TIMEOUT.as_secs()
-            )),
+            Err(_) => {
+                return Err(anyhow::anyhow!(
+                    "binance ws idle > {}s (aggTrade frame yok)",
+                    FRAME_IDLE_TIMEOUT.as_secs()
+                ))
+            }
         };
         let text = match next? {
-            Message::Ping(payload) => { let _ = write.send(Message::Pong(payload)).await; continue; }
+            Message::Ping(payload) => {
+                let _ = write.send(Message::Pong(payload)).await;
+                continue;
+            }
             Message::Close(_) => return Ok(()),
             Message::Text(t) => t,
             _ => continue,
@@ -186,7 +214,9 @@ async fn connect_stream(
             prev_warmup = false;
             ipc::log_line(
                 label,
-                format!("🟢 Binance CVD warmup tamamlandı → imbalance={imbalance:+.3} cvd={cvd:.3}"),
+                format!(
+                    "🟢 Binance CVD warmup tamamlandı → imbalance={imbalance:+.3} cvd={cvd:.3}"
+                ),
             );
         }
     }

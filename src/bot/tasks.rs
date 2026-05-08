@@ -43,4 +43,3 @@ pub async fn clob_heartbeat_task(clob: Arc<ClobClient>) {
         }
     }
 }
-

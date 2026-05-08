@@ -70,13 +70,9 @@ impl CredentialsInput {
                 self.signature_type
             )));
         }
-        let derived = polymarket_auth::derive_api_key(
-            &state.http,
-            &state.env.clob_base_url,
-            pk,
-            self.nonce,
-        )
-        .await?;
+        let derived =
+            polymarket_auth::derive_api_key(&state.http, &state.env.clob_base_url, pk, self.nonce)
+                .await?;
         Ok(Credentials {
             poly_address: derived.signer_address,
             poly_api_key: derived.api_key,
@@ -106,10 +102,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/api/bots/{id}/sessions/{slug}", get(session_detail))
         .route("/api/bots/{id}/sessions/{slug}/ticks", get(session_ticks))
         .route("/api/bots/{id}/sessions/{slug}/pnl", get(session_pnl))
-        .route(
-            "/api/bots/{id}/sessions/{slug}/trades",
-            get(session_trades),
-        )
+        .route("/api/bots/{id}/sessions/{slug}/trades", get(session_trades))
         .route(
             "/api/settings/credentials",
             get(get_settings_credentials).put(put_settings_credentials),

@@ -1,33 +1,24 @@
-import type { PnLSnapshot } from "@/lib/types";
-import { cn } from "@/lib/utils";
+import type { PnLSnapshot } from "@/lib/types"
+import { cn } from "@/lib/utils"
 
 interface Props {
-  pnl: PnLSnapshot | null;
+  pnl: PnLSnapshot | null
 }
 
 export function PnLWidget({ pnl }: Props) {
-  if (!pnl) return null;
+  if (!pnl) return null
 
   return (
     <div>
       {/* Kartlar: If UP / If DOWN solda, sonra diğerleri */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-7">
-
         {/* If UP — yeşil aksan */}
-        <PnlCard
-          label="If UP"
-          hint="pnl if yes wins"
-          accent="up"
-        >
+        <PnlCard label="If UP" hint="pnl if yes wins" accent="up">
           <MoneyVal v={pnl.pnl_if_up} />
         </PnlCard>
 
         {/* If DOWN — kırmızı aksan */}
-        <PnlCard
-          label="If DOWN"
-          hint="pnl if no wins"
-          accent="down"
-        >
+        <PnlCard label="If DOWN" hint="pnl if no wins" accent="down">
           <MoneyVal v={pnl.pnl_if_down} />
         </PnlCard>
 
@@ -44,15 +35,17 @@ export function PnLWidget({ pnl }: Props) {
         {/* Shares — UP + DOWN tek kartta */}
         <PnlCard label="Shares" hint="up · down">
           <span className="font-mono text-sm font-semibold tabular-nums">
-            <span className="text-emerald-500">U{pnl.up_filled.toFixed(0)}</span>
-            <span className="text-border px-0.5">·</span>
+            <span className="text-emerald-500">
+              U{pnl.up_filled.toFixed(0)}
+            </span>
+            <span className="px-0.5 text-border">·</span>
             <span className="text-rose-500">D{pnl.down_filled.toFixed(0)}</span>
           </span>
         </PnlCard>
 
         {/* Pairs */}
         <PnlCard label="Pairs" hint="matched">
-          <span className="font-mono text-sm font-semibold tabular-nums text-foreground">
+          <span className="font-mono text-sm font-semibold text-foreground tabular-nums">
             {pnl.pair_count}
           </span>
         </PnlCard>
@@ -61,10 +54,9 @@ export function PnLWidget({ pnl }: Props) {
         <PnlCard label="Fee" hint="total fees">
           <UsdVal v={pnl.fee_total} neutral />
         </PnlCard>
-
       </div>
     </div>
-  );
+  )
 }
 
 /* ── PnlCard ─────────────────────────────────────────────────────── */
@@ -75,38 +67,38 @@ function PnlCard({
   accent,
   children,
 }: {
-  label: string;
-  hint?: string;
-  accent?: "up" | "down";
-  children: React.ReactNode;
+  label: string
+  hint?: string
+  accent?: "up" | "down"
+  children: React.ReactNode
 }) {
   const border =
     accent === "up"
       ? "border-emerald-500/30"
       : accent === "down"
         ? "border-rose-500/30"
-        : "border-border/50";
+        : "border-border/50"
 
   return (
     <div
       className={cn(
-        "bg-card flex flex-col gap-2 rounded-lg border px-3 py-2.5",
-        border,
+        "flex flex-col gap-2 rounded-lg border bg-card px-3 py-2.5",
+        border
       )}
     >
-      <span className="text-muted-foreground text-[10px] font-medium tracking-widest uppercase">
+      <span className="text-[10px] font-medium tracking-widest text-muted-foreground uppercase">
         {label}
       </span>
       <div className="flex flex-col gap-0.5">
         {children}
         {hint && (
-          <span className="text-muted-foreground/50 text-[9px] tracking-wider uppercase">
+          <span className="text-[9px] tracking-wider text-muted-foreground/50 uppercase">
             {hint}
           </span>
         )}
       </div>
     </div>
-  );
+  )
 }
 
 /* ── value helpers ───────────────────────────────────────────────── */
@@ -117,18 +109,18 @@ function MoneyVal({ v }: { v: number }) {
       ? "text-emerald-500"
       : v < 0
         ? "text-rose-500"
-        : "text-muted-foreground";
+        : "text-muted-foreground"
   return (
     <span className={cn("font-mono text-sm font-semibold tabular-nums", color)}>
       {v >= 0 ? "+" : ""}
       {v.toFixed(4)}
     </span>
-  );
+  )
 }
 
 function UsdVal({ v, neutral }: { v: number; neutral?: boolean }) {
   // Negatif cost = realized cash-in (SELL > BUY notional). UI'de "−$X" göster.
-  const negative = v < 0;
+  const negative = v < 0
   return (
     <span
       className={cn(
@@ -137,11 +129,11 @@ function UsdVal({ v, neutral }: { v: number; neutral?: boolean }) {
           ? "text-amber-600 dark:text-amber-400"
           : neutral
             ? "text-foreground"
-            : "text-foreground",
+            : "text-foreground"
       )}
       title={negative ? "Realized cash-in (SELL > BUY)" : undefined}
     >
       {negative ? "−" : ""}${Math.abs(v).toFixed(4)}
     </span>
-  );
+  )
 }

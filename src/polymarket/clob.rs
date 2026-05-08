@@ -94,10 +94,14 @@ impl ClobClient {
             .get("fd")
             .ok_or_else(|| AppError::Clob(format!("clob-markets/{condition_id}: 'fd' missing")))?;
         let rate = fd.get("r").and_then(Value::as_f64).ok_or_else(|| {
-            AppError::Clob(format!("clob-markets/{condition_id}: 'fd.r' missing or not number"))
+            AppError::Clob(format!(
+                "clob-markets/{condition_id}: 'fd.r' missing or not number"
+            ))
         })?;
         let taker_only = fd.get("to").and_then(Value::as_bool).ok_or_else(|| {
-            AppError::Clob(format!("clob-markets/{condition_id}: 'fd.to' missing or not bool"))
+            AppError::Clob(format!(
+                "clob-markets/{condition_id}: 'fd.to' missing or not bool"
+            ))
         })?;
         Ok(TakerFee { rate, taker_only })
     }
@@ -113,8 +117,9 @@ impl ClobClient {
         let ts = now_secs().to_string();
 
         let body_bytes = match body {
-            Some(b) => serde_json::to_vec(b)
-                .map_err(|e| AppError::Clob(format!("body serialize: {e}")))?,
+            Some(b) => {
+                serde_json::to_vec(b).map_err(|e| AppError::Clob(format!("body serialize: {e}")))?
+            }
             None => Vec::new(),
         };
         let body_str = std::str::from_utf8(&body_bytes)
@@ -155,13 +160,11 @@ impl ClobClient {
             )));
         }
         if text.is_empty() {
-            return serde_json::from_str::<T>("null").map_err(|e| {
-                AppError::Clob(format!("{method} {path} → empty body parse: {e}"))
-            });
+            return serde_json::from_str::<T>("null")
+                .map_err(|e| AppError::Clob(format!("{method} {path} → empty body parse: {e}")));
         }
-        serde_json::from_str::<T>(&text).map_err(|e| {
-            AppError::Clob(format!("{method} {path} → parse: {e} (body={text})"))
-        })
+        serde_json::from_str::<T>(&text)
+            .map_err(|e| AppError::Clob(format!("{method} {path} → parse: {e} (body={text})")))
     }
 
     /// Tek V2 `POST /order` çağrısı. Hot-path = bir HTTP round-trip.
@@ -177,7 +180,11 @@ impl ClobClient {
     ) -> Result<PostOrderResponse, AppError> {
         let creds = self.creds()?;
         let ts = now_secs().to_string();
-        let body = PostOrderBody { order, owner, order_type };
+        let body = PostOrderBody {
+            order,
+            owner,
+            order_type,
+        };
         let body_bytes = serde_json::to_vec(&body)
             .map_err(|e| AppError::Clob(format!("post_order serialize: {e}")))?;
         let body_str = std::str::from_utf8(&body_bytes)
@@ -197,9 +204,8 @@ impl ClobClient {
         let text = resp.text().await?;
 
         if status.is_success() {
-            return serde_json::from_str::<PostOrderResponse>(&text).map_err(|e| {
-                AppError::Clob(format!("POST /order → parse: {e} (body={text})"))
-            });
+            return serde_json::from_str::<PostOrderResponse>(&text)
+                .map_err(|e| AppError::Clob(format!("POST /order → parse: {e} (body={text})")));
         }
 
         // 4xx = rejected order (balance, price bounds, vb.) → soft rejection.
@@ -207,11 +213,7 @@ impl ClobClient {
         if status.is_client_error() {
             let error_msg = serde_json::from_str::<Value>(&text)
                 .ok()
-                .and_then(|v| {
-                    v.get("error")
-                        .and_then(Value::as_str)
-                        .map(str::to_string)
-                })
+                .and_then(|v| v.get("error").and_then(Value::as_str).map(str::to_string))
                 .unwrap_or_else(|| text.clone());
             tracing::debug!(
                 status = status.as_u16(),
@@ -253,9 +255,8 @@ impl ClobClient {
         let mut canceled = Vec::with_capacity(ids.len());
         let mut not_canceled_merged = serde_json::Map::new();
         for chunk in ids.chunks(CANCEL_ORDERS_MAX_PER_REQ) {
-            let parsed: CancelResponse = self
-                .auth_request("DELETE", "/orders", Some(&chunk))
-                .await?;
+            let parsed: CancelResponse =
+                self.auth_request("DELETE", "/orders", Some(&chunk)).await?;
             canceled.extend(parsed.canceled);
             if let Some(map) = parsed.not_canceled.as_object() {
                 for (k, v) in map {

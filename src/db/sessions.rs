@@ -209,10 +209,7 @@ pub async fn list_sessions_for_bot(
 }
 
 /// `/api/bots/:id/sessions` toplam satır sayısı (sayfa kontrolleri için).
-pub async fn count_sessions_for_bot(
-    pool: &SqlitePool,
-    bot_id: i64,
-) -> Result<i64, AppError> {
+pub async fn count_sessions_for_bot(pool: &SqlitePool, bot_id: i64) -> Result<i64, AppError> {
     let row = sqlx::query("SELECT COUNT(*) AS n FROM market_sessions WHERE bot_id = ?")
         .bind(bot_id)
         .fetch_one(pool)
@@ -258,10 +255,7 @@ pub async fn session_by_bot_slug(
 
 /// Bota ait tüm sessionların kazanan taraf PnL toplamı.
 /// Son tick fiyatından kazanan belirlenir (up_best_bid/down_best_bid > 0.95).
-pub async fn total_pnl_for_bot(
-    pool: &SqlitePool,
-    bot_id: i64,
-) -> Result<Option<f64>, AppError> {
+pub async fn total_pnl_for_bot(pool: &SqlitePool, bot_id: i64) -> Result<Option<f64>, AppError> {
     let row = sqlx::query(
         "SELECT SUM( \
              CASE \

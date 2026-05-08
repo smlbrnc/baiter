@@ -192,12 +192,16 @@ async fn connect_and_stream(
     state: &SharedRtdsState,
     label: &str,
 ) -> anyhow::Result<()> {
-    let (ws_stream, _) = match timeout(CONNECT_TIMEOUT, tokio_tungstenite::connect_async(ws_url))
-        .await
-    {
-        Ok(res) => res?,
-        Err(_) => return Err(anyhow::anyhow!("connect timeout ({}s)", CONNECT_TIMEOUT.as_secs())),
-    };
+    let (ws_stream, _) =
+        match timeout(CONNECT_TIMEOUT, tokio_tungstenite::connect_async(ws_url)).await {
+            Ok(res) => res?,
+            Err(_) => {
+                return Err(anyhow::anyhow!(
+                    "connect timeout ({}s)",
+                    CONNECT_TIMEOUT.as_secs()
+                ))
+            }
+        };
     let (mut write, mut read) = ws_stream.split();
 
     // RTDS server `filters` alanını stringified JSON olarak bekler (regex `[{\[]…`).
@@ -291,7 +295,12 @@ async fn handle_text(text: &str, symbol: &str, state: &SharedRtdsState, label: &
         return;
     }
     if !sane_price(symbol, payload.value) {
-        tracing::warn!(bot=label, symbol, value=payload.value, "rtds insane value rejected");
+        tracing::warn!(
+            bot = label,
+            symbol,
+            value = payload.value,
+            "rtds insane value rejected"
+        );
         return;
     }
 

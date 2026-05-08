@@ -124,7 +124,11 @@ async fn fetch_market_meta(
     }
     ipc::log_line(
         label,
-        format!("Window: {} UTC - {} UTC", fmt_utc(start_ts), fmt_utc(end_ts)),
+        format!(
+            "Window: {} UTC - {} UTC",
+            fmt_utc(start_ts),
+            fmt_utc(end_ts)
+        ),
     );
     ipc::log_line(label, format!("    UP:   {up_id}"));
     ipc::log_line(label, format!("    DOWN: {down_id}"));

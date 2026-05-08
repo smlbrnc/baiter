@@ -159,11 +159,7 @@ pub struct WsChannels {
     pub event_tx: mpsc::Sender<PolymarketEvent>,
 }
 
-pub async fn run_market_ws(
-    base_ws: String,
-    asset_ids: Vec<String>,
-    chans: WsChannels,
-) {
+pub async fn run_market_ws(base_ws: String, asset_ids: Vec<String>, chans: WsChannels) {
     let url = format!("{}/market", base_ws);
     let sub = serde_json::json!({
         "assets_ids": asset_ids,
@@ -571,16 +567,8 @@ impl BookFrame {
         // Polymarket book frame bids'i ascending (en kötü bid önce), asks'i
         // descending (en kötü ask önce) gönderir. .first() yanlış (uç) seviyeyi
         // döndürür; sıralama bağımsız MAX/MIN ile gerçek best bid/ask alınır.
-        let best_bid = self
-            .bids
-            .iter()
-            .map(|b| b.price)
-            .reduce(f64::max)?;
-        let best_ask = self
-            .asks
-            .iter()
-            .map(|a| a.price)
-            .reduce(f64::min)?;
+        let best_bid = self.bids.iter().map(|b| b.price).reduce(f64::max)?;
+        let best_ask = self.asks.iter().map(|a| a.price).reduce(f64::min)?;
         Some(PolymarketEvent::Book {
             asset_id: self.asset_id,
             best_bid,

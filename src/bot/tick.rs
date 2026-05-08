@@ -32,7 +32,15 @@ pub async fn tick(ctx: &Ctx, sess: &mut MarketSession) {
     let server_ts = sess.last_book_server_ts_ms;
     // imbalance_opt → bsi slot; ofi/cvd artık None (eski alanlar kaldırıldı)
     let (composite, signal_ready, imbalance_opt, _, _) = decision_composite(ctx).await;
-    let decision = sess.tick(&ctx.cfg, now_ms(), composite, signal_ready, imbalance_opt, None, None);
+    let decision = sess.tick(
+        &ctx.cfg,
+        now_ms(),
+        composite,
+        signal_ready,
+        imbalance_opt,
+        None,
+        None,
+    );
     let bot_id = ctx.bot_id;
     let label = ctx.bot_label.as_ref();
 

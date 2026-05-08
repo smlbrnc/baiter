@@ -41,9 +41,7 @@ fn compute_skor(imbalance: f64, momentum_bps: f64) -> f64 {
 
 /// Strateji kararı için kullanılan sinyal; `(composite, signal_ready, cvd_opt, bsi_opt, ofi_opt)`.
 /// `signal_ready`: Binance VE OKX warmup'ı tamamlandıysa `true`.
-pub async fn decision_composite(
-    ctx: &Ctx,
-) -> (f64, bool, Option<f64>, Option<f64>, Option<f64>) {
+pub async fn decision_composite(ctx: &Ctx) -> (f64, bool, Option<f64>, Option<f64>, Option<f64>) {
     let (imbalance, warmup_b) = {
         let s = ctx.signal_state.read().await;
         (s.imbalance, s.warmup)
@@ -75,5 +73,10 @@ pub async fn observed_snapshot(ctx: &Ctx) -> SignalSnapshot {
     let skor = compute_skor(imbalance, momentum_bps);
     let composite = skor_to_composite(skor);
 
-    SignalSnapshot { composite, imbalance, momentum_bps, skor }
+    SignalSnapshot {
+        composite,
+        imbalance,
+        momentum_bps,
+        skor,
+    }
 }

@@ -1,14 +1,14 @@
-import type { Dispatch, SetStateAction } from "react";
-import { KeyRound } from "lucide-react";
-import { Input } from "@/components/ui/input";
-import { Separator } from "@/components/ui/separator";
-import { cn } from "@/lib/utils";
+import type { Dispatch, SetStateAction } from "react"
+import { KeyRound } from "lucide-react"
+import { Input } from "@/components/ui/input"
+import { Separator } from "@/components/ui/separator"
+import { cn } from "@/lib/utils"
 import {
   Field,
   SectionLabel,
   ToggleRow,
-} from "@/components/bots/bot-form-shared";
-import { SignatureTypeSelector } from "@/components/credentials/signature-type-selector";
+} from "@/components/bots/bot-form-shared"
+import { SignatureTypeSelector } from "@/components/credentials/signature-type-selector"
 
 /**
  * Bot-bazlı kimlik girişi — kullanıcı yalnızca PK + sig_type + (funder)
@@ -16,25 +16,25 @@ import { SignatureTypeSelector } from "@/components/credentials/signature-type-s
  * türetip `bot_credentials` tablosuna kaydeder.
  */
 export type BotCredsState = {
-  private_key: string;
-  signature_type: 0 | 1 | 2;
-  funder: string;
-  nonce: number;
-};
+  private_key: string
+  signature_type: 0 | 1 | 2
+  funder: string
+  nonce: number
+}
 
 export const EMPTY_BOT_CREDS: BotCredsState = {
   private_key: "",
   signature_type: 0,
   funder: "",
   nonce: 0,
-};
+}
 
 type Props = {
-  includeCreds: boolean;
-  setIncludeCreds: Dispatch<SetStateAction<boolean>>;
-  creds: BotCredsState;
-  setCreds: Dispatch<SetStateAction<BotCredsState>>;
-};
+  includeCreds: boolean
+  setIncludeCreds: Dispatch<SetStateAction<boolean>>
+  creds: BotCredsState
+  setCreds: Dispatch<SetStateAction<BotCredsState>>
+}
 
 export function BotFormCredentialsSection({
   includeCreds,
@@ -43,14 +43,14 @@ export function BotFormCredentialsSection({
   setCreds,
 }: Props) {
   const requiresFunder =
-    creds.signature_type === 1 || creds.signature_type === 2;
+    creds.signature_type === 1 || creds.signature_type === 2
 
   return (
     <div className="px-4 py-4 sm:px-6">
       <SectionLabel icon={KeyRound} title="Bota özel Polymarket kimliği" />
-      <p className="text-muted-foreground mt-1 text-sm">
-        Yalnızca <strong>private key</strong> + <strong>signature type</strong>
-        {" "}+ (gerekirse) <strong>funder</strong> gir; backend L1 EIP-712 ile{" "}
+      <p className="mt-1 text-sm text-muted-foreground">
+        Yalnızca <strong>private key</strong> + <strong>signature type</strong>{" "}
+        + (gerekirse) <strong>funder</strong> gir; backend L1 EIP-712 ile{" "}
         <code>apiKey/secret/passphrase</code> türetip bu bota özel olarak
         kaydeder. Doldurmazsan{" "}
         <a
@@ -67,7 +67,7 @@ export function BotFormCredentialsSection({
           "mt-3 rounded-md border border-border/40 p-3 transition-colors",
           includeCreds
             ? "border-primary/25 bg-primary/[0.04]"
-            : "bg-muted/30 border-border/40",
+            : "border-border/40 bg-muted/30"
         )}
       >
         <ToggleRow
@@ -135,5 +135,5 @@ export function BotFormCredentialsSection({
         )}
       </div>
     </div>
-  );
+  )
 }

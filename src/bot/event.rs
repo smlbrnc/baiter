@@ -4,9 +4,7 @@
 use sqlx::SqlitePool;
 
 use crate::db;
-use crate::engine::{
-    apply_live_fill, simulate_passive_fills, update_top_of_book, MarketSession,
-};
+use crate::engine::{apply_live_fill, simulate_passive_fills, update_top_of_book, MarketSession};
 use crate::ipc::{self, FrontendEvent};
 use crate::polymarket::{
     fee_for_role, FeeParams, MarketResolvedPayload, OrderLifecycle, OrderPayload, PolymarketEvent,
@@ -23,8 +21,18 @@ pub fn handle_event(
     ev: PolymarketEvent,
 ) -> bool {
     match ev {
-        PolymarketEvent::BestBidAsk { asset_id, best_bid, best_ask, timestamp_ms }
-        | PolymarketEvent::Book { asset_id, best_bid, best_ask, timestamp_ms } => {
+        PolymarketEvent::BestBidAsk {
+            asset_id,
+            best_bid,
+            best_ask,
+            timestamp_ms,
+        }
+        | PolymarketEvent::Book {
+            asset_id,
+            best_bid,
+            best_ask,
+            timestamp_ms,
+        } => {
             let changed = update_top_of_book(sess, &asset_id, best_bid, best_ask);
             if changed && timestamp_ms > 0 {
                 sess.last_book_server_ts_ms = timestamp_ms;
@@ -32,9 +40,10 @@ pub fn handle_event(
             after_book_update(sess, pool, run_mode);
             changed
         }
-        PolymarketEvent::PriceChange { changes, timestamp_ms } => {
-            on_price_change(sess, pool, run_mode, &changes, timestamp_ms)
-        }
+        PolymarketEvent::PriceChange {
+            changes,
+            timestamp_ms,
+        } => on_price_change(sess, pool, run_mode, &changes, timestamp_ms),
         PolymarketEvent::Trade(t) => {
             on_trade(sess, pool, &t);
             false
@@ -112,7 +121,10 @@ impl Fill {
         fee_for_role(
             self.price,
             self.size,
-            &FeeParams { rate, taker_only: true },
+            &FeeParams {
+                rate,
+                taker_only: true,
+            },
             self.role.is_taker(),
         )
     }
@@ -209,7 +221,9 @@ fn extract_maker_fills(ev: &TradePayload, owner: &str) -> Vec<Fill> {
         .filter_map(|m| {
             let outcome = m.outcome.as_deref().and_then(Outcome::parse)?;
             Some(Fill {
-                role: FillRole::Maker { open_order_id: m.order_id.clone() },
+                role: FillRole::Maker {
+                    open_order_id: m.order_id.clone(),
+                },
                 outcome,
                 asset_id: m.asset_id.clone(),
                 side: m.side,
@@ -336,7 +350,13 @@ fn record_fill_and_prune_if_full(
     }
 }
 
-fn log_fill_and_position(label: &str, sess: &MarketSession, outcome: Outcome, size: f64, price: f64) {
+fn log_fill_and_position(
+    label: &str,
+    sess: &MarketSession,
+    outcome: Outcome,
+    size: f64,
+    price: f64,
+) {
     let imb = sess.metrics.imbalance();
     ipc::log_line(
         label,
@@ -436,4 +456,3 @@ pub fn run_passive_fills_dryrun(sess: &mut MarketSession, pool: &SqlitePool) {
         );
     }
 }
-

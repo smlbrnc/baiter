@@ -1,15 +1,15 @@
-"use client";
+"use client"
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
-import { KeyRound } from "lucide-react";
-import { Input } from "@/components/ui/input";
-import { Separator } from "@/components/ui/separator";
-import { Field, SectionLabel } from "@/components/bots/bot-form-shared";
-import { SignatureTypeSelector } from "@/components/credentials/signature-type-selector";
-import { SettingsHeader } from "@/components/settings/settings-header";
-import { api } from "@/lib/api";
-import type { GlobalCredentials } from "@/lib/types";
-import { CARD_SHELL_CLASS } from "@/lib/ui-constants";
+import { FormEvent, useCallback, useEffect, useState } from "react"
+import { KeyRound } from "lucide-react"
+import { Input } from "@/components/ui/input"
+import { Separator } from "@/components/ui/separator"
+import { Field, SectionLabel } from "@/components/bots/bot-form-shared"
+import { SignatureTypeSelector } from "@/components/credentials/signature-type-selector"
+import { SettingsHeader } from "@/components/settings/settings-header"
+import { api } from "@/lib/api"
+import type { GlobalCredentials } from "@/lib/types"
+import { CARD_SHELL_CLASS } from "@/lib/ui-constants"
 
 const EMPTY: GlobalCredentials = {
   poly_address: null,
@@ -17,76 +17,76 @@ const EMPTY: GlobalCredentials = {
   funder: null,
   has_credentials: false,
   updated_at_ms: null,
-};
+}
 
 export default function SettingsPage() {
-  const [current, setCurrent] = useState<GlobalCredentials>(EMPTY);
-  const [signatureType, setSignatureType] = useState<0 | 1 | 2>(0);
-  const [privateKey, setPrivateKey] = useState("");
-  const [funder, setFunder] = useState("");
-  const [nonce, setNonce] = useState<number>(0);
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
+  const [current, setCurrent] = useState<GlobalCredentials>(EMPTY)
+  const [signatureType, setSignatureType] = useState<0 | 1 | 2>(0)
+  const [privateKey, setPrivateKey] = useState("")
+  const [funder, setFunder] = useState("")
+  const [nonce, setNonce] = useState<number>(0)
+  const [submitting, setSubmitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [success, setSuccess] = useState<string | null>(null)
 
   const reload = useCallback(async () => {
-    setError(null);
+    setError(null)
     try {
-      const data = await api.settings.getCredentials();
-      setCurrent(data);
-      setSignatureType((data.signature_type as 0 | 1 | 2) ?? 0);
-      setFunder(data.funder ?? "");
+      const data = await api.settings.getCredentials()
+      setCurrent(data)
+      setSignatureType((data.signature_type as 0 | 1 | 2) ?? 0)
+      setFunder(data.funder ?? "")
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Yükleme başarısız");
+      setError(e instanceof Error ? e.message : "Yükleme başarısız")
     }
-  }, []);
+  }, [])
 
   useEffect(() => {
-    void reload();
-  }, [reload]);
+    void reload()
+  }, [reload])
 
-  const requiresFunder = signatureType === 1 || signatureType === 2;
+  const requiresFunder = signatureType === 1 || signatureType === 2
 
   const onSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    setError(null);
-    setSuccess(null);
-    const pk = privateKey.trim();
+    e.preventDefault()
+    setError(null)
+    setSuccess(null)
+    const pk = privateKey.trim()
     if (!pk) {
-      setError("Private key zorunlu (0x ile başlayan 32 byte hex).");
-      return;
+      setError("Private key zorunlu (0x ile başlayan 32 byte hex).")
+      return
     }
     if (!pk.startsWith("0x") || pk.length !== 66) {
-      setError("Private key 0x + 64 hex karakter olmalı.");
-      return;
+      setError("Private key 0x + 64 hex karakter olmalı.")
+      return
     }
     if (requiresFunder && !funder.trim()) {
       setError(
-        `signature_type=${signatureType} için funder (proxy/safe) adresi zorunlu.`,
-      );
-      return;
+        `signature_type=${signatureType} için funder (proxy/safe) adresi zorunlu.`
+      )
+      return
     }
-    setSubmitting(true);
+    setSubmitting(true)
     try {
       await api.settings.updateCredentials({
         private_key: pk,
         signature_type: signatureType,
         funder: requiresFunder ? funder.trim() : null,
         nonce: Number.isFinite(nonce) ? nonce : 0,
-      });
-      setPrivateKey("");
-      setSuccess("Kimlik türetildi ve kaydedildi.");
-      await reload();
+      })
+      setPrivateKey("")
+      setSuccess("Kimlik türetildi ve kaydedildi.")
+      await reload()
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Kaydedilemedi");
+      setError(e instanceof Error ? e.message : "Kaydedilemedi")
     } finally {
-      setSubmitting(false);
+      setSubmitting(false)
     }
-  };
+  }
 
   const pkPlaceholder = current.has_credentials
     ? "0x… (kayıtlı — yenilemek için tekrar gir)"
-    : "0x…";
+    : "0x…"
 
   return (
     <form onSubmit={onSubmit} className="relative">
@@ -105,9 +105,11 @@ export default function SettingsPage() {
 
         <div className="px-4 py-5 sm:px-6">
           <SectionLabel icon={KeyRound} title="Anahtarlar" />
-          <p className="text-muted-foreground mt-1 text-sm">
+          <p className="mt-1 text-sm text-muted-foreground">
             EOA private key + (gerekirse) funder gir. Backend{" "}
-            <code>POLY_ADDRESS / POLY_API_KEY / POLY_SECRET / POLY_PASSPHRASE</code>{" "}
+            <code>
+              POLY_ADDRESS / POLY_API_KEY / POLY_SECRET / POLY_PASSPHRASE
+            </code>{" "}
             türetir.
           </p>
           <div className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-start">
@@ -166,7 +168,7 @@ export default function SettingsPage() {
           </div>
 
           {error ? (
-            <div className="bg-destructive/10 text-destructive border-destructive/20 mt-4 rounded-md border px-3 py-2 text-sm">
+            <div className="mt-4 rounded-md border border-destructive/20 bg-destructive/10 px-3 py-2 text-sm text-destructive">
               {error}
             </div>
           ) : null}
@@ -177,8 +179,8 @@ export default function SettingsPage() {
           ) : null}
         </div>
 
-        <div className="bg-muted/40 border-border/50 border-t px-4 py-3 sm:px-6">
-          <p className="text-muted-foreground max-w-2xl text-xs leading-relaxed sm:text-sm">
+        <div className="border-t border-border/50 bg-muted/40 px-4 py-3 sm:px-6">
+          <p className="max-w-2xl text-xs leading-relaxed text-muted-foreground sm:text-sm">
             Bu kimlik tüm botlar için varsayılan olarak kullanılır. Bota özel
             kimlik istiyorsan{" "}
             <a
@@ -192,5 +194,5 @@ export default function SettingsPage() {
         </div>
       </div>
     </form>
-  );
+  )
 }

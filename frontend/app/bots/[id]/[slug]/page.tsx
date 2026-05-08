@@ -1,40 +1,34 @@
-"use client";
+"use client"
 
-import {
-  memo,
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-} from "react";
-import { useParams } from "next/navigation";
-import { CircleStop, Loader2, Play } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent } from "@/components/ui/card";
+import { memo, useCallback, useEffect, useMemo, useState } from "react"
+import { useParams } from "next/navigation"
+import { CircleStop, Loader2, Play } from "lucide-react"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { Card, CardContent } from "@/components/ui/card"
 import {
   BotDetailHeader,
   PageBackButton,
   type SessionMarketProgress,
-} from "@/components/bots/bot-detail-header";
-import { PnLWidget } from "@/components/bots/pnl-widget";
-import { TradesTable } from "@/components/bots/trades-table";
-import { PriceChart } from "@/components/charts/price-chart";
-import { PositionsChart } from "@/components/charts/positions-chart";
-import { BinanceSignalPanel } from "@/components/charts/binance-signal-panel";
-import { SpreadSignalChart } from "@/components/charts/spread-signal-chart";
-import { BotSettingsCards } from "@/components/bots/bot-settings-cards";
-import { api } from "@/lib/api";
-import { useBot, useHistoryStream } from "@/lib/hooks";
+} from "@/components/bots/bot-detail-header"
+import { PnLWidget } from "@/components/bots/pnl-widget"
+import { TradesTable } from "@/components/bots/trades-table"
+import { PriceChart } from "@/components/charts/price-chart"
+import { PositionsChart } from "@/components/charts/positions-chart"
+import { BinanceSignalPanel } from "@/components/charts/binance-signal-panel"
+import { SpreadSignalChart } from "@/components/charts/spread-signal-chart"
+import { BotSettingsCards } from "@/components/bots/bot-settings-cards"
+import { api } from "@/lib/api"
+import { useBot, useHistoryStream } from "@/lib/hooks"
 import type {
   BotRow,
   FrontendEvent,
   MarketTick,
   PnLSnapshot,
   SessionDetail,
-} from "@/lib/types";
+} from "@/lib/types"
 
-type SessionRange = { start: number; end: number };
+type SessionRange = { start: number; end: number }
 
 /**
  * Header bileşeni: 1 saniyelik tickSec timer'ı yalnız bu bileşen içinde
@@ -50,70 +44,68 @@ const MarketSessionHeader = memo(function MarketSessionHeader({
   onStart,
   onStop,
 }: {
-  detail: SessionDetail;
-  pnlHistory: PnLSnapshot[];
-  isLive: boolean;
-  bot: BotRow | null;
-  pending: boolean;
-  onStart: () => void;
-  onStop: () => void;
+  detail: SessionDetail
+  pnlHistory: PnLSnapshot[]
+  isLive: boolean
+  bot: BotRow | null
+  pending: boolean
+  onStart: () => void
+  onStop: () => void
 }) {
-  const [tickSec, setTickSec] = useState(() => Math.floor(Date.now() / 1000));
+  const [tickSec, setTickSec] = useState(() => Math.floor(Date.now() / 1000))
 
   const sessionRange = useMemo(
     () => ({ start: detail.start_ts, end: detail.end_ts }),
-    [detail.start_ts, detail.end_ts],
-  );
+    [detail.start_ts, detail.end_ts]
+  )
 
   useEffect(() => {
-    if (!isLive || sessionRange.end <= sessionRange.start) return;
-    setTickSec(Math.floor(Date.now() / 1000));
+    if (!isLive || sessionRange.end <= sessionRange.start) return
+    setTickSec(Math.floor(Date.now() / 1000))
     const id = setInterval(
       () => setTickSec(Math.floor(Date.now() / 1000)),
-      1000,
-    );
-    return () => clearInterval(id);
-  }, [isLive, sessionRange]);
+      1000
+    )
+    return () => clearInterval(id)
+  }, [isLive, sessionRange])
 
   const marketProgress = useMemo((): SessionMarketProgress | null => {
-    if (!sessionRange || sessionRange.end <= sessionRange.start) return null;
-    const last = pnlHistory[pnlHistory.length - 1];
-    let tSec: number;
+    if (!sessionRange || sessionRange.end <= sessionRange.start) return null
+    const last = pnlHistory[pnlHistory.length - 1]
+    let tSec: number
     if (last) {
-      tSec = isLive
-        ? Math.max(last.ts_ms / 1000, tickSec)
-        : last.ts_ms / 1000;
+      tSec = isLive ? Math.max(last.ts_ms / 1000, tickSec) : last.ts_ms / 1000
     } else if (isLive) {
-      tSec = tickSec;
+      tSec = tickSec
     } else {
-      tSec = sessionRange.start;
+      tSec = sessionRange.start
     }
-    const span = sessionRange.end - sessionRange.start;
+    const span = sessionRange.end - sessionRange.start
     const pct = Math.min(
       100,
-      Math.max(0, ((tSec - sessionRange.start) / span) * 100),
-    );
+      Math.max(0, ((tSec - sessionRange.start) / span) * 100)
+    )
     const fmtHm = (ts: number) =>
       new Date(ts * 1000).toLocaleTimeString([], {
         hour: "2-digit",
         minute: "2-digit",
-      });
+      })
     const centerLabel = new Date(tSec * 1000).toLocaleTimeString([], {
       hour: "2-digit",
       minute: "2-digit",
       second: "2-digit",
-    });
+    })
     return {
       pct,
       startLabel: fmtHm(sessionRange.start),
       endLabel: fmtHm(sessionRange.end),
       centerLabel,
-    };
-  }, [sessionRange, pnlHistory, isLive, tickSec]);
+    }
+  }, [sessionRange, pnlHistory, isLive, tickSec])
 
-  const marketTitle = detail.title?.trim() ? detail.title : detail.slug;
+  const marketTitle = detail.title?.trim() ? detail.title : detail.slug
   const stateBadgeClass =
-    "h-5 border px-1.5 text-[10px] font-semibold uppercase tracking-wide";
+    "h-5 border px-1.5 text-[10px] font-semibold uppercase tracking-wide"
 
   return (
     <BotDetailHeader
@@ -169,115 +161,115 @@ const MarketSessionHeader = memo(function MarketSessionHeader({
         ) : null
       }
     />
-  );
-});
+  )
+})
 
 export default function MarketDetailPage() {
-  const { id, slug } = useParams<{ id: string; slug: string }>();
-  const botId = Number(id);
-  const { bot, mutate } = useBot(Number.isFinite(botId) ? botId : null, 5000);
+  const { id, slug } = useParams<{ id: string; slug: string }>()
+  const botId = Number(id)
+  const { bot, mutate } = useBot(Number.isFinite(botId) ? botId : null, 5000)
 
-  const [detail, setDetail] = useState<SessionDetail | null>(null);
-  const [loaded, setLoaded] = useState(false);
-  const [pending, setPending] = useState(false);
+  const [detail, setDetail] = useState<SessionDetail | null>(null)
+  const [loaded, setLoaded] = useState(false)
+  const [pending, setPending] = useState(false)
 
   useEffect(() => {
-    if (!Number.isFinite(botId) || !slug) return;
-    let ctrl: AbortController | null = null;
-    let timer: ReturnType<typeof setInterval> | null = null;
+    if (!Number.isFinite(botId) || !slug) return
+    let ctrl: AbortController | null = null
+    let timer: ReturnType<typeof setInterval> | null = null
 
     const reload = async () => {
-      if (document.hidden) return;
-      ctrl?.abort();
-      ctrl = new AbortController();
-      const { signal } = ctrl;
+      if (document.hidden) return
+      ctrl?.abort()
+      ctrl = new AbortController()
+      const { signal } = ctrl
       try {
-        const d = await api.sessionDetail(botId, slug, signal);
+        const d = await api.sessionDetail(botId, slug, signal)
         if (!signal.aborted) {
-          setDetail(d);
-          setLoaded(true);
+          setDetail(d)
+          setLoaded(true)
         }
       } catch (e) {
-        if (e instanceof Error && e.name === "AbortError") return;
-        setLoaded(true);
+        if (e instanceof Error && e.name === "AbortError") return
+        setLoaded(true)
       }
-    };
+    }
 
     const startTimer = () => {
-      if (timer !== null) return;
-      timer = setInterval(() => void reload(), 10_000);
-    };
+      if (timer !== null) return
+      timer = setInterval(() => void reload(), 10_000)
+    }
     const stopTimer = () => {
       if (timer !== null) {
-        clearInterval(timer);
-        timer = null;
+        clearInterval(timer)
+        timer = null
       }
-    };
+    }
 
     const onVisibility = () => {
       if (document.hidden) {
-        stopTimer();
-        ctrl?.abort();
+        stopTimer()
+        ctrl?.abort()
       } else {
-        void reload();
-        startTimer();
+        void reload()
+        startTimer()
       }
-    };
+    }
 
-    void reload();
-    document.addEventListener("visibilitychange", onVisibility);
-    if (!document.hidden) startTimer();
+    void reload()
+    document.addEventListener("visibilitychange", onVisibility)
+    if (!document.hidden) startTimer()
 
     return () => {
-      stopTimer();
-      ctrl?.abort();
-      document.removeEventListener("visibilitychange", onVisibility);
-    };
-  }, [botId, slug]);
+      stopTimer()
+      ctrl?.abort()
+      document.removeEventListener("visibilitychange", onVisibility)
+    }
+  }, [botId, slug])
 
   const doStart = useCallback(async () => {
-    if (!bot || pending) return;
-    const prevState = bot.state;
-    mutate({ state: "RUNNING" });
-    setPending(true);
+    if (!bot || pending) return
+    const prevState = bot.state
+    mutate({ state: "RUNNING" })
+    setPending(true)
     try {
-      await api.startBot(bot.id);
+      await api.startBot(bot.id)
     } catch {
-      mutate({ state: prevState });
+      mutate({ state: prevState })
     } finally {
-      setPending(false);
+      setPending(false)
     }
-  }, [bot, pending, mutate]);
+  }, [bot, pending, mutate])
 
   const doStop = useCallback(async () => {
-    if (!bot || pending) return;
-    const prevState = bot.state;
-    mutate({ state: "STOPPED" });
-    setPending(true);
+    if (!bot || pending) return
+    const prevState = bot.state
+    mutate({ state: "STOPPED" })
+    setPending(true)
     try {
-      await api.stopBot(bot.id);
+      await api.stopBot(bot.id)
     } catch {
-      mutate({ state: prevState });
+      mutate({ state: prevState })
     } finally {
-      setPending(false);
+      setPending(false)
     }
-  }, [bot, pending, mutate]);
+  }, [bot, pending, mutate])
 
-  const isLive = detail?.is_live ?? false;
+  const isLive = detail?.is_live ?? false
 
   const fetchTicks = useCallback(
     (sinceMs: number) => api.sessionTicks(botId, slug, sinceMs),
-    [botId, slug],
-  );
+    [botId, slug]
+  )
   const fetchPnl = useCallback(
     (sinceMs: number) => api.sessionPnlHistory(botId, slug, sinceMs),
-    [botId, slug],
-  );
+    [botId, slug]
+  )
 
   const appendTick = useCallback(
     (ev: FrontendEvent): MarketTick | null => {
-      if (ev.kind !== "TickSnapshot") return null;
-      if (ev.bot_id !== botId || ev.slug !== slug) return null;
+      if (ev.kind !== "TickSnapshot") return null
+      if (ev.bot_id !== botId || ev.slug !== slug) return null
       return {
         up_best_bid: ev.up_best_bid,
         up_best_ask: ev.up_best_ask,
@@ -288,15 +280,15 @@ export default function MarketDetailPage() {
         momentum_bps: ev.momentum_bps,
         skor: ev.skor,
         ts_ms: ev.ts_ms,
-      };
+      }
     },
-    [botId, slug],
-  );
+    [botId, slug]
+  )
 
   const appendPnl = useCallback(
     (ev: FrontendEvent): PnLSnapshot | null => {
-      if (ev.kind !== "PnlUpdate") return null;
-      if (ev.bot_id !== botId || ev.slug !== slug) return null;
+      if (ev.kind !== "PnlUpdate") return null
+      if (ev.bot_id !== botId || ev.slug !== slug) return null
       return {
         cost_basis: ev.cost_basis,
         fee_total: ev.fee_total,
@@ -309,10 +301,10 @@ export default function MarketDetailPage() {
         avg_up: ev.avg_up,
         avg_down: ev.avg_down,
         ts_ms: ev.ts_ms,
-      };
+      }
     },
-    [botId, slug],
-  );
+    [botId, slug]
+  )
 
   const ticks = useHistoryStream<MarketTick>({
     fetchInitial: fetchTicks,
@@ -320,31 +312,31 @@ export default function MarketDetailPage() {
     isLive,
     pollMs: 1000,
     maxItems: 800,
-  });
+  })
   const pnlHistory = useHistoryStream<PnLSnapshot>({
     fetchInitial: fetchPnl,
     shouldAppend: appendPnl,
     isLive,
     pollMs: 2000,
     maxItems: 500,
-  });
+  })
 
   const sessionRange = useMemo(
     (): SessionRange | null =>
       detail ? { start: detail.start_ts, end: detail.end_ts } : null,
-    [detail],
-  );
+    [detail]
+  )
 
   if (!loaded) {
     return (
       <div className="space-y-4">
         <div className="flex items-center gap-3">
           <PageBackButton />
-          <p className="text-muted-foreground text-sm">Yükleniyor…</p>
+          <p className="text-sm text-muted-foreground">Yükleniyor…</p>
         </div>
         {bot && <BotSettingsCards bot={bot} />}
       </div>
-    );
+    )
   }
 
   if (!detail) {
@@ -353,13 +345,13 @@ export default function MarketDetailPage() {
         <PageBackButton />
         {bot && <BotSettingsCards bot={bot} />}
         <Card>
-          <CardContent className="text-muted-foreground p-6 text-sm">
+          <CardContent className="p-6 text-sm text-muted-foreground">
             Bu slug için session bulunamadı:{" "}
             <span className="font-mono">{slug}</span>
           </CardContent>
         </Card>
       </div>
-    );
+    )
   }
 
   return (
@@ -392,5 +384,5 @@ export default function MarketDetailPage() {
 
       <TradesTable botId={botId} slug={slug} isLive={isLive} />
     </div>
-  );
+  )
 }

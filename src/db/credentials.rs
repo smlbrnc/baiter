@@ -70,10 +70,7 @@ pub async fn get_credentials(
     let poly_api_key = need("poly_api_key", r.try_get("poly_api_key")?)?;
     let poly_passphrase = need("poly_passphrase", r.try_get("poly_passphrase")?)?;
     let poly_secret = need("poly_secret", r.try_get("poly_secret")?)?;
-    let polygon_private_key = need(
-        "polygon_private_key",
-        r.try_get("polygon_private_key")?,
-    )?;
+    let polygon_private_key = need("polygon_private_key", r.try_get("polygon_private_key")?)?;
     let signature_type: i32 = r.try_get("poly_signature_type")?;
     let funder: Option<String> = r.try_get("poly_funder")?;
 

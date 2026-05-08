@@ -1,8 +1,8 @@
-"use client";
+"use client"
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Download, Eraser } from "lucide-react";
-import { Button } from "@/components/ui/button";
+import { useEffect, useMemo, useRef, useState } from "react"
+import { Download, Eraser } from "lucide-react"
+import { Button } from "@/components/ui/button"
 import {
   Card,
   CardAction,
@@ -10,138 +10,136 @@ import {
   CardDescription,
   CardHeader,
   CardTitle,
-} from "@/components/ui/card";
+} from "@/components/ui/card"
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
-} from "@/components/ui/tooltip";
-import { api } from "@/lib/api";
-import type { LogRow } from "@/lib/types";
-import { cn } from "@/lib/utils";
+} from "@/components/ui/tooltip"
+import { api } from "@/lib/api"
+import type { LogRow } from "@/lib/types"
+import { cn } from "@/lib/utils"
 
-const STICK_BOTTOM_THRESHOLD_PX = 64;
+const STICK_BOTTOM_THRESHOLD_PX = 64
 
 export function LogStream({ botId }: { botId: number }) {
-  const [logs, setLogs] = useState<LogRow[]>([]);
-  const [clearCutoffId, setClearCutoffId] = useState<number | null>(null);
-  const boxRef = useRef<HTMLDivElement>(null);
-  const stickToBottomRef = useRef(true);
+  const [logs, setLogs] = useState<LogRow[]>([])
+  const [clearCutoffId, setClearCutoffId] = useState<number | null>(null)
+  const boxRef = useRef<HTMLDivElement>(null)
+  const stickToBottomRef = useRef(true)
 
   useEffect(() => {
-    stickToBottomRef.current = true;
-    let ctrl: AbortController | null = null;
-    let timer: ReturnType<typeof setInterval> | null = null;
+    stickToBottomRef.current = true
+    let ctrl: AbortController | null = null
+    let timer: ReturnType<typeof setInterval> | null = null
 
     const load = async () => {
-      if (document.hidden) return;
-      ctrl?.abort();
-      ctrl = new AbortController();
-      const { signal } = ctrl;
+      if (document.hidden) return
+      ctrl?.abort()
+      ctrl = new AbortController()
+      const { signal } = ctrl
       try {
-        const rows = await api.botLogs(botId, 300, signal);
-        if (signal.aborted) return;
-        const reversed = rows.reverse();
+        const rows = await api.botLogs(botId, 300, signal)
+        if (signal.aborted) return
+        const reversed = rows.reverse()
         setLogs((prev) => {
           // Skip re-render if data is unchanged (same tail log id).
           if (
             prev.length === reversed.length &&
             prev[prev.length - 1]?.id === reversed[reversed.length - 1]?.id
           ) {
-            return prev;
+            return prev
           }
-          return reversed;
-        });
+          return reversed
+        })
       } catch (e) {
-        if (e instanceof Error && e.name === "AbortError") return;
+        if (e instanceof Error && e.name === "AbortError") return
       }
-    };
+    }
 
     const startTimer = () => {
-      if (timer !== null) return;
-      timer = setInterval(() => void load(), 2000);
-    };
+      if (timer !== null) return
+      timer = setInterval(() => void load(), 2000)
+    }
     const stopTimer = () => {
       if (timer !== null) {
-        clearInterval(timer);
-        timer = null;
+        clearInterval(timer)
+        timer = null
       }
-    };
+    }
 
     const onVisibility = () => {
       if (document.hidden) {
-        stopTimer();
-        ctrl?.abort();
+        stopTimer()
+        ctrl?.abort()
       } else {
-        void load();
-        startTimer();
+        void load()
+        startTimer()
       }
-    };
+    }
 
-    void load();
-    document.addEventListener("visibilitychange", onVisibility);
-    if (!document.hidden) startTimer();
+    void load()
+    document.addEventListener("visibilitychange", onVisibility)
+    if (!document.hidden) startTimer()
 
     return () => {
-      stopTimer();
-      ctrl?.abort();
-      document.removeEventListener("visibilitychange", onVisibility);
-    };
-  }, [botId]);
+      stopTimer()
+      ctrl?.abort()
+      document.removeEventListener("visibilitychange", onVisibility)
+    }
+  }, [botId])
 
   const visibleLogs = useMemo(
     () =>
-      clearCutoffId == null
-        ? logs
-        : logs.filter((l) => l.id > clearCutoffId),
-    [logs, clearCutoffId],
-  );
+      clearCutoffId == null ? logs : logs.filter((l) => l.id > clearCutoffId),
+    [logs, clearCutoffId]
+  )
 
   const updateStickFromScroll = () => {
-    const el = boxRef.current;
-    if (!el) return;
-    const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight;
-    stickToBottomRef.current = fromBottom <= STICK_BOTTOM_THRESHOLD_PX;
-  };
+    const el = boxRef.current
+    if (!el) return
+    const fromBottom = el.scrollHeight - el.scrollTop - el.clientHeight
+    stickToBottomRef.current = fromBottom <= STICK_BOTTOM_THRESHOLD_PX
+  }
 
   useEffect(() => {
-    const el = boxRef.current;
-    if (!el || !stickToBottomRef.current) return;
-    el.scrollTop = el.scrollHeight;
-  }, [visibleLogs]);
+    const el = boxRef.current
+    if (!el || !stickToBottomRef.current) return
+    el.scrollTop = el.scrollHeight
+  }, [visibleLogs])
 
   const onClear = () => {
-    if (logs.length === 0) return;
-    const maxId = logs.reduce((m, l) => (l.id > m ? l.id : m), 0);
-    setClearCutoffId(maxId);
-    stickToBottomRef.current = true;
-  };
+    if (logs.length === 0) return
+    const maxId = logs.reduce((m, l) => (l.id > m ? l.id : m), 0)
+    setClearCutoffId(maxId)
+    stickToBottomRef.current = true
+  }
 
   const onDownload = () => {
-    if (visibleLogs.length === 0) return;
+    if (visibleLogs.length === 0) return
     const lines = visibleLogs
       .map((l) => {
-        const ts = new Date(l.ts_ms).toISOString();
-        return `[${ts}] [${l.level.toUpperCase()}] ${l.message}`;
+        const ts = new Date(l.ts_ms).toISOString()
+        return `[${ts}] [${l.level.toUpperCase()}] ${l.message}`
       })
-      .join("\n");
+      .join("\n")
     const blob = new Blob([lines + "\n"], {
       type: "text/plain;charset=utf-8",
-    });
-    const url = URL.createObjectURL(blob);
+    })
+    const url = URL.createObjectURL(blob)
     const stamp = new Date()
       .toISOString()
       .replace(/[:.]/g, "-")
       .replace("T", "_")
-      .slice(0, 19);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `bot-${botId}-logs-${stamp}.log`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-  };
+      .slice(0, 19)
+    const a = document.createElement("a")
+    a.href = url
+    a.download = `bot-${botId}-logs-${stamp}.log`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+  }
 
   return (
     <Card>
@@ -177,7 +175,9 @@ export function LogStream({ botId }: { botId: number }) {
                 <Eraser />
               </Button>
             </TooltipTrigger>
-            <TooltipContent>Ekranı temizle (yeni loglar görünür)</TooltipContent>
+            <TooltipContent>
+              Ekranı temizle (yeni loglar görünür)
+            </TooltipContent>
           </Tooltip>
         </CardAction>
       </CardHeader>
@@ -185,7 +185,7 @@ export function LogStream({ botId }: { botId: number }) {
         <div
           ref={boxRef}
           onScroll={updateStickFromScroll}
-          className="bg-muted/40 border-border/45 h-[60vh] min-h-96 overflow-auto rounded-md border p-3 font-mono text-[11px]"
+          className="h-[60vh] min-h-96 overflow-auto rounded-md border border-border/45 bg-muted/40 p-3 font-mono text-[11px]"
         >
           {visibleLogs.length === 0 ? (
             <div className="text-muted-foreground">
@@ -203,7 +203,7 @@ export function LogStream({ botId }: { botId: number }) {
                     ? "text-destructive"
                     : l.level === "warn"
                       ? "text-amber-500"
-                      : "text-foreground",
+                      : "text-foreground"
                 )}
               >
                 {l.message}
@@ -213,5 +213,5 @@ export function LogStream({ botId }: { botId: number }) {
         </div>
       </CardContent>
     </Card>
-  );
+  )
 }

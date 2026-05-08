@@ -1,45 +1,45 @@
-import type { Dispatch, SetStateAction } from "react";
-import { Settings2 } from "lucide-react";
-import { Input } from "@/components/ui/input";
-import type { CreateBotReq } from "@/lib/types";
-import { cn } from "@/lib/utils";
-import { Field, SectionLabel } from "@/components/bots/bot-form-shared";
+import type { Dispatch, SetStateAction } from "react"
+import { Settings2 } from "lucide-react"
+import { Input } from "@/components/ui/input"
+import type { CreateBotReq } from "@/lib/types"
+import { cn } from "@/lib/utils"
+import { Field, SectionLabel } from "@/components/bots/bot-form-shared"
 
 type Props = {
-  form: CreateBotReq;
-  setForm: Dispatch<SetStateAction<CreateBotReq>>;
-};
+  form: CreateBotReq
+  setForm: Dispatch<SetStateAction<CreateBotReq>>
+}
 
 export function BotFormSettingsSection({ form, setForm }: Props) {
-  const isAlis = form.strategy === "alis";
-  const isElis = form.strategy === "elis";
-  const isBonereaper = form.strategy === "bonereaper";
+  const isAlis = form.strategy === "alis"
+  const isElis = form.strategy === "elis"
+  const isBonereaper = form.strategy === "bonereaper"
   const description = isElis
     ? "Fiyat aralığı (min/max price). Elis loop süresi ve emir boyutu aşağıdaki strateji parametrelerinden ayarlanır."
     : isBonereaper
       ? "Order USDC = sabit emir boyutu (size = ceil(order_usdc / price)). Min/Max price emir filtresi (executor reddi)."
-      : "Emir boyutu, cooldown ve fiyat aralığı.";
+      : "Emir boyutu, cooldown ve fiyat aralığı."
 
   const orderTooltip = isElis
     ? "Elis: api_min_order_size kontrolü için kullanılır. Gerçek emir boyutu strategy_params.elis_max_buy_order_size (share) ile belirlenir."
     : isBonereaper
       ? "Bonereaper sabit USDC: her emir bu kadar USDC notional'da yapılır. Default 10 → real bot medyan $12.32 ile birebir uyumlu. Trade size = ceil(order_usdc / price)."
-      : "Emir başına harcanacak USDC miktarı. GTC size = max(order_usdc / fiyat, api_min_order_size).";
+      : "Emir başına harcanacak USDC miktarı. GTC size = max(order_usdc / fiyat, api_min_order_size)."
 
   const orderHint = isElis
     ? "api_min_order_size kontrolü için; min 1 USDC."
     : isBonereaper
       ? "Default 10 USDC (sabit, real bot medyan $12 uyumlu)."
-      : "Minimum 1 USDC.";
+      : "Minimum 1 USDC."
 
   return (
     <div className="space-y-3">
       <div>
         <SectionLabel icon={Settings2} title="Risk ve emir parametreleri" />
-        <p className="text-muted-foreground mt-1 text-sm">{description}</p>
+        <p className="mt-1 text-sm text-muted-foreground">{description}</p>
       </div>
 
-      <div className="bg-muted/25 space-y-3 rounded-md border border-border/40 p-3">
+      <div className="space-y-3 rounded-md border border-border/40 bg-muted/25 p-3">
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div className={cn(!isAlis && "sm:col-span-2")}>
             <Field label="Order USDC" tooltip={orderTooltip} hint={orderHint}>
@@ -96,7 +96,11 @@ export function BotFormSettingsSection({ form, setForm }: Props) {
           <Field
             label="Max price"
             tooltip="Executor: emirlerin kabul edildiği maksimum fiyat eşiği. Bonereaper için 0.99 önerilir (real bot 0.99'a kadar trade yapıyor)."
-            hint={isBonereaper ? "0.50 – 0.99; default 0.99 (real bot uyumu)." : "0.50 – 0.99; default 0.95."}
+            hint={
+              isBonereaper
+                ? "0.50 – 0.99; default 0.99 (real bot uyumu)."
+                : "0.50 – 0.99; default 0.95."
+            }
           >
             <Input
               type="number"
@@ -112,5 +116,5 @@ export function BotFormSettingsSection({ form, setForm }: Props) {
         </div>
       </div>
     </div>
-  );
+  )
 }

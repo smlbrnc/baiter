@@ -1,5 +1,5 @@
-import { BotForm } from "@/components/bots/bot-form";
+import { BotForm } from "@/components/bots/bot-form"
 
 export default function NewBotPage() {
-  return <BotForm />;
+  return <BotForm />
 }

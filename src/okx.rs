@@ -32,7 +32,10 @@ pub struct OkxSignalState {
 
 impl Default for OkxSignalState {
     fn default() -> Self {
-        Self { momentum_bps: 0.0, warmup: true }
+        Self {
+            momentum_bps: 0.0,
+            warmup: true,
+        }
     }
 }
 
@@ -50,7 +53,10 @@ struct EmaEngine {
 
 impl EmaEngine {
     fn new() -> Self {
-        Self { ema_fast: None, ema_slow: None }
+        Self {
+            ema_fast: None,
+            ema_slow: None,
+        }
     }
 
     fn ingest(&mut self, price: f64) {
@@ -101,8 +107,14 @@ pub async fn run_okx_signal(inst_id: &str, state: SharedOkxState, bot_id: i64) {
             format!("📡 OKX EMA ws bağlanıyor (instId={inst_id}) → {ws_url}"),
         );
         match connect_stream(ws_url, inst_id, &state, &label).await {
-            Ok(()) => ipc::log_line(&label, format!("⚠️  OKX ws kapandı, {backoff}s içinde yeniden bağlanılacak")),
-            Err(e) => ipc::log_line(&label, format!("❌ OKX ws hatası: {e} ({backoff}s içinde yeniden)")),
+            Ok(()) => ipc::log_line(
+                &label,
+                format!("⚠️  OKX ws kapandı, {backoff}s içinde yeniden bağlanılacak"),
+            ),
+            Err(e) => ipc::log_line(
+                &label,
+                format!("❌ OKX ws hatası: {e} ({backoff}s içinde yeniden)"),
+            ),
         }
         {
             let mut s = state.write().await;
@@ -143,13 +155,18 @@ async fn connect_stream(
         let next = match timeout(FRAME_IDLE_TIMEOUT, read.next()).await {
             Ok(Some(msg)) => msg,
             Ok(None) => return Ok(()),
-            Err(_) => return Err(anyhow::anyhow!(
-                "OKX ws idle > {}s (trades frame yok)",
-                FRAME_IDLE_TIMEOUT.as_secs()
-            )),
+            Err(_) => {
+                return Err(anyhow::anyhow!(
+                    "OKX ws idle > {}s (trades frame yok)",
+                    FRAME_IDLE_TIMEOUT.as_secs()
+                ))
+            }
         };
         let text = match next? {
-            Message::Ping(payload) => { let _ = write.send(Message::Pong(payload)).await; continue; }
+            Message::Ping(payload) => {
+                let _ = write.send(Message::Pong(payload)).await;
+                continue;
+            }
             Message::Close(_) => return Ok(()),
             Message::Text(t) => t,
             _ => continue,

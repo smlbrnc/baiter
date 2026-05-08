@@ -34,8 +34,8 @@ impl BotRow {
             .map_err(|e| AppError::Config(format!("strategy parse: {e}")))?;
         let run_mode: RunMode = serde_json::from_str(&format!("\"{}\"", self.run_mode))
             .map_err(|e| AppError::Config(format!("run_mode parse: {e}")))?;
-        let strategy_params: StrategyParams = serde_json::from_str(&self.strategy_params)
-            .map_err(|e| {
+        let strategy_params: StrategyParams =
+            serde_json::from_str(&self.strategy_params).map_err(|e| {
                 AppError::Config(format!("strategy_params parse (bot={}): {e}", self.id))
             })?;
         Ok(BotConfig {
@@ -110,8 +110,7 @@ pub async fn insert_bot(pool: &SqlitePool, cfg: &BotConfig) -> Result<i64, AppEr
     Ok(row.get::<i64, _>("id"))
 }
 
-const SELECT_BOT: &str =
-    "SELECT id, name, slug_pattern, strategy, run_mode, order_usdc, \
+const SELECT_BOT: &str = "SELECT id, name, slug_pattern, strategy, run_mode, order_usdc, \
      min_price, max_price, cooldown_threshold, start_offset, strategy_params, \
      state, last_active_ms, created_at_ms, updated_at_ms FROM bots";
 

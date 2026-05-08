@@ -1,21 +1,21 @@
-"use client";
+"use client"
 
-import { memo, useCallback, useState } from "react";
-import Link from "next/link";
-import Image from "next/image";
-import { CircleStop, Loader2, Play, Trash2 } from "lucide-react";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
-import { CardDescription, CardTitle } from "@/components/ui/card";
-import { api } from "@/lib/api";
-import { assetLogoForSlug } from "@/lib/market";
-import type { BotRow } from "@/lib/types";
-import { CARD_SHELL_CLASS, HEADER_RADIAL_GRADIENT } from "@/lib/ui-constants";
-import { cn } from "@/lib/utils";
+import { memo, useCallback, useState } from "react"
+import Link from "next/link"
+import Image from "next/image"
+import { CircleStop, Loader2, Play, Trash2 } from "lucide-react"
+import { Badge } from "@/components/ui/badge"
+import { Button } from "@/components/ui/button"
+import { CardDescription, CardTitle } from "@/components/ui/card"
+import { api } from "@/lib/api"
+import { assetLogoForSlug } from "@/lib/market"
+import type { BotRow } from "@/lib/types"
+import { CARD_SHELL_CLASS, HEADER_RADIAL_GRADIENT } from "@/lib/ui-constants"
+import { cn } from "@/lib/utils"
 
 const listBadge = cn(
-  "h-4 min-h-4 rounded-sm px-1.5 py-0 text-[10px] font-normal leading-none",
-);
+  "h-4 min-h-4 rounded-sm px-1.5 py-0 text-[10px] leading-none font-normal"
+)
 
 function StateBadge({ state }: { state: string }) {
   switch (state) {
@@ -24,30 +24,30 @@ function StateBadge({ state }: { state: string }) {
         <Badge
           className={cn(
             listBadge,
-            "border-transparent bg-emerald-500/15 text-emerald-600 dark:text-emerald-400",
+            "border-transparent bg-emerald-500/15 text-emerald-600 dark:text-emerald-400"
           )}
         >
           {state}
         </Badge>
-      );
+      )
     case "STOPPED":
       return (
         <Badge variant="secondary" className={listBadge}>
           {state}
         </Badge>
-      );
+      )
     case "CRASHED":
       return (
         <Badge variant="destructive" className={listBadge}>
           {state}
         </Badge>
-      );
+      )
     default:
       return (
         <Badge variant="outline" className={listBadge}>
           {state}
         </Badge>
-      );
+      )
   }
 }
 
@@ -57,23 +57,23 @@ function ModeBadge({ mode }: { mode: "live" | "dryrun" }) {
       <Badge
         className={cn(
           listBadge,
-          "border-transparent bg-primary/15 text-primary uppercase",
+          "border-transparent bg-primary/15 text-primary uppercase"
         )}
       >
         live
       </Badge>
-    );
+    )
   }
   return (
     <Badge
       className={cn(
         listBadge,
-        "border-transparent bg-amber-500/15 text-amber-700 uppercase dark:text-amber-400",
+        "border-transparent bg-amber-500/15 text-amber-700 uppercase dark:text-amber-400"
       )}
     >
       dryrun
     </Badge>
-  );
+  )
 }
 
 /**
@@ -88,17 +88,17 @@ const BotCard = memo(function BotCard({
   onStop,
   onDelete,
 }: {
-  bot: BotRow;
-  isPending: boolean;
-  onStart: (bot: BotRow) => void;
-  onStop: (bot: BotRow) => void;
-  onDelete: (bot: BotRow) => void;
+  bot: BotRow
+  isPending: boolean
+  onStart: (bot: BotRow) => void
+  onStop: (bot: BotRow) => void
+  onDelete: (bot: BotRow) => void
 }) {
   return (
     <article className={cn(CARD_SHELL_CLASS, "@container min-w-0")}>
       <Link
         href={`/bots/${bot.id}`}
-        className="from-muted/35 via-background to-background group relative block overflow-hidden border-b border-border/45 bg-gradient-to-br px-3 py-2.5 no-underline outline-none transition-colors hover:from-muted/45 hover:via-background sm:px-4 sm:py-3 focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-0"
+        className="group relative block overflow-hidden border-b border-border/45 bg-gradient-to-br from-muted/35 via-background to-background px-3 py-2.5 no-underline transition-colors outline-none hover:from-muted/45 hover:via-background focus-visible:ring-2 focus-visible:ring-ring/50 focus-visible:ring-offset-0 sm:px-4 sm:py-3"
       >
         <div
           aria-hidden
@@ -119,7 +119,7 @@ const BotCard = memo(function BotCard({
             />
           </div>
           <div className="min-w-0 flex-1 space-y-1">
-            <span className="font-heading text-foreground group-hover:text-primary block truncate text-sm font-semibold tracking-tight transition-colors sm:text-base">
+            <span className="block truncate font-heading text-sm font-semibold tracking-tight text-foreground transition-colors group-hover:text-primary sm:text-base">
               {bot.name}
             </span>
             <div className="flex flex-wrap items-center gap-1">
@@ -134,19 +134,19 @@ const BotCard = memo(function BotCard({
       </Link>
 
       <div className="space-y-2 px-3 py-2.5 sm:px-4 sm:py-3">
-        <p className="text-muted-foreground text-center font-mono text-[11px] leading-snug break-words sm:text-xs">
+        <p className="text-center font-mono text-[11px] leading-snug break-words text-muted-foreground sm:text-xs">
           {bot.slug_pattern}
         </p>
-        <div className="bg-muted/20 space-y-2 rounded-md border border-border/40 p-2.5 shadow-xs sm:p-3">
-          <p className="text-muted-foreground text-[10px] font-medium tracking-wide uppercase">
+        <div className="space-y-2 rounded-md border border-border/40 bg-muted/20 p-2.5 shadow-xs sm:p-3">
+          <p className="text-[10px] font-medium tracking-wide text-muted-foreground uppercase">
             Settings
           </p>
           <dl className="grid grid-cols-1 gap-2">
             <div className="flex items-baseline justify-between gap-3 sm:block sm:space-y-0">
-              <dt className="text-muted-foreground text-[11px] sm:text-xs">
+              <dt className="text-[11px] text-muted-foreground sm:text-xs">
                 Order (USDC)
               </dt>
-              <dd className="font-mono text-foreground text-right text-xs font-medium tabular-nums sm:text-left sm:text-sm">
+              <dd className="text-right font-mono text-xs font-medium text-foreground tabular-nums sm:text-left sm:text-sm">
                 ${bot.order_usdc.toFixed(2)}
               </dd>
             </div>
@@ -154,7 +154,7 @@ const BotCard = memo(function BotCard({
         </div>
       </div>
 
-      <div className="border-border/45 flex items-center justify-between gap-2 border-t px-3 py-2 sm:px-4">
+      <div className="flex items-center justify-between gap-2 border-t border-border/45 px-3 py-2 sm:px-4">
         {bot.state === "RUNNING" ? (
           <Button
             size="sm"
@@ -165,11 +165,7 @@ const BotCard = memo(function BotCard({
             disabled={isPending}
             onClick={() => onStop(bot)}
           >
-            {isPending ? (
-              <Loader2 className="animate-spin" />
-            ) : (
-              <CircleStop />
-            )}
+            {isPending ? <Loader2 className="animate-spin" /> : <CircleStop />}
             Stop
           </Button>
         ) : (
@@ -181,11 +177,7 @@ const BotCard = memo(function BotCard({
             disabled={isPending}
             onClick={() => onStart(bot)}
           >
-            {isPending ? (
-              <Loader2 className="animate-spin" />
-            ) : (
-              <Play />
-            )}
+            {isPending ? <Loader2 className="animate-spin" /> : <Play />}
             Start
           </Button>
         )}
@@ -202,8 +194,8 @@ const BotCard = memo(function BotCard({
         </Button>
       </div>
     </article>
-  );
-});
+  )
+})
 
 export function BotList({
   bots,
@@ -211,84 +203,84 @@ export function BotList({
   patch,
   remove,
 }: {
-  bots: BotRow[];
-  onChanged: () => void;
-  patch: (id: number, partial: Partial<BotRow>) => void;
-  remove: (id: number) => void;
+  bots: BotRow[]
+  onChanged: () => void
+  patch: (id: number, partial: Partial<BotRow>) => void
+  remove: (id: number) => void
 }) {
-  const [pending, setPending] = useState<Record<number, boolean>>({});
+  const [pending, setPending] = useState<Record<number, boolean>>({})
 
   const setPendingFor = (id: number, val: boolean) =>
-    setPending((p) => ({ ...p, [id]: val }));
+    setPending((p) => ({ ...p, [id]: val }))
 
   const doStart = useCallback(
     async (bot: BotRow) => {
-      if (pending[bot.id]) return;
-      const prevState = bot.state;
-      patch(bot.id, { state: "RUNNING" });
-      setPendingFor(bot.id, true);
+      if (pending[bot.id]) return
+      const prevState = bot.state
+      patch(bot.id, { state: "RUNNING" })
+      setPendingFor(bot.id, true)
       try {
-        await api.startBot(bot.id);
+        await api.startBot(bot.id)
       } catch {
-        patch(bot.id, { state: prevState });
+        patch(bot.id, { state: prevState })
       } finally {
-        setPendingFor(bot.id, false);
+        setPendingFor(bot.id, false)
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [patch, pending],
-  );
+    [patch, pending]
+  )
 
   const doStop = useCallback(
     async (bot: BotRow) => {
-      if (pending[bot.id]) return;
-      const prevState = bot.state;
-      patch(bot.id, { state: "STOPPED" });
-      setPendingFor(bot.id, true);
+      if (pending[bot.id]) return
+      const prevState = bot.state
+      patch(bot.id, { state: "STOPPED" })
+      setPendingFor(bot.id, true)
       try {
-        await api.stopBot(bot.id);
+        await api.stopBot(bot.id)
       } catch {
-        patch(bot.id, { state: prevState });
+        patch(bot.id, { state: prevState })
       } finally {
-        setPendingFor(bot.id, false);
+        setPendingFor(bot.id, false)
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [patch, pending],
-  );
+    [patch, pending]
+  )
 
   const doDelete = useCallback(
     async (bot: BotRow) => {
-      if (pending[bot.id]) return;
-      if (!confirm(`Bot #${bot.id} silinsin mi?`)) return;
-      remove(bot.id);
-      setPendingFor(bot.id, true);
+      if (pending[bot.id]) return
+      if (!confirm(`Bot #${bot.id} silinsin mi?`)) return
+      remove(bot.id)
+      setPendingFor(bot.id, true)
       try {
-        await api.deleteBot(bot.id);
-        onChanged();
+        await api.deleteBot(bot.id)
+        onChanged()
       } catch {
-        onChanged(); // hata durumunda reload ile geri getir
+        onChanged() // hata durumunda reload ile geri getir
       } finally {
-        setPendingFor(bot.id, false);
+        setPendingFor(bot.id, false)
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [remove, onChanged, pending],
-  );
+    [remove, onChanged, pending]
+  )
 
   if (bots.length === 0) {
     return (
       <div className={CARD_SHELL_CLASS}>
-        <div className="from-muted/35 via-background to-background border-b border-border/45 bg-gradient-to-br px-3 py-3 sm:px-4">
+        <div className="border-b border-border/45 bg-gradient-to-br from-muted/35 via-background to-background px-3 py-3 sm:px-4">
           <CardTitle className="font-heading text-sm font-semibold tracking-tight sm:text-base">
             Bots
           </CardTitle>
-          <CardDescription className="text-muted-foreground mt-0.5 text-xs sm:text-sm">
+          <CardDescription className="mt-0.5 text-xs text-muted-foreground sm:text-sm">
             No bots yet. Create one from New bot.
           </CardDescription>
         </div>
       </div>
-    );
+    )
   }
 
   return (
@@ -304,5 +296,5 @@ export function BotList({
         />
       ))}
     </div>
-  );
+  )
 }

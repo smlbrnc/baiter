@@ -168,10 +168,17 @@ pub fn parse_slug(slug: &str) -> Result<SlugInfo, AppError> {
     if !ts.is_multiple_of(interval.seconds()) {
         return Err(invalid(
             slug,
-            format!("timestamp {ts} interval ({}s) katı değil", interval.seconds()),
+            format!(
+                "timestamp {ts} interval ({}s) katı değil",
+                interval.seconds()
+            ),
         ));
     }
-    Ok(SlugInfo { asset, interval, ts })
+    Ok(SlugInfo {
+        asset,
+        interval,
+        ts,
+    })
 }
 
 /// Tam slug parse edilebilirse onu döner; aksi halde `{asset}-updown-{interval}`

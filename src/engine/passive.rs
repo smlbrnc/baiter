@@ -1,7 +1,7 @@
 //! DryRun passive-fill simülatörü.
 
 use crate::strategy::{OpenOrder, PlannedOrder};
-use crate::types::{Outcome, OrderType};
+use crate::types::{OrderType, Outcome};
 
 use super::executor::{apply_dryrun_fill, dryrun_cross};
 use super::{ExecutedOrder, MarketSession};
