@@ -476,3 +476,44 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   bonereaper_freeze_window_secs: 45,
   bonereaper_freeze_threshold: 0.5,
 } as const
+
+// ── Bot İstatistikleri ────────────────────────────────────────────────────
+
+export interface PositionTypeStats {
+  position_type: "SAF_UP" | "SAF_DOWN" | "KARMA"
+  total: number
+  winning: number
+  losing: number
+  winrate_pct: number
+  avg_pnl: number
+  total_pnl: number
+  total_cost: number
+  roi_pct: number
+}
+
+export interface SessionTimelineItem {
+  session_id: number
+  slug: string
+  mtm_pnl: number
+  cost_basis: number
+  roi_pct: number
+  position_type: "SAF_UP" | "SAF_DOWN" | "KARMA"
+  ts_ms: number
+}
+
+export interface BotStats {
+  total_sessions: number
+  winning: number
+  losing: number
+  winrate_pct: number
+  total_mtm_pnl: number
+  total_cost_basis: number
+  roi_pct: number
+  total_fee: number
+  avg_session_pnl: number
+  best_session_pnl: number
+  worst_session_pnl: number
+  total_trades: number
+  by_type: PositionTypeStats[]
+  sessions_timeline: SessionTimelineItem[]
+}

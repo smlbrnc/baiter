@@ -149,6 +149,242 @@ pub async fn delete_bot(pool: &SqlitePool, bot_id: i64) -> Result<(), AppError> 
     Ok(())
 }
 
+// ── İstatistik tipleri ──────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct PositionTypeStats {
+    pub position_type: String,
+    pub total: i64,
+    pub winning: i64,
+    pub losing: i64,
+    pub winrate_pct: f64,
+    pub avg_pnl: f64,
+    pub total_pnl: f64,
+    pub total_cost: f64,
+    pub roi_pct: f64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SessionTimelineItem {
+    pub session_id: i64,
+    pub slug: String,
+    pub mtm_pnl: f64,
+    pub cost_basis: f64,
+    pub roi_pct: f64,
+    pub position_type: String,
+    pub ts_ms: i64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BotStats {
+    pub total_sessions: i64,
+    pub winning: i64,
+    pub losing: i64,
+    pub winrate_pct: f64,
+    pub total_mtm_pnl: f64,
+    pub total_cost_basis: f64,
+    pub roi_pct: f64,
+    pub total_fee: f64,
+    pub avg_session_pnl: f64,
+    pub best_session_pnl: f64,
+    pub worst_session_pnl: f64,
+    pub total_trades: i64,
+    pub by_type: Vec<PositionTypeStats>,
+    pub sessions_timeline: Vec<SessionTimelineItem>,
+}
+
+pub async fn get_bot_stats(pool: &SqlitePool, bot_id: i64) -> Result<BotStats, AppError> {
+    // Her session için en son PnL snapshot'unu al
+    let agg_row = sqlx::query(
+        r#"
+        SELECT
+            COUNT(*) AS total_sessions,
+            SUM(CASE WHEN p.mtm_pnl > 0 THEN 1 ELSE 0 END) AS winning,
+            SUM(CASE WHEN p.mtm_pnl < 0 THEN 1 ELSE 0 END) AS losing,
+            COALESCE(SUM(p.mtm_pnl), 0.0) AS total_mtm_pnl,
+            COALESCE(SUM(p.cost_basis), 0.0) AS total_cost_basis,
+            COALESCE(SUM(p.fee_total), 0.0) AS total_fee,
+            COALESCE(AVG(p.mtm_pnl), 0.0) AS avg_session_pnl,
+            COALESCE(MAX(p.mtm_pnl), 0.0) AS best_session_pnl,
+            COALESCE(MIN(p.mtm_pnl), 0.0) AS worst_session_pnl
+        FROM (
+            SELECT market_session_id, mtm_pnl, cost_basis, fee_total
+            FROM pnl_snapshots
+            WHERE bot_id = ?
+            GROUP BY market_session_id
+            HAVING MAX(ts_ms) AND cost_basis > 0
+        ) p
+        "#,
+    )
+    .bind(bot_id)
+    .fetch_one(pool)
+    .await?;
+
+    let total_sessions: i64 = agg_row.try_get("total_sessions").unwrap_or(0);
+    let winning: i64 = agg_row.try_get("winning").unwrap_or(0);
+    let losing: i64 = agg_row.try_get("losing").unwrap_or(0);
+    let total_mtm_pnl: f64 = agg_row.try_get("total_mtm_pnl").unwrap_or(0.0);
+    let total_cost_basis: f64 = agg_row.try_get("total_cost_basis").unwrap_or(0.0);
+    let total_fee: f64 = agg_row.try_get("total_fee").unwrap_or(0.0);
+    let avg_session_pnl: f64 = agg_row.try_get("avg_session_pnl").unwrap_or(0.0);
+    let best_session_pnl: f64 = agg_row.try_get("best_session_pnl").unwrap_or(0.0);
+    let worst_session_pnl: f64 = agg_row.try_get("worst_session_pnl").unwrap_or(0.0);
+
+    let winrate_pct = if total_sessions > 0 {
+        (winning as f64 / total_sessions as f64) * 100.0
+    } else {
+        0.0
+    };
+    let roi_pct = if total_cost_basis > 0.0 {
+        (total_mtm_pnl / total_cost_basis) * 100.0
+    } else {
+        0.0
+    };
+
+    // Toplam trade sayısı
+    let trade_row = sqlx::query("SELECT COUNT(*) AS cnt FROM trades WHERE bot_id = ?")
+        .bind(bot_id)
+        .fetch_one(pool)
+        .await?;
+    let total_trades: i64 = trade_row.try_get("cnt").unwrap_or(0);
+
+    // Pozisyon tipi bazında istatistik
+    let type_rows = sqlx::query(
+        r#"
+        SELECT
+            CASE
+                WHEN p.up_filled > 0 AND p.down_filled = 0 THEN 'SAF_UP'
+                WHEN p.down_filled > 0 AND p.up_filled = 0 THEN 'SAF_DOWN'
+                ELSE 'KARMA'
+            END AS position_type,
+            COUNT(*) AS total,
+            SUM(CASE WHEN p.mtm_pnl > 0 THEN 1 ELSE 0 END) AS winning,
+            SUM(CASE WHEN p.mtm_pnl < 0 THEN 1 ELSE 0 END) AS losing,
+            COALESCE(AVG(p.mtm_pnl), 0.0) AS avg_pnl,
+            COALESCE(SUM(p.mtm_pnl), 0.0) AS total_pnl,
+            COALESCE(SUM(p.cost_basis), 0.0) AS total_cost
+        FROM (
+            SELECT market_session_id, mtm_pnl, cost_basis, up_filled, down_filled
+            FROM pnl_snapshots
+            WHERE bot_id = ?
+            GROUP BY market_session_id
+            HAVING MAX(ts_ms) AND cost_basis > 0
+        ) p
+        GROUP BY position_type
+        ORDER BY position_type
+        "#,
+    )
+    .bind(bot_id)
+    .fetch_all(pool)
+    .await?;
+
+    let by_type: Vec<PositionTypeStats> = type_rows
+        .iter()
+        .map(|r| {
+            let total: i64 = r.try_get("total").unwrap_or(0);
+            let w: i64 = r.try_get("winning").unwrap_or(0);
+            let total_cost: f64 = r.try_get("total_cost").unwrap_or(0.0);
+            let total_pnl: f64 = r.try_get("total_pnl").unwrap_or(0.0);
+            PositionTypeStats {
+                position_type: r.try_get("position_type").unwrap_or_default(),
+                total,
+                winning: w,
+                losing: r.try_get("losing").unwrap_or(0),
+                winrate_pct: if total > 0 {
+                    (w as f64 / total as f64) * 100.0
+                } else {
+                    0.0
+                },
+                avg_pnl: r.try_get("avg_pnl").unwrap_or(0.0),
+                total_pnl,
+                total_cost,
+                roi_pct: if total_cost > 0.0 {
+                    (total_pnl / total_cost) * 100.0
+                } else {
+                    0.0
+                },
+            }
+        })
+        .collect();
+
+    // Session zaman çizelgesi (max 500 session, en eskiden yeniye)
+    let timeline_rows = sqlx::query(
+        r#"
+        SELECT
+            ms.id AS session_id,
+            ms.slug,
+            p.mtm_pnl,
+            p.cost_basis,
+            p.up_filled,
+            p.down_filled,
+            p.ts_ms
+        FROM market_sessions ms
+        JOIN (
+            SELECT market_session_id, mtm_pnl, cost_basis, up_filled, down_filled, MAX(ts_ms) AS ts_ms
+            FROM pnl_snapshots
+            WHERE bot_id = ?
+            GROUP BY market_session_id
+            HAVING cost_basis > 0
+        ) p ON p.market_session_id = ms.id
+        WHERE ms.bot_id = ?
+        ORDER BY p.ts_ms ASC
+        LIMIT 500
+        "#,
+    )
+    .bind(bot_id)
+    .bind(bot_id)
+    .fetch_all(pool)
+    .await?;
+
+    let sessions_timeline: Vec<SessionTimelineItem> = timeline_rows
+        .iter()
+        .map(|r| {
+            let mtm_pnl: f64 = r.try_get("mtm_pnl").unwrap_or(0.0);
+            let cost_basis: f64 = r.try_get("cost_basis").unwrap_or(0.0);
+            let up_filled: f64 = r.try_get("up_filled").unwrap_or(0.0);
+            let down_filled: f64 = r.try_get("down_filled").unwrap_or(0.0);
+            let position_type = if up_filled > 0.0 && down_filled == 0.0 {
+                "SAF_UP"
+            } else if down_filled > 0.0 && up_filled == 0.0 {
+                "SAF_DOWN"
+            } else {
+                "KARMA"
+            };
+            let roi_pct = if cost_basis > 0.0 {
+                (mtm_pnl / cost_basis) * 100.0
+            } else {
+                0.0
+            };
+            SessionTimelineItem {
+                session_id: r.try_get("session_id").unwrap_or(0),
+                slug: r.try_get("slug").unwrap_or_default(),
+                mtm_pnl,
+                cost_basis,
+                roi_pct,
+                position_type: position_type.to_string(),
+                ts_ms: r.try_get("ts_ms").unwrap_or(0),
+            }
+        })
+        .collect();
+
+    Ok(BotStats {
+        total_sessions,
+        winning,
+        losing,
+        winrate_pct,
+        total_mtm_pnl,
+        total_cost_basis,
+        roi_pct,
+        total_fee,
+        avg_session_pnl,
+        best_session_pnl,
+        worst_session_pnl,
+        total_trades,
+        by_type,
+        sessions_timeline,
+    })
+}
+
 /// `update_bot` için editable alanlar. `slug_pattern` ve `strategy` immutable.
 #[derive(Debug, Clone)]
 pub struct BotUpdate {

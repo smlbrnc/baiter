@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation"
 import type { LucideIcon } from "lucide-react"
 import {
   Activity,
+  BarChart2,
   Bot,
   Keyboard,
   LayoutDashboard,
@@ -30,6 +31,12 @@ const NAV: Array<{
     label: "Yeni Bot",
     icon: Plus,
     match: (p) => p.startsWith("/bots/new"),
+  },
+  {
+    href: "/stats",
+    label: "İstatistikler",
+    icon: BarChart2,
+    match: (p) => p.startsWith("/stats"),
   },
   {
     href: "/settings",

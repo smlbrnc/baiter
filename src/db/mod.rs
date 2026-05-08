@@ -19,7 +19,8 @@ pub mod ticks;
 pub mod trades;
 
 pub use bots::{
-    delete_bot, get_bot, insert_bot, list_bots, set_bot_state, update_bot, BotRow, BotUpdate,
+    delete_bot, get_bot, get_bot_stats, insert_bot, list_bots, set_bot_state, update_bot, BotRow,
+    BotStats, BotUpdate,
 };
 pub use credentials::{get_credentials, upsert_credentials};
 pub use logs::{insert_log, recent_logs, LogRow};
@@ -44,7 +45,8 @@ pub async fn open(db_path: &str) -> Result<SqlitePool, AppError> {
     let opts = SqliteConnectOptions::from_str(db_path)
         .map_err(|e| AppError::Config(format!("sqlite connect options: {e}")))?
         .create_if_missing(true)
-        .journal_mode(SqliteJournalMode::Wal);
+        .journal_mode(SqliteJournalMode::Wal)
+        .foreign_keys(true);
 
     let pool = SqlitePoolOptions::new()
         .max_connections(8)

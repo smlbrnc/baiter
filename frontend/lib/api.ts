@@ -1,5 +1,6 @@
 import type {
   BotRow,
+  BotStats,
   CreateBotReq,
   CredentialsInput,
   GlobalCredentials,
@@ -55,6 +56,8 @@ export const api = {
       body: JSON.stringify(body),
     }),
   deleteBot: (id: number) => req<void>(`/bots/${id}`, { method: "DELETE" }),
+  botStats: (id: number, signal?: AbortSignal) =>
+    req<BotStats>(`/bots/${id}/stats`, { signal }),
   startBot: (id: number) => req<void>(`/bots/${id}/start`, { method: "POST" }),
   stopBot: (id: number) => req<void>(`/bots/${id}/stop`, { method: "POST" }),
 

@@ -18,7 +18,7 @@ use tokio_stream::wrappers::BroadcastStream;
 use tower_http::cors::{Any, CorsLayer};
 
 use crate::config::{BotConfig, Credentials, StrategyParams};
-use crate::db::{self, BotUpdate, GlobalCredentials};
+use crate::db::{self, BotStats, BotUpdate, GlobalCredentials};
 use crate::error::AppError;
 use crate::polymarket::auth as polymarket_auth;
 use crate::supervisor::{self, AppState};
@@ -93,6 +93,7 @@ pub fn router(state: Arc<AppState>) -> Router {
             "/api/bots/{id}",
             get(get_bot).patch(update_bot).delete(delete_bot),
         )
+        .route("/api/bots/{id}/stats", get(bot_stats))
         .route("/api/bots/{id}/start", post(start_bot))
         .route("/api/bots/{id}/stop", post(stop_bot))
         .route("/api/bots/{id}/logs", get(bot_logs))
@@ -299,6 +300,14 @@ async fn delete_bot(
     }
     db::delete_bot(&state.pool, id).await?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+async fn bot_stats(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<i64>,
+) -> Result<Json<BotStats>, AppError> {
+    let stats = db::get_bot_stats(&state.pool, id).await?;
+    Ok(Json(stats))
 }
 
 async fn start_bot(
