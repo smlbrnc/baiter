@@ -138,6 +138,18 @@ export interface StrategyParams {
   bonereaper_freeze_window_secs?: number | null
   /** PURE FREEZE eşiği — UP_bid'in geçişi flip sayar. Default 0.5. */
   bonereaper_freeze_threshold?: number | null
+  /**
+   * Flip-imbalance kuralı — sinyal kuvveti eşiği (|signal_ema|).
+   * Yön değişimi anında bu eşiği geçen sinyal varsa imbalance kapatma alımı tetiklenir.
+   * Default 0.50. 0.0 = devre dışı.
+   */
+  bonereaper_flip_imbalance_bsi_threshold?: number | null
+  /**
+   * Flip-imbalance kuralı — alım lot'u = `|imbalance| × fraction`.
+   * 0.0 = kural devre dışı (mevcut davranış). 0.5 = nötr-pozitif (önerilen).
+   * 1.0 = full Dutch Book (yüksek varyans). Default 0.0.
+   */
+  bonereaper_flip_imbalance_fraction?: number | null
 
   // ── Gravie (Bot 66 davranış kopyası) ─────────────────────────────────────
   /**
@@ -180,6 +192,16 @@ export interface StrategyParams {
    * Default: 1.05 (sim'de 1.20 çok geç oluyor; sıkı tutarak overpay engellenir).
    */
   gravie_sum_avg_ceiling?: number | null
+  /**
+   * PATCH A — Lose-side ASK cap. `max(up_ask, dn_ask) ≥ X` ise tüm yeni
+   * emirler durur. Default 0.85; 1.0 = devre dışı.
+   */
+  gravie_opp_ask_stop_threshold?: number | null
+  /**
+   * PATCH C — FAK emir başına maksimum share. Düşen fiyatlarda
+   * `ceil(usdc/price)` patlamasını önler. 0 = sınırsız. Default: 50.
+   */
+  gravie_max_fak_size?: number | null
 }
 
 export interface BotRow {
@@ -517,6 +539,8 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   bonereaper_profit_lock: false,
   bonereaper_freeze_window_secs: 45,
   bonereaper_freeze_threshold: 0.5,
+  bonereaper_flip_imbalance_bsi_threshold: 0.5,
+  bonereaper_flip_imbalance_fraction: 0.0,
   // Gravie (Bot 66 davranış kopyası — optimum kalibre)
   gravie_tick_interval_secs: 5,
   gravie_buy_cooldown_ms: 4000,
@@ -527,6 +551,8 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   gravie_balance_rebalance: 0.3,
   gravie_rebalance_ceiling_multiplier: 1.2,
   gravie_sum_avg_ceiling: 1.05,
+  gravie_opp_ask_stop_threshold: 0.85,
+  gravie_max_fak_size: 50,
 } as const
 
 // ── Bot İstatistikleri ────────────────────────────────────────────────────

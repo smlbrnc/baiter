@@ -130,6 +130,12 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const bonereaperFreezeThreshold =
     params.bonereaper_freeze_threshold ??
     STRATEGY_PARAMS_DEFAULTS.bonereaper_freeze_threshold
+  const bonereaperFlipImbBsiThreshold =
+    params.bonereaper_flip_imbalance_bsi_threshold ??
+    STRATEGY_PARAMS_DEFAULTS.bonereaper_flip_imbalance_bsi_threshold
+  const bonereaperFlipImbFraction =
+    params.bonereaper_flip_imbalance_fraction ??
+    STRATEGY_PARAMS_DEFAULTS.bonereaper_flip_imbalance_fraction
 
   return (
     <div className="space-y-3">
@@ -635,6 +641,46 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                   }
                 />
               </Field>
+              <Field
+                label="Flip imbalance — sinyal eşiği"
+                tooltip="Yön değişimi anında |signal_ema| bu eşiği geçtiyse imbalance kapatma alımı tetiklenir. 0.50 = simülasyonda en iyi ROI/winrate dengesi."
+                hint={`0.0 – 1.0 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_flip_imbalance_bsi_threshold}).`}
+              >
+                <Input
+                  type="number"
+                  step="0.05"
+                  min="0"
+                  max="1"
+                  value={bonereaperFlipImbBsiThreshold}
+                  onChange={(e) =>
+                    patch({
+                      bonereaper_flip_imbalance_bsi_threshold: Number(
+                        e.target.value
+                      ),
+                    })
+                  }
+                />
+              </Field>
+              <Field
+                label="Flip imbalance — lot fraksiyonu"
+                tooltip="Yön değişimi anında alım lot'u = |imbalance| × fraction. 0.0 = kural KAPALI (mevcut davranış). 0.5 = nötr-pozitif, simülasyonda Bot 79+80 ortalaması +%0.07 ROI. 1.0 = full Dutch Book, yüksek varyans."
+                hint={`0.0 – 2.0 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_flip_imbalance_fraction}).`}
+              >
+                <Input
+                  type="number"
+                  step="0.05"
+                  min="0"
+                  max="2"
+                  value={bonereaperFlipImbFraction}
+                  onChange={(e) =>
+                    patch({
+                      bonereaper_flip_imbalance_fraction: Number(
+                        e.target.value
+                      ),
+                    })
+                  }
+                />
+              </Field>
             </div>
           </div>
 
@@ -674,8 +720,17 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                 korunur.
               </li>
               <li>
-                <strong>Stale cancel:</strong> Açık signal emirleri bid&apos;den
-                0.05&apos;ten fazla saparsa iptal edilir (price drift koruması).
+                <strong>Flip imbalance:</strong>{" "}
+                <code>fraction &gt; 0</code> ve <code>|signal_ema| ≥ eşik</code>
+                ise yön değişimi anında klasik signal emri yerine{" "}
+                <code>|imbalance| × fraction</code> share doğru tarafa taker
+                BUY. 0.5 nötr-pozitif, 1.0 yüksek varyans (Bot 79+80
+                simülasyonu).
+              </li>
+              <li>
+                <strong>Stale cancel:</strong> Açık signal/flip-imb emirleri
+                bid&apos;den 0.05&apos;ten fazla saparsa iptal edilir (price
+                drift koruması).
               </li>
             </ul>
           </div>

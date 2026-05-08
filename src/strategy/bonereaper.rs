@@ -6,14 +6,15 @@
 //!
 //! 1. DUTCH BOOK   — up_ask + dn_ask < $1.00 → her iki tarafa arbitraj emri.
 //! 2. SIGNAL       — skor → UP veya DOWN, yön değiştiyse önceki signal emirleri
-//!                   iptal edilir; yeni yönde `best_bid`'den GTC maker emir verilir.
+//!    iptal edilir; yeni yönde `best_bid`'den GTC maker emir verilir.
 //! 3. STALE CANCEL — fiyatı current bid'den STALE_SPREAD_MAX'tan fazla sapan
-//!                   açık signal emirleri iptal edilir.
+//!    açık signal emirleri iptal edilir.
 //!
 //! ## Reason etiketleri
 //!
-//! `bonereaper:signal:{up,down}` — sinyal yönlü opener (her döngü)
-//! `bonereaper:dutch:{up,down}`  — Dutch Book arbitraj
+//! `bonereaper:signal:{up,down}`   — sinyal yönlü opener (her döngü)
+//! `bonereaper:flip_imb:{up,down}` — yön değişiminde imbalance kapatma (opt-in)
+//! `bonereaper:dutch:{up,down}`    — Dutch Book arbitraj
 
 use std::collections::VecDeque;
 
@@ -27,7 +28,6 @@ use crate::types::{OrderType, Outcome, Side};
 // Sabitler
 // ─────────────────────────────────────────────
 
-const TICK_INTERVAL_SECS: u64 = 1;
 /// Stale emir maksimum fiyat sapması (bid'den uzaklık).
 const STALE_SPREAD_MAX: f64 = 0.05;
 /// Aynı yönde ardışık signal trade'ler arası minimum bekleme (ms).
@@ -77,24 +77,35 @@ const fn reason_signal(dir: Outcome) -> &'static str {
     }
 }
 
+#[inline]
+const fn reason_flip_imbalance(dir: Outcome) -> &'static str {
+    match dir {
+        Outcome::Up => "bonereaper:flip_imb:up",
+        Outcome::Down => "bonereaper:flip_imb:down",
+    }
+}
+
+/// Bot'un kendi sahiplendiği signal/flip-imb GTC emirleri.
+/// Dutch Book emirleri (FAK taker) bu kapsamda değil.
+#[inline]
+fn is_owned_order(reason: &str) -> bool {
+    reason.starts_with("bonereaper:signal:")
+        || reason.starts_with("bonereaper:flip_imb:")
+}
+
 // ─────────────────────────────────────────────
 // FSM State
 // ─────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub enum BonereaperState {
     /// OB henüz hazır değil; ilk tick bekleniyor.
+    #[default]
     Idle,
     /// Market aktif — sinyal döngüsü çalışıyor.
     Active(Box<BonereaperActive>),
     /// Market kapandı / pasif (mevcut akışta kullanılmıyor; geriye uyumlu).
     Done,
-}
-
-impl Default for BonereaperState {
-    fn default() -> Self {
-        Self::Idle
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -191,13 +202,7 @@ impl BonereaperEngine {
                 }
 
                 // ── TICK GATE (1 sn) ─────────────────────────────────────────
-                // TICK_INTERVAL_SECS değişebilir (config); modulo gerçek hesap.
-                #[allow(clippy::modulo_one)]
-                {
-                    if rel_secs % TICK_INTERVAL_SECS != 0 {
-                        return (BonereaperState::Active(st), Decision::NoOp);
-                    }
-                }
+                // Aynı saniyede tekrar tetiklenmeyi engeller (decision döngüsü 1 sn).
                 if rel_secs == st.last_acted_even_sec {
                     return (BonereaperState::Active(st), Decision::NoOp);
                 }
@@ -235,7 +240,7 @@ impl BonereaperEngine {
                         let cancel_ids: Vec<String> = ctx
                             .open_orders
                             .iter()
-                            .filter(|o| o.reason.starts_with("bonereaper:signal:"))
+                            .filter(|o| is_owned_order(&o.reason))
                             .map(|o| o.id.clone())
                             .collect();
                         return if cancel_ids.is_empty() {
@@ -358,12 +363,37 @@ impl BonereaperEngine {
                     let mut cancel_ids: SmallVec<[String; 8]> = SmallVec::new();
                     let opp = new_dir.opposite();
                     for o in ctx.open_orders.iter() {
-                        if o.outcome == opp && o.reason.starts_with("bonereaper:signal:") {
+                        if o.outcome == opp && is_owned_order(&o.reason) {
                             cancel_ids.push(o.id.clone());
                         }
                     }
 
-                    if let Some(order) = signal_order(&st, ctx, new_dir) {
+                    // ── FLIP IMBALANCE RULE ─────────────────────────────────────
+                    // Param `bonereaper_flip_imbalance_fraction > 0` ise: yön değişiminde
+                    // mevcut imbalance'ı `fraction` oranında doğru yöne kapatır. Sinyal
+                    // kuvveti yetersizse (`|signal_ema| < bsi_th`) kural pas geçilir,
+                    // klasik signal_order çalışır. Bot 79 + Bot 80 simülasyon: fraction
+                    // 0.5 nötr-pozitif, 1.0 yüksek varyans; default 0.0 (kapalı).
+                    let frac = ctx.strategy_params.bonereaper_flip_imbalance_fraction();
+                    let flip_bsi_th = ctx
+                        .strategy_params
+                        .bonereaper_flip_imbalance_bsi_threshold();
+                    let imbalance_abs = (m.up_filled - m.down_filled).abs();
+                    let flip_lot = if frac > 0.0
+                        && smoothed_abs >= flip_bsi_th
+                        && imbalance_abs > 0.0
+                    {
+                        Some(imbalance_abs * frac)
+                    } else {
+                        None
+                    };
+                    let new_order = match flip_lot {
+                        Some(lot) => flip_imbalance_order(ctx, new_dir, lot)
+                            .or_else(|| signal_order(&st, ctx, new_dir)),
+                        None => signal_order(&st, ctx, new_dir),
+                    };
+
+                    if let Some(order) = new_order {
                         st.last_signal_trade_ms = ctx.now_ms;
                         if cancel_ids.is_empty() {
                             return (
@@ -399,9 +429,10 @@ impl BonereaperEngine {
                 }
 
                 // Aynı yön: mevcut signal emirlerini iptal et (fiyat tazeleme) + yenisini koy.
+                // Flip-imb emirleri de aynı yönü temsil ediyorsa onlar da fresh tutulur.
                 let mut stale_signal_ids: SmallVec<[String; 8]> = SmallVec::new();
                 for o in ctx.open_orders.iter() {
-                    if o.reason.starts_with("bonereaper:signal:") {
+                    if is_owned_order(&o.reason) {
                         stale_signal_ids.push(o.id.clone());
                     }
                 }
@@ -590,6 +621,31 @@ fn signal_order(
 }
 
 // ─────────────────────────────────────────────
+// Flip Imbalance — yön değişiminde mevcut pozisyonu doğru tarafa parçalı kapatma
+// ─────────────────────────────────────────────
+
+/// Yön değişimi tespit edildiğinde mevcut imbalance'ı `lot` share kadar doğru yöne
+/// kapatan tek alım. Fiyat: o tick'in `best_ask`'i (taker — anında fill).
+/// `lot` çağırıcı tarafından `|imbalance| × fraction` olarak hesaplanır.
+/// Kural detayları için bkz. `docs/bonereaper.md` ve simülasyon notları.
+fn flip_imbalance_order(
+    ctx: &StrategyContext<'_>,
+    dir: Outcome,
+    lot: f64,
+) -> Option<PlannedOrder> {
+    if lot <= 0.0 {
+        return None;
+    }
+    let price = ctx.best_ask(dir);
+    if price <= 0.0 {
+        return None;
+    }
+    // Polymarket share tam sayı bekler; lot 0.1 share gibi olamaz.
+    let size = lot.ceil();
+    make_buy(ctx, dir, price, size, reason_flip_imbalance(dir))
+}
+
+// ─────────────────────────────────────────────
 // Dutch Book
 // ─────────────────────────────────────────────
 
@@ -669,12 +725,12 @@ fn make_buy(
     })
 }
 
-/// Current bid'den `STALE_SPREAD_MAX`'tan fazla sapan signal emirlerini iptal et.
+/// Current bid'den `STALE_SPREAD_MAX`'tan fazla sapan signal/flip-imb emirlerini iptal et.
 /// SmallVec stack-allocated; 8'den fazla open signal order nadirdir.
 fn cancel_stale(ctx: &StrategyContext<'_>) -> Decision {
     let mut ids: SmallVec<[String; 8]> = SmallVec::new();
     for o in ctx.open_orders.iter() {
-        if o.side != Side::Buy || !o.reason.starts_with("bonereaper:signal:") {
+        if o.side != Side::Buy || !is_owned_order(&o.reason) {
             continue;
         }
         let cur_bid = ctx.best_bid(o.outcome);

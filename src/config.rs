@@ -201,6 +201,18 @@ pub struct StrategyParams {
     /// PURE FREEZE eşiği — UP_bid'in geçişi flip sayar. Default: 0.5.
     #[serde(default)]
     pub bonereaper_freeze_threshold: Option<f64>,
+    /// Flip-imbalance kuralı — spot sinyal eşiği (|signal_ema|).
+    /// Yön değişimi anında bu eşiği geçen sinyal varsa imbalance kapatma alımı tetiklenir.
+    /// Default: 0.50. 0.0 = devre dışı.
+    #[serde(default)]
+    pub bonereaper_flip_imbalance_bsi_threshold: Option<f64>,
+    /// Flip-imbalance kuralı — alım lot'u = `|imbalance| × fraction`.
+    /// 0.0 = kural devre dışı (mevcut bonereaper davranışı).
+    /// 0.5 = imbalance'ın yarısı (güvenli, simülasyonda nötr-pozitif).
+    /// 1.0 = full imbalance (Dutch Book; az veride yüksek varyans).
+    /// Default: 0.0.
+    #[serde(default)]
+    pub bonereaper_flip_imbalance_fraction: Option<f64>,
 
     // === Gravie (Bot 66 davranış kopyası) ===
     /// Karar tick aralığı (sn). Bot 66 ortalama inter-arrival 4-5 sn.
@@ -316,6 +328,18 @@ impl StrategyParams {
         self.bonereaper_freeze_threshold
             .unwrap_or(0.5)
             .clamp(0.10, 0.90)
+    }
+    /// Flip-imbalance sinyal eşiği. 0.0..1.0 sınırlı; default 0.50.
+    pub fn bonereaper_flip_imbalance_bsi_threshold(&self) -> f64 {
+        self.bonereaper_flip_imbalance_bsi_threshold
+            .unwrap_or(0.50)
+            .clamp(0.0, 1.0)
+    }
+    /// Flip-imbalance lot fraksiyonu. 0.0..2.0 sınırlı; default 0.0 (kural KAPALI).
+    pub fn bonereaper_flip_imbalance_fraction(&self) -> f64 {
+        self.bonereaper_flip_imbalance_fraction
+            .unwrap_or(0.0)
+            .clamp(0.0, 2.0)
     }
 }
 
