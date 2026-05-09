@@ -95,64 +95,40 @@ export interface StrategyParams {
   elis_imbalance_taker_threshold?: number | null
 
   // ── Bonereaper ───────────────────────────────────────────────────────────
+  // Polymarket "Bonereaper" wallet (0xeebde7a0...) davranış kopyası.
+  // Order-book reactive martingale + late winner injection. Sinyal kullanmaz.
   /**
-   * Signal emirlerinde taker (ask) kullanılsın mı? Default true — live'da
-   * anında fill. `false` ise best_bid'den maker GTC emir verilir.
+   * Ardışık BUY emirleri arası min bekleme (ms). Real bot ~3-5 sn aralık;
+   * default 2000 (~30 trade/dk).
    */
-  bonereaper_signal_taker?: boolean | null
+  bonereaper_buy_cooldown_ms?: number | null
   /**
-   * Profit-lock için imbalance eşiği (share). |up_filled − down_filled| bu
-   * değerin altında VE her iki tarafta da fill varsa profit_lock aktifse
-   * yeni emir durur. Default 50.
+   * Late winner penceresi (sn). T-X anında bid≥thr olan tarafa massive taker
+   * BUY. 0 = kural KAPALI. Default 30.
    */
-  bonereaper_profit_lock_imbalance?: number | null
+  bonereaper_late_winner_secs?: number | null
+  /** Late winner için kazanan tarafın bid eşiği. Default 0.85. */
+  bonereaper_late_winner_bid_thr?: number | null
   /**
-   * Signal yön onayı için kaç ardışık tick gerekli? K=1 (default) → anlık
-   * karar (real bot uyumlu). K=2+ → yeni yön için K ardışık tick onayı.
+   * Late winner trade büyüklüğü (USDC notional). Real bot $1000+ atıyor;
+   * konservatif default $100. 0 = kural KAPALI.
    */
-  bonereaper_signal_persistence_k?: number | null
+  bonereaper_late_winner_usdc?: number | null
   /**
-   * Composite skor EMA smoothing α ∈ (0, 1]. 1.0 (default) = smoothing yok
-   * (real bot uyumlu, anlık tepki). 0.5 → daha yumuşak ama yön değişiminde
-   * gecikme.
+   * |up_filled − down_filled| bu eşiği aşarsa weaker side rebalance. Default 100.
    */
-  bonereaper_signal_ema_alpha?: number | null
+  bonereaper_imbalance_thr?: number | null
   /**
-   * Profit lock: aktif ise her iki tarafta da fill oluşup imbalance
-   * `bonereaper_profit_lock_imbalance` altına düştüğünde yeni emir durur.
-   * Pozisyon korunur. Default: false.
+   * avg_sum yumuşak cap. `new_avg + opp_avg > X` ise yeni alım yok.
+   * Real bot 1.20'ye kadar trade görüldü; default 1.30.
    */
-  bonereaper_profit_lock?: boolean | null
-  /**
-   * PURE FREEZE penceresi (sn). T-X anında UP_bid'den favori belirlenir;
-   * pencere içinde favori sınırı ters yöne geçerse bot yeni signal emir vermez
-   * (mevcut signal emirleri iptal edilir, hedge YOK). 0 = devre dışı.
-   * Default: 45 (Bot 66 datasında +%24 PnL iyileşmesi sağladı).
-   */
-  bonereaper_freeze_window_secs?: number | null
-  /** PURE FREEZE eşiği — UP_bid'in geçişi flip sayar. Default 0.5. */
-  bonereaper_freeze_threshold?: number | null
-  /**
-   * Flip-imbalance kuralı — sinyal kuvveti eşiği (|signal_ema|).
-   * Yön değişimi anında bu eşiği geçen sinyal varsa imbalance kapatma alımı tetiklenir.
-   * Default 0.50. 0.0 = devre dışı.
-   */
-  bonereaper_flip_imbalance_bsi_threshold?: number | null
-  /**
-   * Flip-imbalance kuralı — alım lot'u = `|imbalance| × fraction`.
-   * 0.0 = kural devre dışı (mevcut davranış). 0.5 = nötr-pozitif (önerilen).
-   * 1.0 = full Dutch Book (yüksek varyans). Default 0.0.
-   */
-  bonereaper_flip_imbalance_fraction?: number | null
-  /**
-   * Mid-confidence ban alt sınırı — alım yapacağı tarafın bid'i `[low, high]`
-   * aralığında ise emir verilmez. Bot 87/88/89/90 backtest (540 session):
-   * 0.50/0.85 → ROI -%1.23 → +%0.25, WR %77.5 → %85.6, wipeout yarıya iner.
-   * 0.0 = devre dışı.
-   */
-  bonereaper_mid_band_ban_low?: number | null
-  /** Mid-confidence ban üst sınırı (eşi). Default 0.0 = devre dışı. */
-  bonereaper_mid_band_ban_high?: number | null
+  bonereaper_max_avg_sum?: number | null
+  /** Long-shot bid bucket (bid ≤ 0.30) trade büyüklüğü (USDC). Default 5. */
+  bonereaper_size_longshot_usdc?: number | null
+  /** Mid bid bucket (0.30 < bid ≤ 0.85) trade büyüklüğü (USDC). Default 10. */
+  bonereaper_size_mid_usdc?: number | null
+  /** High-confidence bid bucket (bid > 0.85) trade büyüklüğü (USDC). Default 15. */
+  bonereaper_size_high_usdc?: number | null
 
   // ── Gravie (Bot 66 davranış kopyası) ─────────────────────────────────────
   /**
@@ -533,18 +509,16 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   elis_max_order_age_ms: 30000,
   elis_imp_fail_cooldown_ms: 30000,
   elis_imbalance_taker_threshold: 100,
-  // Bonereaper
-  bonereaper_signal_taker: true,
-  bonereaper_profit_lock: true,
-  bonereaper_profit_lock_imbalance: 30,
-  bonereaper_signal_persistence_k: 1,
-  bonereaper_signal_ema_alpha: 1.0,
-  bonereaper_freeze_window_secs: 45,
-  bonereaper_freeze_threshold: 0.5,
-  bonereaper_flip_imbalance_bsi_threshold: 0.5,
-  bonereaper_flip_imbalance_fraction: 0.0,
-  bonereaper_mid_band_ban_low: 0.5,
-  bonereaper_mid_band_ban_high: 0.85,
+  // Bonereaper (order-book reactive martingale + late winner injection)
+  bonereaper_buy_cooldown_ms: 2000,
+  bonereaper_late_winner_secs: 30,
+  bonereaper_late_winner_bid_thr: 0.85,
+  bonereaper_late_winner_usdc: 100,
+  bonereaper_imbalance_thr: 100,
+  bonereaper_max_avg_sum: 1.3,
+  bonereaper_size_longshot_usdc: 5,
+  bonereaper_size_mid_usdc: 10,
+  bonereaper_size_high_usdc: 15,
   // Gravie (Bot 66 davranış kopyası — optimum kalibre)
   gravie_tick_interval_secs: 5,
   gravie_buy_cooldown_ms: 4000,

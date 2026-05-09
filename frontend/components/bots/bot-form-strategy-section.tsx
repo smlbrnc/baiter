@@ -105,40 +105,34 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const gravieMaxFakSize =
     params.gravie_max_fak_size ?? STRATEGY_PARAMS_DEFAULTS.gravie_max_fak_size
 
-  // ── Bonereaper ────────────────────────────────────────────────────────
-  const bonereaperSignalTaker =
-    params.bonereaper_signal_taker ??
-    STRATEGY_PARAMS_DEFAULTS.bonereaper_signal_taker
-  const bonereaperProfitLockImbalance =
-    params.bonereaper_profit_lock_imbalance ??
-    STRATEGY_PARAMS_DEFAULTS.bonereaper_profit_lock_imbalance
-  const bonereaperSignalPersistenceK =
-    params.bonereaper_signal_persistence_k ??
-    STRATEGY_PARAMS_DEFAULTS.bonereaper_signal_persistence_k
-  const bonereaperSignalEmaAlpha =
-    params.bonereaper_signal_ema_alpha ??
-    STRATEGY_PARAMS_DEFAULTS.bonereaper_signal_ema_alpha
-  const bonereaperProfitLock =
-    params.bonereaper_profit_lock ??
-    STRATEGY_PARAMS_DEFAULTS.bonereaper_profit_lock
-  const bonereaperFreezeWindowSecs =
-    params.bonereaper_freeze_window_secs ??
-    STRATEGY_PARAMS_DEFAULTS.bonereaper_freeze_window_secs
-  const bonereaperFreezeThreshold =
-    params.bonereaper_freeze_threshold ??
-    STRATEGY_PARAMS_DEFAULTS.bonereaper_freeze_threshold
-  const bonereaperFlipImbBsiThreshold =
-    params.bonereaper_flip_imbalance_bsi_threshold ??
-    STRATEGY_PARAMS_DEFAULTS.bonereaper_flip_imbalance_bsi_threshold
-  const bonereaperFlipImbFraction =
-    params.bonereaper_flip_imbalance_fraction ??
-    STRATEGY_PARAMS_DEFAULTS.bonereaper_flip_imbalance_fraction
-  const bonereaperMidBandBanLow =
-    params.bonereaper_mid_band_ban_low ??
-    STRATEGY_PARAMS_DEFAULTS.bonereaper_mid_band_ban_low
-  const bonereaperMidBandBanHigh =
-    params.bonereaper_mid_band_ban_high ??
-    STRATEGY_PARAMS_DEFAULTS.bonereaper_mid_band_ban_high
+  // ── Bonereaper (order-book reactive martingale + late winner) ─────────
+  const bonereaperBuyCooldownMs =
+    params.bonereaper_buy_cooldown_ms ??
+    STRATEGY_PARAMS_DEFAULTS.bonereaper_buy_cooldown_ms
+  const bonereaperLateWinnerSecs =
+    params.bonereaper_late_winner_secs ??
+    STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_secs
+  const bonereaperLateWinnerBidThr =
+    params.bonereaper_late_winner_bid_thr ??
+    STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_bid_thr
+  const bonereaperLateWinnerUsdc =
+    params.bonereaper_late_winner_usdc ??
+    STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_usdc
+  const bonereaperImbalanceThr =
+    params.bonereaper_imbalance_thr ??
+    STRATEGY_PARAMS_DEFAULTS.bonereaper_imbalance_thr
+  const bonereaperMaxAvgSum =
+    params.bonereaper_max_avg_sum ??
+    STRATEGY_PARAMS_DEFAULTS.bonereaper_max_avg_sum
+  const bonereaperSizeLongshotUsdc =
+    params.bonereaper_size_longshot_usdc ??
+    STRATEGY_PARAMS_DEFAULTS.bonereaper_size_longshot_usdc
+  const bonereaperSizeMidUsdc =
+    params.bonereaper_size_mid_usdc ??
+    STRATEGY_PARAMS_DEFAULTS.bonereaper_size_mid_usdc
+  const bonereaperSizeHighUsdc =
+    params.bonereaper_size_high_usdc ??
+    STRATEGY_PARAMS_DEFAULTS.bonereaper_size_high_usdc
 
   return (
     <div className="space-y-3">
@@ -502,203 +496,173 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
         </div>
       )}
 
-      {/* ── Bonereaper parametreleri ───────────────────────────────────── */}
+      {/* ── Bonereaper parametreleri (real wallet kopyası) ──────────────── */}
       {isBonereaper && (
         <div className="space-y-3">
           <div>
             <SectionLabel icon={Target} title="Bonereaper parametreleri" />
             <p className="mt-1 text-sm text-muted-foreground">
-              5 dakikalık BTC-updown marketi için 1 saniyelik decision loop.
-              BUY-only; çıkış REDEEM ile kapanışta gerçekleşir.
+              Polymarket{" "}
+              <a
+                href="https://polymarket.com/profile/"
+                className="underline"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Bonereaper
+              </a>{" "}
+              wallet davranış kopyası: order-book reactive martingale + late
+              winner injection. Sinyal kullanmaz; her tick bid değişen tarafa
+              taker BUY ve T-X sn kala kazanan tarafa massive inject.
             </p>
           </div>
 
           <div className="space-y-4 rounded-md border border-border/40 bg-muted/25 p-3">
-            <ToggleRow
-              checked={bonereaperSignalTaker}
-              onChange={(v) => patch({ bonereaper_signal_taker: v })}
-              title="Signal — taker (ask) kullan"
-              description="Açık ise her sinyal emri ask fiyatından (taker, anında fill). Kapalı ise bid fiyatından maker GTC limit emir verilir. Default: açık."
-              tooltip="Taker = anında fill ama %2 fee. Maker = fee 0% ama dolma garantisi yok."
-            />
-
-            <ToggleRow
-              checked={bonereaperProfitLock}
-              onChange={(v) => patch({ bonereaper_profit_lock: v })}
-              title="Profit Lock"
-              description="Her iki tarafta da fill oluşup imbalance eşiğin altına düşünce yeni sinyal emirleri durur. Market sonuna kadar mevcut pozisyon korunur."
-            />
-
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Field
-                label="Profit-lock imbalance (share)"
-                tooltip="|UP_filled - DOWN_filled| bu değerin altında VE her iki tarafta fill varsa profit_lock devreye girer (yeni emir verilmez). Profit Lock kapalı iken kullanılmaz."
-                hint={`1 – 200 share (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_profit_lock_imbalance}).`}
+                label="BUY cooldown (ms)"
+                tooltip="Ardışık BUY emirleri arasındaki minimum bekleme. Real bot ortalama ~3-5 sn aralıkla emir veriyor. Düşük = daha agresif (daha çok trade), yüksek = daha az."
+                hint={`500 – 60000 ms (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_buy_cooldown_ms}).`}
               >
                 <Input
                   type="number"
-                  step="1"
-                  min="1"
-                  max="200"
-                  value={bonereaperProfitLockImbalance}
+                  step="500"
+                  min="500"
+                  max="60000"
+                  value={bonereaperBuyCooldownMs}
                   onChange={(e) =>
-                    patch({
-                      bonereaper_profit_lock_imbalance: Number(e.target.value),
-                    })
+                    patch({ bonereaper_buy_cooldown_ms: Number(e.target.value) })
                   }
                 />
               </Field>
               <Field
-                label="Signal persistence K (tick)"
-                tooltip="Yeni yön için kaç ardışık decision tick (1sn/tick) onayı gerekli. K=1 (default) → anlık karar, real bot uyumlu. K=2+ → flip-flop azaltır ama yön değişiminde gecikme yaratır."
-                hint={`1 – 20 tick (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_signal_persistence_k}).`}
+                label="Imbalance threshold (share)"
+                tooltip="|UP_filled − DOWN_filled| bu eşiği aşarsa weaker side rebalance trade'i yapılır (orderbook-driven yön seçimi bypass edilir). Çok düşük = sürekli rebalance, yüksek = serbest pyramid."
+                hint={`0 – 10000 share (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_imbalance_thr}).`}
               >
                 <Input
                   type="number"
-                  step="1"
-                  min="1"
-                  max="20"
-                  value={bonereaperSignalPersistenceK}
+                  step="10"
+                  min="0"
+                  max="10000"
+                  value={bonereaperImbalanceThr}
                   onChange={(e) =>
-                    patch({
-                      bonereaper_signal_persistence_k: Number(e.target.value),
-                    })
+                    patch({ bonereaper_imbalance_thr: Number(e.target.value) })
                   }
                 />
               </Field>
-            </div>
-
-            <div className="grid grid-cols-1 gap-3">
               <Field
-                label="Sinyal EMA smoothing α"
-                tooltip="Composite skoru EMA filtreden geçirir: ema = α×hybrid + (1-α)×prev_ema. α=1.0 (default) smoothing yok — real bot uyumlu, anlık tepki. 0.5 → daha yumuşak ama yön değişiminde gecikme."
-                hint={`0.05 – 1.0 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_signal_ema_alpha}).`}
+                label="Max avg_sum (yumuşak cap)"
+                tooltip="new_avg + opp_avg bu değeri aşarsa yeni alım yok. Real bot 1.20'ye kadar trade görüldü; default 1.30 güvenli üst sınır. Düşük = sıkı (aşırı pyramid'i durdurur)."
+                hint={`0.50 – 2.00 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_max_avg_sum}).`}
               >
                 <Input
                   type="number"
                   step="0.05"
-                  min="0.05"
-                  max="1"
-                  value={bonereaperSignalEmaAlpha}
+                  min="0.5"
+                  max="2"
+                  value={bonereaperMaxAvgSum}
                   onChange={(e) =>
-                    patch({
-                      bonereaper_signal_ema_alpha: Number(e.target.value),
-                    })
+                    patch({ bonereaper_max_avg_sum: Number(e.target.value) })
                   }
                 />
               </Field>
-            </div>
-
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Field
-                label="PURE FREEZE penceresi (sn)"
-                tooltip="Market sonuna X sn kala UP_bid'den favori belirle. Pencere içinde favori 0.5 sınırını ters yöne geçerse bot DUR (mevcut signal emirleri iptal, hedge YOK). Bot 66 datasında 45 sn ile +%24 PnL iyileşmesi sağladı. 0 = devre dışı."
-                hint={`0 – 300 sn (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_freeze_window_secs}).`}
+                label="Late winner penceresi (sn)"
+                tooltip="T-X sn'den itibaren bid≥thr olan tarafa massive taker BUY (cooldown bypass). Real bot kapanışa <30 sn kala bid 0.95+ tarafa $1000+ atıyor. 0 = kural KAPALI."
+                hint={`0 – 300 sn (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_secs}).`}
               >
                 <Input
                   type="number"
-                  step="1"
+                  step="5"
                   min="0"
                   max="300"
-                  value={bonereaperFreezeWindowSecs}
+                  value={bonereaperLateWinnerSecs}
                   onChange={(e) =>
-                    patch({
-                      bonereaper_freeze_window_secs: Number(e.target.value),
-                    })
+                    patch({ bonereaper_late_winner_secs: Number(e.target.value) })
                   }
                 />
               </Field>
               <Field
-                label="PURE FREEZE eşiği"
-                tooltip="UP_bid bu eşiği ters yöne geçerse flip sayılır. Default 0.5 (Up/Down dengesi noktası)."
-                hint={`0.10 – 0.90 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_freeze_threshold}).`}
+                label="Late winner bid eşiği"
+                tooltip="Late winner penceresinde bu bid'in üstündeki taraf 'kazanan' sayılır ve massive BUY tetiklenir."
+                hint={`0.50 – 0.99 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_bid_thr}).`}
               >
                 <Input
                   type="number"
                   step="0.05"
-                  min="0.1"
-                  max="0.9"
-                  value={bonereaperFreezeThreshold}
+                  min="0.5"
+                  max="0.99"
+                  value={bonereaperLateWinnerBidThr}
                   onChange={(e) =>
-                    patch({
-                      bonereaper_freeze_threshold: Number(e.target.value),
-                    })
+                    patch({ bonereaper_late_winner_bid_thr: Number(e.target.value) })
                   }
                 />
               </Field>
               <Field
-                label="Flip imbalance — sinyal eşiği"
-                tooltip="Yön değişimi anında |signal_ema| bu eşiği geçtiyse imbalance kapatma alımı tetiklenir. 0.50 = simülasyonda en iyi ROI/winrate dengesi."
-                hint={`0.0 – 1.0 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_flip_imbalance_bsi_threshold}).`}
+                label="Late winner USDC notional"
+                tooltip="Late winner trade büyüklüğü. Real bot $1000+ atıyor; biz $100 default ile başlayıp izleyip artırırız. 0 = kural KAPALI."
+                hint={`0 – 10000 USDC (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_usdc}).`}
               >
                 <Input
                   type="number"
-                  step="0.05"
+                  step="10"
                   min="0"
-                  max="1"
-                  value={bonereaperFlipImbBsiThreshold}
+                  max="10000"
+                  value={bonereaperLateWinnerUsdc}
                   onChange={(e) =>
-                    patch({
-                      bonereaper_flip_imbalance_bsi_threshold: Number(
-                        e.target.value
-                      ),
-                    })
+                    patch({ bonereaper_late_winner_usdc: Number(e.target.value) })
+                  }
+                />
+              </Field>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+              <Field
+                label="Long-shot USDC (bid ≤ 0.30)"
+                tooltip="Düşük confidence bid'lerde (uzun-vade, yüksek pay-off) trade büyüklüğü. Real bot bu bantta küçük trade'ler ($1-5)."
+                hint={`0 – 10000 USDC (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_size_longshot_usdc}).`}
+              >
+                <Input
+                  type="number"
+                  step="1"
+                  min="0"
+                  max="10000"
+                  value={bonereaperSizeLongshotUsdc}
+                  onChange={(e) =>
+                    patch({ bonereaper_size_longshot_usdc: Number(e.target.value) })
                   }
                 />
               </Field>
               <Field
-                label="Flip imbalance — lot fraksiyonu"
-                tooltip="Yön değişimi anında alım lot'u = |imbalance| × fraction. 0.0 = kural KAPALI (mevcut davranış). 0.5 = nötr-pozitif, simülasyonda Bot 79+80 ortalaması +%0.07 ROI. 1.0 = full Dutch Book, yüksek varyans."
-                hint={`0.0 – 2.0 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_flip_imbalance_fraction}).`}
+                label="Mid USDC (0.30 < bid ≤ 0.85)"
+                tooltip="Orta band trade büyüklüğü; çoğu trade burada (bizim default 10 USDC, real bot medyanı ~$5-15)."
+                hint={`0 – 10000 USDC (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_size_mid_usdc}).`}
               >
                 <Input
                   type="number"
-                  step="0.05"
+                  step="1"
                   min="0"
-                  max="2"
-                  value={bonereaperFlipImbFraction}
+                  max="10000"
+                  value={bonereaperSizeMidUsdc}
                   onChange={(e) =>
-                    patch({
-                      bonereaper_flip_imbalance_fraction: Number(
-                        e.target.value
-                      ),
-                    })
+                    patch({ bonereaper_size_mid_usdc: Number(e.target.value) })
                   }
                 />
               </Field>
               <Field
-                label="Mid-confidence ban — alt sınır"
-                tooltip="Alım yapacağı tarafın bid'i [low, high] aralığında ise emir verilmez. Backtest (540 session, 4 bot): 0.50/0.85 → ROI -%1.23 → +%0.25 (+1.48 puan), WR %77.5 → %85.6, wipeout yarıya iner. Önerilen: 0.50."
-                hint={`0.0 – 1.0 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_mid_band_ban_low}; 0.0 = devre dışı).`}
+                label="High-conf USDC (bid > 0.85)"
+                tooltip="Yüksek confidence (kazanan taraf belirginleşmiş) trade büyüklüğü. Real bot burada $20-50 trade'ler."
+                hint={`0 – 10000 USDC (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_size_high_usdc}).`}
               >
                 <Input
                   type="number"
-                  step="0.05"
+                  step="1"
                   min="0"
-                  max="1"
-                  value={bonereaperMidBandBanLow}
+                  max="10000"
+                  value={bonereaperSizeHighUsdc}
                   onChange={(e) =>
-                    patch({
-                      bonereaper_mid_band_ban_low: Number(e.target.value),
-                    })
-                  }
-                />
-              </Field>
-              <Field
-                label="Mid-confidence ban — üst sınır"
-                tooltip="Üst sınır. bid > high → high-confidence bölge, alım açık. Önerilen: 0.85. Hem alt hem üst > 0 olmalı, aksi halde kural devre dışı kalır."
-                hint={`0.0 – 1.0 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_mid_band_ban_high}; 0.0 = devre dışı).`}
-              >
-                <Input
-                  type="number"
-                  step="0.05"
-                  min="0"
-                  max="1"
-                  value={bonereaperMidBandBanHigh}
-                  onChange={(e) =>
-                    patch({
-                      bonereaper_mid_band_ban_high: Number(e.target.value),
-                    })
+                    patch({ bonereaper_size_high_usdc: Number(e.target.value) })
                   }
                 />
               </Field>
@@ -711,56 +675,40 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
             </p>
             <ul className="list-disc space-y-1 pl-4">
               <li>
-                <strong>1 saniyelik döngü:</strong> Her saniyede karar verilir.
+                <strong>Sinyal kullanmaz:</strong> Binance/OKX composite,
+                triple gate, profit lock, freeze, mid-band ban gibi sinyal
+                kuralları YOK (real bot da kullanmıyor).
               </li>
               <li>
-                <strong>Sinyal yön kararı (V3 Triple Gate):</strong>{" "}
-                Multi-timeframe momentum (30/60/120/240 sn linreg) × 0.5 +
-                Polymarket UP_bid skor × 0.5; EMA smoothing + K-tick
-                persistence. 3 sinyal aynı yönde olmalı: composite (5.5/4.5),
-                market_skor (0.55/0.45), slope (±0.20).
+                <strong>Yön seçimi (orderbook-driven):</strong> Her tick
+                <code> |Δup_bid|</code> vs <code>|Δdn_bid|</code> karşılaştırılır;
+                bid&apos;i daha çok değişen tarafa taker BUY @ ask.
               </li>
               <li>
-                <strong>Dutch Book önceliği:</strong>{" "}
-                <code>up_ask + dn_ask &lt; $1.00</code> ise her iki tarafa eş
-                zamanlı taker GTC emir → garantili kâr marjı.
+                <strong>Imbalance rebalance:</strong>{" "}
+                <code>|up_filled − down_filled| &gt; thr</code> ise weaker side
+                seçilir (orderbook bypass).
               </li>
               <li>
-                <strong>Signal emri (sabit size):</strong>{" "}
-                <code>size = ceil(order_usdc / price)</code>; order_usdc default
-                10 USDC. Real bot medyan $12.32 ile birebir uyumlu.
+                <strong>Late winner injection:</strong> T-X sn kala max(bid) ≥
+                threshold ise winner tarafa <code>late_winner_usdc</code>
+                notional taker BUY (cooldown bypass). Real bot kapanışta bid
+                0.95+ tarafa $1000+ atıyor.
               </li>
               <li>
-                <strong>avg_sum filtresi:</strong> Her iki tarafta pozisyon
-                varken yeni emir
-                <code>new_avg + opp_avg &lt; 1.25</code> kontrolü (real bot p90
-                ~1.20).
+                <strong>Dinamik size:</strong> bid bucket&apos;ına göre USDC
+                notional (long-shot / mid / high). Boyut ASK fiyatına bölünüp
+                yukarı yuvarlanır.
               </li>
               <li>
-                <strong>Profit lock:</strong> Aktifken her iki tarafta fill +
-                imbalance eşiğin altına düşünce sinyal emirleri durur, pozisyon
-                korunur.
+                <strong>avg_sum yumuşak cap:</strong>{" "}
+                <code>new_avg + opp_avg &gt; max_avg_sum</code> ise yeni alım
+                yok (martingale güvenliği).
               </li>
               <li>
-                <strong>Flip imbalance:</strong>{" "}
-                <code>fraction &gt; 0</code> ve <code>|signal_ema| ≥ eşik</code>
-                ise yön değişimi anında klasik signal emri yerine{" "}
-                <code>|imbalance| × fraction</code> share doğru tarafa taker
-                BUY. 0.5 nötr-pozitif, 1.0 yüksek varyans (Bot 79+80
-                simülasyonu).
-              </li>
-              <li>
-                <strong>Mid-confidence ban:</strong> Alım yapacağı tarafın
-                bid&apos;i <code>[low, high]</code> aralığında ise emir
-                verilmez. <code>0.50/0.85</code> backtest&apos;te (540 session,
-                4 bot) ROI&apos;yi <code>-%1.23 → +%0.25</code> (+1.48 puan)
-                taşıdı; mid-band&apos;dan kaçmak wipeout oranını yarıya indirdi.
-                Hem alt hem üst &gt; 0 olmalı; aksi halde kural devre dışı kalır.
-              </li>
-              <li>
-                <strong>Stale cancel:</strong> Açık signal/flip-imb emirleri
-                bid&apos;den 0.05&apos;ten fazla saparsa iptal edilir (price
-                drift koruması).
+                <strong>Cooldown:</strong> Ardışık BUY arasında{" "}
+                <code>buy_cooldown_ms</code> bekleme; late winner bunu bypass
+                eder.
               </li>
             </ul>
           </div>

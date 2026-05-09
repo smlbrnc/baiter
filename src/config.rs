@@ -165,59 +165,42 @@ pub struct StrategyParams {
     pub elis_balance_factor: Option<f64>,
 
     // === Bonereaper parametreleri ===
-    /// Signal emirlerinde taker (ask) kullanılsın mı? Default: true (live'da anında fill).
-    /// `false` ise best_bid'den maker GTC emir verilir.
+    // Strateji: Polymarket "Bonereaper" wallet (0xeebde7a0...) davranış kopyası.
+    // Order-book reactive martingale + late winner injection. Sinyal kullanmaz.
+    /// Ardışık BUY emirleri arası minimum bekleme (ms). Real bot ~3-5 sn aralık
+    /// gözlendi; default 2000 ms (~30 trade/dk).
     #[serde(default)]
-    pub bonereaper_signal_taker: Option<bool>,
-    /// Profit-lock için imbalance eşiği (share). |up_filled − down_filled| bu değerin
-    /// altında VE her iki tarafta da fill varsa profit_lock devreye girer.
-    /// Default 50.0.
+    pub bonereaper_buy_cooldown_ms: Option<u64>,
+    /// Late winner injection penceresi (sn). T-X anında bid≥thr olan tarafa
+    /// massive taker BUY. 0 = devre dışı. Default: 30.
     #[serde(default)]
-    pub bonereaper_profit_lock_imbalance: Option<f64>,
-    /// Signal yön onayı için kaç ardışık tick gerekli? K=1 (default) anlık karar.
-    /// K=2+ → yeni yön için K ardışık tick onayı; flip-flop'u azaltır.
+    pub bonereaper_late_winner_secs: Option<u32>,
+    /// Late winner için kazanan tarafın bid eşiği. Default: 0.85
+    /// (real bot kapanışta bid 0.85+ olan tarafa giriyor).
     #[serde(default)]
-    pub bonereaper_signal_persistence_k: Option<u32>,
-    /// Composite skor EMA smoothing α ∈ (0, 1]. 1.0 (default) = smoothing yok.
-    /// 0.5 → yumuşak ama yön değişiminde gecikme.
+    pub bonereaper_late_winner_bid_thr: Option<f64>,
+    /// Late winner trade büyüklüğü (USDC notional). Real bot 1000+ share @ 0.99
+    /// ($1000+) atıyor; biz konservatif default $100 ile başlıyoruz. 0 = kural KAPALI.
     #[serde(default)]
-    pub bonereaper_signal_ema_alpha: Option<f64>,
-    /// Profit lock: aktif ise her iki tarafta da fill oluşup imbalance
-    /// `bonereaper_profit_lock_imbalance` altına düştüğünde sinyal emirleri durur.
-    /// Market sonuna kadar mevcut pozisyon korunur. Default: false.
+    pub bonereaper_late_winner_usdc: Option<f64>,
+    /// |up_filled − down_filled| bu eşiği aşarsa weaker side rebalance trade'i
+    /// yapılır (ob_driven yön seçimi bypass edilir). Default: 100 share.
     #[serde(default)]
-    pub bonereaper_profit_lock: Option<bool>,
-    /// PURE FREEZE penceresi (sn). T-X anında UP_bid'den favori belirlenir,
-    /// pencere içinde favori sınırı ters yöne geçerse bot yeni signal emir vermez
-    /// (mevcut signal emirleri iptal edilir, hedge YOK). 0 = devre dışı.
-    /// Default: 45 (akademik test sonucu sweet spot).
+    pub bonereaper_imbalance_thr: Option<f64>,
+    /// avg_sum yumuşak cap. `new_avg + opp_avg > X` ise yeni alım yok.
+    /// Real bot 1.20'ye kadar trade görüldü; biz 1.30 default güvenli üst sınır.
     #[serde(default)]
-    pub bonereaper_freeze_window_secs: Option<u32>,
-    /// PURE FREEZE eşiği — UP_bid'in geçişi flip sayar. Default: 0.5.
+    pub bonereaper_max_avg_sum: Option<f64>,
+    /// Long-shot bid bucket (bid ≤ 0.30) trade büyüklüğü (USDC notional).
+    /// Default: 5.0 (real bot bu bantta küçük trade'ler).
     #[serde(default)]
-    pub bonereaper_freeze_threshold: Option<f64>,
-    /// Flip-imbalance kuralı — spot sinyal eşiği (|signal_ema|).
-    /// Yön değişimi anında bu eşiği geçen sinyal varsa imbalance kapatma alımı tetiklenir.
-    /// Default: 0.50. 0.0 = devre dışı.
+    pub bonereaper_size_longshot_usdc: Option<f64>,
+    /// Mid bid bucket (0.30 < bid ≤ 0.85) trade büyüklüğü (USDC). Default: 10.0.
     #[serde(default)]
-    pub bonereaper_flip_imbalance_bsi_threshold: Option<f64>,
-    /// Flip-imbalance kuralı — alım lot'u = `|imbalance| × fraction`.
-    /// 0.0 = kural devre dışı (mevcut bonereaper davranışı).
-    /// 0.5 = imbalance'ın yarısı (güvenli, simülasyonda nötr-pozitif).
-    /// 1.0 = full imbalance (Dutch Book; az veride yüksek varyans).
-    /// Default: 0.0.
+    pub bonereaper_size_mid_usdc: Option<f64>,
+    /// High-confidence bid bucket (bid > 0.85) trade büyüklüğü (USDC). Default: 15.0.
     #[serde(default)]
-    pub bonereaper_flip_imbalance_fraction: Option<f64>,
-    /// Mid-confidence ban — alım yapacağı tarafın bid'i `[low, high]` aralığında ise
-    /// signal emir verilmez. Bot 87/88/89/90 backtest (540 session): bid 0.50-0.85
-    /// aralığı %50+ wipeout üretir; high-confidence (bid > 0.85) veya long-shot
-    /// (bid < 0.50) dışında market'e girmemek ROI'yi -%1.23 → +%0.25 yapar
-    /// (+1.48 puan). 0.0 (her iki alan) = devre dışı.
-    #[serde(default)]
-    pub bonereaper_mid_band_ban_low: Option<f64>,
-    /// Mid-confidence ban üst sınırı; aşağıdaki alanın eşi.
-    #[serde(default)]
-    pub bonereaper_mid_band_ban_high: Option<f64>,
+    pub bonereaper_size_high_usdc: Option<f64>,
 
     // === Gravie (Bot 66 davranış kopyası) ===
     /// Karar tick aralığı (sn). Bot 66 ortalama inter-arrival 4-5 sn.
@@ -361,61 +344,58 @@ impl StrategyParams {
         self.pyramid_usdc.unwrap_or(fallback).max(0.0)
     }
 
-    // === Bonereaper accessors ===
-    pub fn bonereaper_signal_taker(&self) -> bool {
-        self.bonereaper_signal_taker.unwrap_or(true)
+    // === Bonereaper accessors (yeni: order-book reactive martingale) ===
+    /// Ardışık BUY arası min bekleme (ms); 500–60000 sınırlı; default 2000.
+    pub fn bonereaper_buy_cooldown_ms(&self) -> u64 {
+        self.bonereaper_buy_cooldown_ms
+            .unwrap_or(2000)
+            .clamp(500, 60_000)
     }
-    pub fn bonereaper_profit_lock_imbalance(&self) -> f64 {
-        self.bonereaper_profit_lock_imbalance
-            .unwrap_or(30.0)
-            .clamp(1.0, 200.0)
+    /// Late winner penceresi (sn); 0–300 sınırlı; default 30. 0 = kural KAPALI.
+    pub fn bonereaper_late_winner_secs(&self) -> u32 {
+        self.bonereaper_late_winner_secs.unwrap_or(30).min(300)
     }
-    pub fn bonereaper_signal_persistence_k(&self) -> u32 {
-        self.bonereaper_signal_persistence_k
-            .unwrap_or(1)
-            .clamp(1, 20)
+    /// Late winner bid eşiği; 0.50–0.99 sınırlı; default 0.85.
+    pub fn bonereaper_late_winner_bid_thr(&self) -> f64 {
+        self.bonereaper_late_winner_bid_thr
+            .unwrap_or(0.85)
+            .clamp(0.50, 0.99)
     }
-    pub fn bonereaper_signal_ema_alpha(&self) -> f64 {
-        self.bonereaper_signal_ema_alpha
-            .unwrap_or(1.0)
-            .clamp(0.01, 1.0)
+    /// Late winner USDC notional; 0–10000 sınırlı; default 100. 0 = KAPALI.
+    pub fn bonereaper_late_winner_usdc(&self) -> f64 {
+        self.bonereaper_late_winner_usdc
+            .unwrap_or(100.0)
+            .clamp(0.0, 10_000.0)
     }
-    pub fn bonereaper_profit_lock(&self) -> bool {
-        self.bonereaper_profit_lock.unwrap_or(true)
+    /// Imbalance threshold (share); 0–10000 sınırlı; default 100.
+    pub fn bonereaper_imbalance_thr(&self) -> f64 {
+        self.bonereaper_imbalance_thr
+            .unwrap_or(100.0)
+            .clamp(0.0, 10_000.0)
     }
-    /// 0 = devre dışı; 1..=300 sınırlı. Default 45 sn.
-    pub fn bonereaper_freeze_window_secs(&self) -> u32 {
-        self.bonereaper_freeze_window_secs.unwrap_or(45).min(300)
+    /// avg_sum yumuşak cap; 0.50–2.00 sınırlı; default 1.30.
+    pub fn bonereaper_max_avg_sum(&self) -> f64 {
+        self.bonereaper_max_avg_sum
+            .unwrap_or(1.30)
+            .clamp(0.50, 2.00)
     }
-    /// 0.10..0.90 sınırlı; default 0.50.
-    pub fn bonereaper_freeze_threshold(&self) -> f64 {
-        self.bonereaper_freeze_threshold
-            .unwrap_or(0.5)
-            .clamp(0.10, 0.90)
+    /// Long-shot bucket USDC; 0–10000 sınırlı; default 5.
+    pub fn bonereaper_size_longshot_usdc(&self) -> f64 {
+        self.bonereaper_size_longshot_usdc
+            .unwrap_or(5.0)
+            .clamp(0.0, 10_000.0)
     }
-    /// Flip-imbalance sinyal eşiği. 0.0..1.0 sınırlı; default 0.50.
-    pub fn bonereaper_flip_imbalance_bsi_threshold(&self) -> f64 {
-        self.bonereaper_flip_imbalance_bsi_threshold
-            .unwrap_or(0.50)
-            .clamp(0.0, 1.0)
+    /// Mid bucket USDC; 0–10000 sınırlı; default 10.
+    pub fn bonereaper_size_mid_usdc(&self) -> f64 {
+        self.bonereaper_size_mid_usdc
+            .unwrap_or(10.0)
+            .clamp(0.0, 10_000.0)
     }
-    /// Flip-imbalance lot fraksiyonu. 0.0..2.0 sınırlı; default 0.0 (kural KAPALI).
-    pub fn bonereaper_flip_imbalance_fraction(&self) -> f64 {
-        self.bonereaper_flip_imbalance_fraction
-            .unwrap_or(0.0)
-            .clamp(0.0, 2.0)
-    }
-    /// Mid-band ban alt sınırı. 0.0 = devre dışı; 0.0..1.0 sınırlı.
-    pub fn bonereaper_mid_band_ban_low(&self) -> f64 {
-        self.bonereaper_mid_band_ban_low
-            .unwrap_or(0.0)
-            .clamp(0.0, 1.0)
-    }
-    /// Mid-band ban üst sınırı. 0.0 = devre dışı; 0.0..1.0 sınırlı.
-    pub fn bonereaper_mid_band_ban_high(&self) -> f64 {
-        self.bonereaper_mid_band_ban_high
-            .unwrap_or(0.0)
-            .clamp(0.0, 1.0)
+    /// High-conf bucket USDC; 0–10000 sınırlı; default 15.
+    pub fn bonereaper_size_high_usdc(&self) -> f64 {
+        self.bonereaper_size_high_usdc
+            .unwrap_or(15.0)
+            .clamp(0.0, 10_000.0)
     }
 }
 
