@@ -115,9 +115,6 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const bonereaperSignalPersistenceK =
     params.bonereaper_signal_persistence_k ??
     STRATEGY_PARAMS_DEFAULTS.bonereaper_signal_persistence_k
-  const bonereaperSignalWMarket =
-    params.bonereaper_signal_w_market ??
-    STRATEGY_PARAMS_DEFAULTS.bonereaper_signal_w_market
   const bonereaperSignalEmaAlpha =
     params.bonereaper_signal_ema_alpha ??
     STRATEGY_PARAMS_DEFAULTS.bonereaper_signal_ema_alpha
@@ -571,25 +568,7 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
               </Field>
             </div>
 
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field
-                label="Polymarket sinyal ağırlığı"
-                tooltip="Yön kararında Polymarket UP_bid trend'inin Binance/OKX composite'a göre ağırlığı. Hibrit: signal×(1-w) + market×w. 0 = sadece Binance/OKX, 1 = sadece Polymarket trend, 0.7 default."
-                hint={`0.0 – 1.0 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_signal_w_market}).`}
-              >
-                <Input
-                  type="number"
-                  step="0.05"
-                  min="0"
-                  max="1"
-                  value={bonereaperSignalWMarket}
-                  onChange={(e) =>
-                    patch({
-                      bonereaper_signal_w_market: Number(e.target.value),
-                    })
-                  }
-                />
-              </Field>
+            <div className="grid grid-cols-1 gap-3">
               <Field
                 label="Sinyal EMA smoothing α"
                 tooltip="Composite skoru EMA filtreden geçirir: ema = α×hybrid + (1-α)×prev_ema. α=1.0 (default) smoothing yok — real bot uyumlu, anlık tepki. 0.5 → daha yumuşak ama yön değişiminde gecikme."
@@ -735,10 +714,11 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                 <strong>1 saniyelik döngü:</strong> Her saniyede karar verilir.
               </li>
               <li>
-                <strong>Sinyal yön kararı:</strong> Hibrit composite
-                (Binance/OKX × (1−w) + Polymarket UP_bid trend × w), EMA
-                smoothing, K-tick persistence. Real bot davranışıyla uyumlu
-                (K=1, α=1.0).
+                <strong>Sinyal yön kararı (V3 Triple Gate):</strong>{" "}
+                Multi-timeframe momentum (30/60/120/240 sn linreg) × 0.5 +
+                Polymarket UP_bid skor × 0.5; EMA smoothing + K-tick
+                persistence. 3 sinyal aynı yönde olmalı: composite (5.5/4.5),
+                market_skor (0.55/0.45), slope (±0.20).
               </li>
               <li>
                 <strong>Dutch Book önceliği:</strong>{" "}

@@ -178,11 +178,6 @@ pub struct StrategyParams {
     /// K=2+ → yeni yön için K ardışık tick onayı; flip-flop'u azaltır.
     #[serde(default)]
     pub bonereaper_signal_persistence_k: Option<u32>,
-    /// Polymarket UP_bid sinyalinin composite içindeki ağırlığı [0, 1].
-    /// Yön kararı: `signal × (1-w) + market × w`. 0 = sadece Binance/OKX;
-    /// 0.7 (default) = Polymarket dominant.
-    #[serde(default)]
-    pub bonereaper_signal_w_market: Option<f64>,
     /// Composite skor EMA smoothing α ∈ (0, 1]. 1.0 (default) = smoothing yok.
     /// 0.5 → yumuşak ama yön değişiminde gecikme.
     #[serde(default)]
@@ -379,11 +374,6 @@ impl StrategyParams {
         self.bonereaper_signal_persistence_k
             .unwrap_or(1)
             .clamp(1, 20)
-    }
-    pub fn bonereaper_signal_w_market(&self) -> f64 {
-        self.bonereaper_signal_w_market
-            .unwrap_or(0.7)
-            .clamp(0.0, 1.0)
     }
     pub fn bonereaper_signal_ema_alpha(&self) -> f64 {
         self.bonereaper_signal_ema_alpha

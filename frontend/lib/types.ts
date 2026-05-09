@@ -112,12 +112,6 @@ export interface StrategyParams {
    */
   bonereaper_signal_persistence_k?: number | null
   /**
-   * Polymarket UP_bid sinyalinin yön kararındaki ağırlığı [0, 1].
-   * Hibrit formül: `signal × (1-w) + market × w`. 0 = sadece Binance/OKX;
-   * 0.7 (default) = Polymarket dominant.
-   */
-  bonereaper_signal_w_market?: number | null
-  /**
    * Composite skor EMA smoothing α ∈ (0, 1]. 1.0 (default) = smoothing yok
    * (real bot uyumlu, anlık tepki). 0.5 → daha yumuşak ama yön değişiminde
    * gecikme.
@@ -541,17 +535,16 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   elis_imbalance_taker_threshold: 100,
   // Bonereaper
   bonereaper_signal_taker: true,
-  bonereaper_profit_lock_imbalance: 50,
+  bonereaper_profit_lock: true,
+  bonereaper_profit_lock_imbalance: 30,
   bonereaper_signal_persistence_k: 1,
-  bonereaper_signal_w_market: 0.7,
   bonereaper_signal_ema_alpha: 1.0,
-  bonereaper_profit_lock: false,
   bonereaper_freeze_window_secs: 45,
   bonereaper_freeze_threshold: 0.5,
   bonereaper_flip_imbalance_bsi_threshold: 0.5,
   bonereaper_flip_imbalance_fraction: 0.0,
-  bonereaper_mid_band_ban_low: 0.0,
-  bonereaper_mid_band_ban_high: 0.0,
+  bonereaper_mid_band_ban_low: 0.5,
+  bonereaper_mid_band_ban_high: 0.85,
   // Gravie (Bot 66 davranış kopyası — optimum kalibre)
   gravie_tick_interval_secs: 5,
   gravie_buy_cooldown_ms: 4000,
