@@ -136,6 +136,12 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const bonereaperFlipImbFraction =
     params.bonereaper_flip_imbalance_fraction ??
     STRATEGY_PARAMS_DEFAULTS.bonereaper_flip_imbalance_fraction
+  const bonereaperMidBandBanLow =
+    params.bonereaper_mid_band_ban_low ??
+    STRATEGY_PARAMS_DEFAULTS.bonereaper_mid_band_ban_low
+  const bonereaperMidBandBanHigh =
+    params.bonereaper_mid_band_ban_high ??
+    STRATEGY_PARAMS_DEFAULTS.bonereaper_mid_band_ban_high
 
   return (
     <div className="space-y-3">
@@ -681,6 +687,42 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                   }
                 />
               </Field>
+              <Field
+                label="Mid-confidence ban — alt sınır"
+                tooltip="Alım yapacağı tarafın bid'i [low, high] aralığında ise emir verilmez. Backtest (540 session, 4 bot): 0.50/0.85 → ROI -%1.23 → +%0.25 (+1.48 puan), WR %77.5 → %85.6, wipeout yarıya iner. Önerilen: 0.50."
+                hint={`0.0 – 1.0 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_mid_band_ban_low}; 0.0 = devre dışı).`}
+              >
+                <Input
+                  type="number"
+                  step="0.05"
+                  min="0"
+                  max="1"
+                  value={bonereaperMidBandBanLow}
+                  onChange={(e) =>
+                    patch({
+                      bonereaper_mid_band_ban_low: Number(e.target.value),
+                    })
+                  }
+                />
+              </Field>
+              <Field
+                label="Mid-confidence ban — üst sınır"
+                tooltip="Üst sınır. bid > high → high-confidence bölge, alım açık. Önerilen: 0.85. Hem alt hem üst > 0 olmalı, aksi halde kural devre dışı kalır."
+                hint={`0.0 – 1.0 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_mid_band_ban_high}; 0.0 = devre dışı).`}
+              >
+                <Input
+                  type="number"
+                  step="0.05"
+                  min="0"
+                  max="1"
+                  value={bonereaperMidBandBanHigh}
+                  onChange={(e) =>
+                    patch({
+                      bonereaper_mid_band_ban_high: Number(e.target.value),
+                    })
+                  }
+                />
+              </Field>
             </div>
           </div>
 
@@ -726,6 +768,14 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                 <code>|imbalance| × fraction</code> share doğru tarafa taker
                 BUY. 0.5 nötr-pozitif, 1.0 yüksek varyans (Bot 79+80
                 simülasyonu).
+              </li>
+              <li>
+                <strong>Mid-confidence ban:</strong> Alım yapacağı tarafın
+                bid&apos;i <code>[low, high]</code> aralığında ise emir
+                verilmez. <code>0.50/0.85</code> backtest&apos;te (540 session,
+                4 bot) ROI&apos;yi <code>-%1.23 → +%0.25</code> (+1.48 puan)
+                taşıdı; mid-band&apos;dan kaçmak wipeout oranını yarıya indirdi.
+                Hem alt hem üst &gt; 0 olmalı; aksi halde kural devre dışı kalır.
               </li>
               <li>
                 <strong>Stale cancel:</strong> Açık signal/flip-imb emirleri

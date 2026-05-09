@@ -150,6 +150,15 @@ export interface StrategyParams {
    * 1.0 = full Dutch Book (yüksek varyans). Default 0.0.
    */
   bonereaper_flip_imbalance_fraction?: number | null
+  /**
+   * Mid-confidence ban alt sınırı — alım yapacağı tarafın bid'i `[low, high]`
+   * aralığında ise emir verilmez. Bot 87/88/89/90 backtest (540 session):
+   * 0.50/0.85 → ROI -%1.23 → +%0.25, WR %77.5 → %85.6, wipeout yarıya iner.
+   * 0.0 = devre dışı.
+   */
+  bonereaper_mid_band_ban_low?: number | null
+  /** Mid-confidence ban üst sınırı (eşi). Default 0.0 = devre dışı. */
+  bonereaper_mid_band_ban_high?: number | null
 
   // ── Gravie (Bot 66 davranış kopyası) ─────────────────────────────────────
   /**
@@ -541,6 +550,8 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   bonereaper_freeze_threshold: 0.5,
   bonereaper_flip_imbalance_bsi_threshold: 0.5,
   bonereaper_flip_imbalance_fraction: 0.0,
+  bonereaper_mid_band_ban_low: 0.0,
+  bonereaper_mid_band_ban_high: 0.0,
   // Gravie (Bot 66 davranış kopyası — optimum kalibre)
   gravie_tick_interval_secs: 5,
   gravie_buy_cooldown_ms: 4000,

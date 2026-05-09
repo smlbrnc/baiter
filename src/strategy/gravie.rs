@@ -25,6 +25,17 @@
 //! 9. **Sum-avg guard** — pair lock'a yakın market'lerde (`sum_avg ≥ 1.20`)
 //!    yeni emir verme; daha fazla harcamak fayda etmez (Real bot top-loss
 //!    pattern: balance=1.0 + sum_avg=1.12 = garanti zarar).
+//! 10. **PATCH D — Signal Gate** — `effective_score` yön filtresi.
+//!     `signal_gate_enabled=true` (default) iken:
+//!     - `score > signal_up_threshold` (default 5.5) → sadece UP open/accum
+//!     - `score < signal_down_threshold` (default 4.5) → sadece DOWN open/accum
+//!     - karasız zone → yeni emir YOK (sadece rebalance signal yön ile uyumluysa)
+//!
+//!     Bot 91 (4 günlük dryrun, 131 resolved market) analizi: gate kapalıyken
+//!     accum trade'lerinin %68'i kaybeden tarafa yığılıyor → WR %32, ROI -%6.34.
+//!     Aynı pencerede bonereaper (signal-driven) WR %76+, ROI breakeven/pozitif.
+//!     Saf "ucuz tarafı al" mantığı, market'in olasılık-fiyat bilgisini ters
+//!     okuyor; sinyal yön filtresi bu hatayı düzeltir.
 //!
 //! ## Reason etiketleri
 //!
@@ -232,11 +243,19 @@ struct BuyPlan {
     reason: &'static str,
 }
 
-/// Bot 66 davranışına göre bir sonraki BUY hedefini seçer:
+/// Bir sonraki BUY hedefini seçer:
 ///
-/// 1. Pozisyon dengesizse (`balance < balance_rebalance`): az tarafa rebalance.
-/// 2. İkinci leg fırsatı: ilk leg açık + karşı taraf ucuz veya guard süresi geçti.
-/// 3. İlk leg / accumulation: en ucuz ask'a BUY (entry ceiling altında).
+/// 1. **Signal Gate (PATCH D)**: `effective_score` yönü çıkar (UP / DOWN /
+///    NEUTRAL). NEUTRAL'de yeni emir verilmez; sadece signal yönü ile uyumlu
+///    rebalance açıktır.
+/// 2. **Rebalance bias**: Pozisyon dengesizse (`balance < balance_rebalance`)
+///    az tarafa BUY — fakat signal gate açıkken yalnız signal yönü weak side
+///    ile aynıysa rebalance trigger olur (karşı yöndeki "kaybeden tarafı
+///    pump etme" hatasını engeller).
+/// 3. **İkinci leg (flip)**: İlk leg açık + karşı taraf ucuz veya guard süresi
+///    geçti. Signal gate açıkken yalnız signal yönü opp ile uyumluysa flip.
+/// 4. **Accum / Open**: Signal gate açıkken signal yönüne BUY; kapalıyken
+///    klasik "en ucuz ask'a BUY".
 fn decide_buy(
     st: &GravieActive,
     ctx: &StrategyContext<'_>,
@@ -246,33 +265,31 @@ fn decide_buy(
     let up_ask = ctx.up_best_ask;
     let dn_ask = ctx.down_best_ask;
 
-    // ── Rebalance bias ─────────────────────────────────────────────────────
-    if m.up_filled > 0.0 && m.down_filled > 0.0 {
-        let max_filled = m.up_filled.max(m.down_filled);
-        let min_filled = m.up_filled.min(m.down_filled);
-        let balance = if max_filled > 0.0 { min_filled / max_filled } else { 0.0 };
-        if balance < p.balance_rebalance {
-            // Az olan tarafı zorla al; entry ceiling'i multiplier ile esnet.
-            let weak_side = if m.up_filled < m.down_filled {
-                Outcome::Up
+    // ── PATCH D — Signal Gate ──────────────────────────────────────────────
+    // `signal_gate_enabled=true` ve `signal_ready` iken effective_score yönünü
+    // çıkar; karasız zone'da (UP_THR ile DOWN_THR arası) bot pasif kalır
+    // (rebalance hariç). signal_ready=false ise gate atlanır (warmup).
+    let signal_dir: Option<Outcome> =
+        if p.signal_gate_enabled && ctx.signal_ready {
+            if ctx.effective_score > p.signal_up_threshold {
+                Some(Outcome::Up)
+            } else if ctx.effective_score < p.signal_down_threshold {
+                Some(Outcome::Down)
             } else {
-                Outcome::Down
-            };
-            let weak_ask = match weak_side {
-                Outcome::Up => up_ask,
-                Outcome::Down => dn_ask,
-            };
-            if weak_ask > 0.0
-                && weak_ask <= p.entry_ask_ceiling * p.rebalance_ceiling_multiplier
-            {
-                return Some(BuyPlan {
-                    dir: weak_side,
-                    price: weak_ask,
-                    reason: reason_rebalance(weak_side),
-                });
+                // Karasız sinyal — yeni open/accum/flip YOK. Mevcut pozisyon
+                // dengesizliği için rebalance kontrolü aşağıda yapılır.
+                return decide_rebalance_only(ctx, p, None);
             }
-            // Karşı taraf da çok pahalı — yine de en ucuzu dene.
-        }
+        } else {
+            None
+        };
+
+    // ── Rebalance bias ─────────────────────────────────────────────────────
+    // Bot 91 reason analizi: rebalance %62 doğru tarafa gidiyor (en güvenilir).
+    // Signal gate açıkken weak_side, signal yönü ile uyumluysa devam eder;
+    // aksi halde rebalance atlanır ve aşağıdaki signal-zorla buy çalışır.
+    if let Some(plan) = check_rebalance(ctx, p, signal_dir) {
+        return Some(plan);
     }
 
     // ── İkinci leg (first → opposite) ──────────────────────────────────────
@@ -283,7 +300,6 @@ fn decide_buy(
             Outcome::Down => m.down_filled,
         };
         if opp_filled <= 0.0 {
-            // Henüz second leg yok. Trigger ya da guard süresi geçti mi?
             let opp_ask = match opp {
                 Outcome::Up => up_ask,
                 Outcome::Down => dn_ask,
@@ -291,7 +307,13 @@ fn decide_buy(
             let guard_passed =
                 ctx.now_ms.saturating_sub(st.first_leg_ms) >= p.second_leg_guard_ms;
             let opp_cheap = opp_ask > 0.0 && opp_ask <= p.second_leg_opp_trigger;
-            if (guard_passed || opp_cheap) && opp_ask > 0.0 && opp_ask <= p.entry_ask_ceiling
+            // Signal gate açıkken: flip sadece signal opp yönünde olursa
+            // (karşı tarafa hedge için BUY, kaybeden tarafı pump değil).
+            let flip_signal_ok = signal_dir.is_none_or(|sd| sd == opp);
+            if flip_signal_ok
+                && (guard_passed || opp_cheap)
+                && opp_ask > 0.0
+                && opp_ask <= p.entry_ask_ceiling
             {
                 return Some(BuyPlan {
                     dir: opp,
@@ -299,46 +321,113 @@ fn decide_buy(
                     reason: reason_flip(opp),
                 });
             }
-            // İlk leg'i biriktirmeye devam et (eğer ucuzluğunu koruyorsa).
-            let first_ask = match first_side {
-                Outcome::Up => up_ask,
-                Outcome::Down => dn_ask,
-            };
-            if first_ask > 0.0 && first_ask <= p.entry_ask_ceiling {
-                return Some(BuyPlan {
-                    dir: first_side,
-                    price: first_ask,
-                    reason: reason_accum(first_side),
-                });
+            // Aynı yön accum: signal gate açıkken sadece signal == first_side
+            let accum_signal_ok = signal_dir.is_none_or(|sd| sd == first_side);
+            if accum_signal_ok {
+                let first_ask = match first_side {
+                    Outcome::Up => up_ask,
+                    Outcome::Down => dn_ask,
+                };
+                if first_ask > 0.0 && first_ask <= p.entry_ask_ceiling {
+                    return Some(BuyPlan {
+                        dir: first_side,
+                        price: first_ask,
+                        reason: reason_accum(first_side),
+                    });
+                }
             }
             return None;
         }
     }
 
-    // ── İlk leg / accumulation: en ucuz ask'a BUY ──────────────────────────
-    if up_ask > 0.0 && (dn_ask <= 0.0 || up_ask <= dn_ask) && up_ask <= p.entry_ask_ceiling {
+    // ── İlk leg / accumulation ─────────────────────────────────────────────
+    // Signal gate açıkken: signal yönüne git (en ucuz fiyat değil).
+    // Kapalıyken: klasik "en ucuz ask'a BUY".
+    let target_dir = match signal_dir {
+        Some(d) => d,
+        None => {
+            if up_ask > 0.0 && (dn_ask <= 0.0 || up_ask <= dn_ask) {
+                Outcome::Up
+            } else {
+                Outcome::Down
+            }
+        }
+    };
+    let target_ask = match target_dir {
+        Outcome::Up => up_ask,
+        Outcome::Down => dn_ask,
+    };
+    if target_ask > 0.0 && target_ask <= p.entry_ask_ceiling {
         let reason = match st.first_leg_side {
-            None => reason_open(Outcome::Up),
-            Some(_) => reason_accum(Outcome::Up),
+            None => reason_open(target_dir),
+            Some(_) => reason_accum(target_dir),
         };
         return Some(BuyPlan {
-            dir: Outcome::Up,
-            price: up_ask,
-            reason,
-        });
-    }
-    if dn_ask > 0.0 && dn_ask <= p.entry_ask_ceiling {
-        let reason = match st.first_leg_side {
-            None => reason_open(Outcome::Down),
-            Some(_) => reason_accum(Outcome::Down),
-        };
-        return Some(BuyPlan {
-            dir: Outcome::Down,
-            price: dn_ask,
+            dir: target_dir,
+            price: target_ask,
             reason,
         });
     }
 
+    None
+}
+
+/// Signal-gate karasız zone'unda yalnızca rebalance'a izin ver. Yeni open/accum
+/// bloklanır; pozisyon dengesizliği zayıf tarafa BUY ile düzeltilir.
+#[inline]
+fn decide_rebalance_only(
+    ctx: &StrategyContext<'_>,
+    p: &GravieParams,
+    signal_dir: Option<Outcome>,
+) -> Option<BuyPlan> {
+    check_rebalance(ctx, p, signal_dir)
+}
+
+/// Rebalance kontrolü — pozisyon `balance = min/max < balance_rebalance` ise
+/// zayıf tarafa BUY planla. `signal_dir` verilmişse weak_side ile uyumlu olmak
+/// zorunda; aksi halde `None` döner (signal zıt yöne işaret ediyorsa zayıf
+/// tarafı pump etmek = kaybeden tarafa yığılma).
+#[inline]
+fn check_rebalance(
+    ctx: &StrategyContext<'_>,
+    p: &GravieParams,
+    signal_dir: Option<Outcome>,
+) -> Option<BuyPlan> {
+    let m = ctx.metrics;
+    if m.up_filled <= 0.0 || m.down_filled <= 0.0 {
+        return None;
+    }
+    let max_filled = m.up_filled.max(m.down_filled);
+    let min_filled = m.up_filled.min(m.down_filled);
+    let balance = if max_filled > 0.0 {
+        min_filled / max_filled
+    } else {
+        0.0
+    };
+    if balance >= p.balance_rebalance {
+        return None;
+    }
+    let weak_side = if m.up_filled < m.down_filled {
+        Outcome::Up
+    } else {
+        Outcome::Down
+    };
+    if let Some(sd) = signal_dir {
+        if sd != weak_side {
+            return None;
+        }
+    }
+    let weak_ask = match weak_side {
+        Outcome::Up => ctx.up_best_ask,
+        Outcome::Down => ctx.down_best_ask,
+    };
+    if weak_ask > 0.0 && weak_ask <= p.entry_ask_ceiling * p.rebalance_ceiling_multiplier {
+        return Some(BuyPlan {
+            dir: weak_side,
+            price: weak_ask,
+            reason: reason_rebalance(weak_side),
+        });
+    }
     None
 }
 

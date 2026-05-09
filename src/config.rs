@@ -213,6 +213,16 @@ pub struct StrategyParams {
     /// Default: 0.0.
     #[serde(default)]
     pub bonereaper_flip_imbalance_fraction: Option<f64>,
+    /// Mid-confidence ban — alım yapacağı tarafın bid'i `[low, high]` aralığında ise
+    /// signal emir verilmez. Bot 87/88/89/90 backtest (540 session): bid 0.50-0.85
+    /// aralığı %50+ wipeout üretir; high-confidence (bid > 0.85) veya long-shot
+    /// (bid < 0.50) dışında market'e girmemek ROI'yi -%1.23 → +%0.25 yapar
+    /// (+1.48 puan). 0.0 (her iki alan) = devre dışı.
+    #[serde(default)]
+    pub bonereaper_mid_band_ban_low: Option<f64>,
+    /// Mid-confidence ban üst sınırı; aşağıdaki alanın eşi.
+    #[serde(default)]
+    pub bonereaper_mid_band_ban_high: Option<f64>,
 
     // === Gravie (Bot 66 davranış kopyası) ===
     /// Karar tick aralığı (sn). Bot 66 ortalama inter-arrival 4-5 sn.
@@ -264,6 +274,21 @@ pub struct StrategyParams {
     /// 0 = sınırsız (devre dışı). Default: 50.
     #[serde(default)]
     pub gravie_max_fak_size: Option<f64>,
+    /// PATCH D — SIGNAL GATE. `effective_score` ile yön filtresi. Açıkken
+    /// `score > up_threshold` ise UP'a, `< down_threshold` ise DOWN'a izin
+    /// verilir; karşı yöndeki open/accum BLOKLANIR. Bot 91 analizi: gate
+    /// kapalıyken WR %32, accum trade'lerinin %68'i kaybeden tarafa yığılıyor.
+    /// Bonereaper aynı sinyalle WR %76+. Default: true.
+    #[serde(default)]
+    pub gravie_signal_gate_enabled: Option<bool>,
+    /// PATCH D — Signal UP eşiği. `effective_score > X` ise UP yönü zorunlu.
+    /// Bonereaper Triple Gate ile aynı eşik. Default: 5.5.
+    #[serde(default)]
+    pub gravie_signal_up_threshold: Option<f64>,
+    /// PATCH D — Signal DOWN eşiği. `effective_score < X` ise DOWN yönü zorunlu.
+    /// Bonereaper Triple Gate ile aynı eşik. Default: 4.5.
+    #[serde(default)]
+    pub gravie_signal_down_threshold: Option<f64>,
 }
 
 impl StrategyParams {
@@ -340,6 +365,18 @@ impl StrategyParams {
         self.bonereaper_flip_imbalance_fraction
             .unwrap_or(0.0)
             .clamp(0.0, 2.0)
+    }
+    /// Mid-band ban alt sınırı. 0.0 = devre dışı; 0.0..1.0 sınırlı.
+    pub fn bonereaper_mid_band_ban_low(&self) -> f64 {
+        self.bonereaper_mid_band_ban_low
+            .unwrap_or(0.0)
+            .clamp(0.0, 1.0)
+    }
+    /// Mid-band ban üst sınırı. 0.0 = devre dışı; 0.0..1.0 sınırlı.
+    pub fn bonereaper_mid_band_ban_high(&self) -> f64 {
+        self.bonereaper_mid_band_ban_high
+            .unwrap_or(0.0)
+            .clamp(0.0, 1.0)
     }
 }
 
@@ -448,6 +485,12 @@ pub struct GravieParams {
     pub opp_ask_stop_threshold: f64,
     /// PATCH C — FAK emir başına max share. 0 = devre dışı.
     pub max_fak_size: f64,
+    /// PATCH D — Signal gate açık mı? (effective_score yön filtresi)
+    pub signal_gate_enabled: bool,
+    /// PATCH D — `effective_score > X` ise UP yönü zorunlu.
+    pub signal_up_threshold: f64,
+    /// PATCH D — `effective_score < X` ise DOWN yönü zorunlu.
+    pub signal_down_threshold: f64,
 }
 
 impl Default for GravieParams {
@@ -464,6 +507,9 @@ impl Default for GravieParams {
             sum_avg_ceiling: 1.05,
             opp_ask_stop_threshold: 0.85,
             max_fak_size: 50.0,
+            signal_gate_enabled: true,
+            signal_up_threshold: 5.5,
+            signal_down_threshold: 4.5,
         }
     }
 }
@@ -518,6 +564,17 @@ impl GravieParams {
                 .gravie_max_fak_size
                 .unwrap_or(d.max_fak_size)
                 .clamp(0.0, 10_000.0),
+            signal_gate_enabled: p
+                .gravie_signal_gate_enabled
+                .unwrap_or(d.signal_gate_enabled),
+            signal_up_threshold: p
+                .gravie_signal_up_threshold
+                .unwrap_or(d.signal_up_threshold)
+                .clamp(0.0, 10.0),
+            signal_down_threshold: p
+                .gravie_signal_down_threshold
+                .unwrap_or(d.signal_down_threshold)
+                .clamp(0.0, 10.0),
         }
     }
 }

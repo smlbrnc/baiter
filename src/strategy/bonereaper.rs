@@ -582,6 +582,15 @@ fn signal_order(
     if bid <= 0.0 {
         return None;
     }
+    // ── MID-BAND BAN ─────────────────────────────────────────────
+    // bid `[low, high]` aralığı = kararsız market. Bot 87/88/89/90 backtest
+    // (540 session): mid-band'da girerseniz wipeout oranı ikiye katlanır.
+    // High-confidence (bid > high) veya long-shot (bid < low) dışı pas geç.
+    let mb_low = ctx.strategy_params.bonereaper_mid_band_ban_low();
+    let mb_high = ctx.strategy_params.bonereaper_mid_band_ban_high();
+    if mb_low > 0.0 && mb_high > mb_low && bid >= mb_low && bid <= mb_high {
+        return None;
+    }
     let price = if ctx.strategy_params.bonereaper_signal_taker() {
         ctx.best_ask(dir)
     } else {
