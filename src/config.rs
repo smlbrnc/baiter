@@ -194,7 +194,9 @@ pub struct StrategyParams {
     #[serde(default)]
     pub bonereaper_imbalance_thr: Option<f64>,
     /// avg_sum yumuşak cap. `new_avg + opp_avg > X` ise yeni alım yok.
-    /// Real bot 1.20'ye kadar trade görüldü; biz 1.30 default güvenli üst sınır.
+    /// Default 1.05 (bot 100 grid backtest optimum: pyramid maliyetini −$1442,
+    /// NET PnL'i 5.6× artırdı). Real bot 1.20'ye kadar trade görüldü ama bizde
+    /// ufak size'lar sebebiyle sıkı cap daha verimli.
     #[serde(default)]
     pub bonereaper_max_avg_sum: Option<f64>,
     /// Long-shot bid bucket (bid ≤ 0.30) trade büyüklüğü (USDC notional).
@@ -209,6 +211,11 @@ pub struct StrategyParams {
     /// Real bot kapanış öncesi $30-50 trade'ler; LW'den ayrı normal akış. Default: $30.
     #[serde(default)]
     pub bonereaper_size_high_usdc: Option<f64>,
+    /// Kâr kilitle: aktif olduğunda karşılıklı pozisyon (`up_filled>0 && down_filled>0`)
+    /// var ve `avg_up + avg_down < 1.0` ise yeni emir verilmez (LW dahil). Garantili
+    /// arbitraj penceresi yakalandığında pozisyonu donduran sigorta. Default: false.
+    #[serde(default)]
+    pub bonereaper_profit_lock_enabled: Option<bool>,
 
     // === Gravie (Bot 66 davranış kopyası) ===
     /// Karar tick aralığı (sn). Bot 66 ortalama inter-arrival 4-5 sn.
@@ -392,11 +399,13 @@ impl StrategyParams {
             .unwrap_or(200.0)
             .clamp(0.0, 10_000.0)
     }
-    /// avg_sum yumuşak cap; 0.50–2.00 sınırlı; default 1.10
-    /// (sıkı: pahalı pozisyon birikimini engelle, LW için bütçe bırak).
+    /// avg_sum yumuşak cap; 0.50–2.00 sınırlı; default 1.05.
+    /// Bot 100 grid backtest (31 session): 1.05 + N=3 longshot pyramid maliyetini
+    /// $1442 düşürdü, NET +$73 → +$415 (5.6×). Sıkılaştırma kazançtan çok kayıp
+    /// ön ödemesini kestiği için ROI'yi katladı.
     pub fn bonereaper_max_avg_sum(&self) -> f64 {
         self.bonereaper_max_avg_sum
-            .unwrap_or(1.10)
+            .unwrap_or(1.05)
             .clamp(0.50, 2.00)
     }
     /// Long-shot bucket USDC; 0–10000 sınırlı; default 5
@@ -417,6 +426,11 @@ impl StrategyParams {
         self.bonereaper_size_high_usdc
             .unwrap_or(15.0)
             .clamp(0.0, 10_000.0)
+    }
+    /// Kâr kilitle aktif mi; default false. Karşılıklı pozisyon altında
+    /// `avg_up + avg_down < 1.0` ise her yeni emri (LW dahil) bloke eder.
+    pub fn bonereaper_profit_lock_enabled(&self) -> bool {
+        self.bonereaper_profit_lock_enabled.unwrap_or(false)
     }
 }
 

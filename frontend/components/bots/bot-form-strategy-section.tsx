@@ -136,6 +136,9 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const bonereaperSizeHighUsdc =
     params.bonereaper_size_high_usdc ??
     STRATEGY_PARAMS_DEFAULTS.bonereaper_size_high_usdc
+  const bonereaperProfitLockEnabled =
+    params.bonereaper_profit_lock_enabled ??
+    STRATEGY_PARAMS_DEFAULTS.bonereaper_profit_lock_enabled
 
   return (
     <div className="space-y-3">
@@ -510,6 +513,16 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
             </p>
           </div>
 
+          <div className="rounded-md border border-border/40 bg-muted/25 p-3">
+            <ToggleRow
+              checked={!!bonereaperProfitLockEnabled}
+              onChange={(v) => patch({ bonereaper_profit_lock_enabled: v })}
+              title="Kâr kilitle"
+              description="Karşılıklı pozisyon (UP+DOWN dolu) altında avg_up + avg_down < 1.00 ise bot yeni emir vermez (LW dahil). Garantili arbitraj penceresinde pozisyonu dondurur."
+              tooltip="avg_sum < 1.00 demek: UP veya DOWN hangisi kazanırsa kazansın, kazanan share-cost > 0 → kâr garantili. Yeni alımlar bu marjini eritebilir."
+            />
+          </div>
+
           <div className="space-y-3 rounded-md border border-border/40 bg-muted/25 p-3">
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Field
@@ -698,6 +711,11 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
             <li>
               <strong>Güvenlik:</strong> <code>max_avg_sum</code> aşırı pyramid'i
               durdurur, <code>cooldown</code> spam'i engeller.
+            </li>
+            <li>
+              <strong>Kâr kilitle:</strong> aktifse karşılıklı pozisyonda{" "}
+              <code>avg_up + avg_down &lt; 1.00</code> olunca yeni emir
+              durdurulur (arbitraj penceresi dondurma).
             </li>
           </ul>
         </div>
