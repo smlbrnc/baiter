@@ -199,6 +199,13 @@ pub struct StrategyParams {
     /// ufak size'lar sebebiyle sıkı cap daha verimli.
     #[serde(default)]
     pub bonereaper_max_avg_sum: Option<f64>,
+    /// İlk emir için minimum |up_bid - down_bid| spread eşiği. Bu eşik
+    /// aşılana kadar BUY ATILMAZ; aşılınca ilk emir yüksek bid tarafına
+    /// (winner momentum) verilir. Sonraki trade'ler mevcut akışla devam eder.
+    /// Default: 0.02 (bot 101 backtest: ROI %1.41 → %2.56, 1st=DOWN+win=DOWN
+    /// kategorisi −%5.45 → +%8.86). 0.0 = devre dışı (eski davranış).
+    #[serde(default)]
+    pub bonereaper_first_spread_min: Option<f64>,
     /// Long-shot bid bucket (bid ≤ 0.30) trade büyüklüğü (USDC notional).
     /// Real bot bu bantta avg ~$15-20. Default: $15.
     #[serde(default)]
@@ -402,6 +409,13 @@ impl StrategyParams {
         self.bonereaper_max_avg_sum
             .unwrap_or(1.05)
             .clamp(0.50, 2.00)
+    }
+    /// İlk emir spread eşiği; 0.00–0.20 sınırlı; default 0.02.
+    /// 0.0 → eski davranış (ilk tick'ten emir vermeye çalış).
+    pub fn bonereaper_first_spread_min(&self) -> f64 {
+        self.bonereaper_first_spread_min
+            .unwrap_or(0.02)
+            .clamp(0.00, 0.20)
     }
     /// Long-shot bucket USDC; 0–10000 sınırlı; default 5
     /// (minimal scalp; LW'e yer aç).

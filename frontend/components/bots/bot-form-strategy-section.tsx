@@ -127,6 +127,9 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const bonereaperMaxAvgSum =
     params.bonereaper_max_avg_sum ??
     STRATEGY_PARAMS_DEFAULTS.bonereaper_max_avg_sum
+  const bonereaperFirstSpreadMin =
+    params.bonereaper_first_spread_min ??
+    STRATEGY_PARAMS_DEFAULTS.bonereaper_first_spread_min
   const bonereaperSizeLongshotUsdc =
     params.bonereaper_size_longshot_usdc ??
     STRATEGY_PARAMS_DEFAULTS.bonereaper_size_longshot_usdc
@@ -631,6 +634,22 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                     }
                   />
                 </Field>
+                <Field
+                  label="İlk emir spread eşiği"
+                  tooltip="|up_bid - down_bid| bu eşiği aşana kadar ilk BUY atılmaz; aşılınca yüksek bid tarafına başla. 0 = devre dışı."
+                  hint={`0.00 – 0.20 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_first_spread_min}).`}
+                >
+                  <Input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    max="0.2"
+                    value={bonereaperFirstSpreadMin}
+                    onChange={(e) =>
+                      patch({ bonereaper_first_spread_min: Number(e.target.value) })
+                    }
+                  />
+                </Field>
               </div>
               <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <Field
@@ -687,8 +706,13 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
 
           <ul className="list-disc space-y-1 rounded-md border border-border/40 bg-muted/10 px-4 py-2.5 pl-7 text-xs text-muted-foreground">
             <li>
-              <strong>Yön seçimi:</strong> Her tick bid'i daha çok değişen tarafa
-              taker BUY @ ask. <code>|imbalance|</code> eşiği aşarsa weaker side.
+              <strong>İlk emir:</strong> <code>|up_bid - down_bid|</code> ≥{" "}
+              <code>{STRATEGY_PARAMS_DEFAULTS.bonereaper_first_spread_min}</code>{" "}
+              olana kadar bekler; sonra yüksek bid tarafına BUY (winner momentum).
+            </li>
+            <li>
+              <strong>Sonraki emirler:</strong> Her tick bid'i daha çok değişen
+              tarafa taker BUY @ ask. <code>|imbalance|</code> eşiği aşarsa weaker side.
             </li>
             <li>
               <strong>Late winner:</strong> T-{STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_secs}s

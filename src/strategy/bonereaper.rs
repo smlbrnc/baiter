@@ -13,16 +13,19 @@
 //! 2. **LATE WINNER** (`t_to_end ≤ secs && max(bid) ≥ thr`): winner tarafa
 //!    `late_winner_usdc` notional taker BUY @ ask. Cooldown bypass.
 //! 3. **Cooldown** (`now − last_buy < buy_cooldown_ms`): NoOp.
-//! 4. **Yön seçimi**:
+//! 4. **İlk emir kapısı** (`!first_done`): `|up_bid − down_bid| < first_spread_min`
+//!    ise NoOp (sinyal henüz net değil); aksi halde yön = yüksek bid tarafı
+//!    (winner momentum). 0.0 = devre dışı.
+//! 5. **Yön seçimi (sonraki emirler)**:
 //!    - `|up_filled − down_filled| > imbalance_thr` → weaker side
 //!    - aksi: `|Δup_bid|` vs `|Δdn_bid|` → büyük delta tarafı (`ob_driven`)
-//! 5. **Min/max price filter**: `bid ∉ [min, max]` → NoOp.
-//! 6. **Dinamik size** (USDC notional bid bucket'ına göre):
+//! 6. **Min/max price filter**: `bid ∉ [min, max]` → NoOp.
+//! 7. **Dinamik size** (USDC notional bid bucket'ına göre):
 //!    - `bid ≤ 0.30`: longshot
 //!    - `0.30 < bid ≤ 0.85`: mid
 //!    - `bid > 0.85`: high
-//! 7. **avg_sum soft cap** (`new_avg + opp_avg > max_avg_sum`): NoOp.
-//! 8. **Place taker BUY @ ask** (GTC limit, anında fill).
+//! 8. **avg_sum soft cap** (`new_avg + opp_avg > max_avg_sum`): NoOp.
+//! 9. **Place taker BUY @ ask** (GTC limit, anında fill).
 //!
 //! ## Reason etiketleri
 //!
@@ -73,6 +76,9 @@ pub struct BonereaperActive {
     /// Late winner injection sayacı (telemetri/log için).
     #[serde(default)]
     pub lw_injections: u32,
+    /// İlk emir verildi mi? Spread-gated start için kullanılır.
+    #[serde(default)]
+    pub first_done: bool,
 }
 
 pub struct BonereaperEngine;
@@ -101,6 +107,7 @@ impl BonereaperEngine {
                     last_up_bid: ctx.up_best_bid,
                     last_dn_bid: ctx.down_best_bid,
                     lw_injections: 0,
+                    first_done: false,
                 };
                 (BonereaperState::Active(active), Decision::NoOp)
             }
@@ -140,6 +147,7 @@ impl BonereaperEngine {
                             st.lw_injections = st.lw_injections.saturating_add(1);
                             st.last_up_bid = ctx.up_best_bid;
                             st.last_dn_bid = ctx.down_best_bid;
+                            st.first_done = true;
                             return (
                                 BonereaperState::Active(st),
                                 Decision::PlaceOrders(vec![o]),
@@ -157,27 +165,46 @@ impl BonereaperEngine {
                 }
 
                 // ── YÖN SEÇİMİ ──────────────────────────────────────────
-                let m = ctx.metrics;
-                let imb = m.up_filled - m.down_filled;
-                let imb_thr = p.bonereaper_imbalance_thr();
-                let dir = if imb.abs() > imb_thr {
-                    // Weaker side rebalance
-                    if imb > 0.0 { Outcome::Down } else { Outcome::Up }
+                let dir = if !st.first_done {
+                    // İlk emir: spread-gated. |up_bid - down_bid| eşiği aşılmadan
+                    // emir verme; aşılınca yüksek bid tarafına başla (winner momentum).
+                    // Bot 101 backtest: ROI %1.41 → %2.56, 1st=DOWN+win=DOWN −%5.45 → +%8.86.
+                    let spread_min = p.bonereaper_first_spread_min();
+                    let spread = ctx.up_best_bid - ctx.down_best_bid;
+                    if spread.abs() < spread_min {
+                        // Sinyal henüz net değil — bid history güncelle, bekle.
+                        st.last_up_bid = ctx.up_best_bid;
+                        st.last_dn_bid = ctx.down_best_bid;
+                        return (BonereaperState::Active(st), Decision::NoOp);
+                    }
+                    if spread > 0.0 {
+                        Outcome::Up
+                    } else {
+                        Outcome::Down
+                    }
                 } else {
-                    // ob_driven: bid'i daha çok değişen taraf
-                    let d_up = (ctx.up_best_bid - st.last_up_bid).abs();
-                    let d_dn = (ctx.down_best_bid - st.last_dn_bid).abs();
-                    if d_up == 0.0 && d_dn == 0.0 {
-                        // Delta yoksa: bid'i yüksek olan taraf (winner momentum)
-                        if ctx.up_best_bid >= ctx.down_best_bid {
+                    let m = ctx.metrics;
+                    let imb = m.up_filled - m.down_filled;
+                    let imb_thr = p.bonereaper_imbalance_thr();
+                    if imb.abs() > imb_thr {
+                        // Weaker side rebalance
+                        if imb > 0.0 { Outcome::Down } else { Outcome::Up }
+                    } else {
+                        // ob_driven: bid'i daha çok değişen taraf
+                        let d_up = (ctx.up_best_bid - st.last_up_bid).abs();
+                        let d_dn = (ctx.down_best_bid - st.last_dn_bid).abs();
+                        if d_up == 0.0 && d_dn == 0.0 {
+                            // Delta yoksa: bid'i yüksek olan taraf (winner momentum)
+                            if ctx.up_best_bid >= ctx.down_best_bid {
+                                Outcome::Up
+                            } else {
+                                Outcome::Down
+                            }
+                        } else if d_up >= d_dn {
                             Outcome::Up
                         } else {
                             Outcome::Down
                         }
-                    } else if d_up >= d_dn {
-                        Outcome::Up
-                    } else {
-                        Outcome::Down
                     }
                 };
 
@@ -211,9 +238,20 @@ impl BonereaperEngine {
 
                 // avg_sum soft cap — yeni alımdan SONRA cur_avg + opp_avg
                 let max_avg_sum = p.bonereaper_max_avg_sum();
+                let metrics = ctx.metrics;
                 let (cur_filled, cur_avg, opp_filled, opp_avg) = match dir {
-                    Outcome::Up => (m.up_filled, m.avg_up, m.down_filled, m.avg_down),
-                    Outcome::Down => (m.down_filled, m.avg_down, m.up_filled, m.avg_up),
+                    Outcome::Up => (
+                        metrics.up_filled,
+                        metrics.avg_up,
+                        metrics.down_filled,
+                        metrics.avg_down,
+                    ),
+                    Outcome::Down => (
+                        metrics.down_filled,
+                        metrics.avg_down,
+                        metrics.up_filled,
+                        metrics.avg_up,
+                    ),
                 };
                 if opp_filled > 0.0 {
                     let new_avg = if cur_filled > 0.0 {
@@ -228,6 +266,7 @@ impl BonereaperEngine {
 
                 if let Some(o) = make_buy(ctx, dir, ask, size, reason_buy(dir)) {
                     st.last_buy_ms = ctx.now_ms;
+                    st.first_done = true;
                     return (
                         BonereaperState::Active(st),
                         Decision::PlaceOrders(vec![o]),

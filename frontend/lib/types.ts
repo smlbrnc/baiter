@@ -128,6 +128,13 @@ export interface StrategyParams {
    * Real bot 1.20'ye kadar trade görüldü; default 1.30.
    */
   bonereaper_max_avg_sum?: number | null
+  /**
+   * İlk emir için minimum |up_bid - down_bid| spread eşiği. Bu eşik aşılmadan
+   * BUY ATILMAZ; aşılınca ilk emir yüksek bid tarafına (winner momentum) verilir.
+   * Sonraki emirler mevcut akışla devam eder. Default 0.02
+   * (bot 101 backtest: ROI %1.41 → %2.56). 0.0 = devre dışı.
+   */
+  bonereaper_first_spread_min?: number | null
   /** Long-shot bid bucket (bid ≤ 0.30) trade büyüklüğü (USDC). Default 5. */
   bonereaper_size_longshot_usdc?: number | null
   /** Mid bid bucket (0.30 < bid ≤ 0.85) trade büyüklüğü (USDC). Default 10. */
@@ -524,6 +531,7 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   bonereaper_lw_max_per_session: 1,
   bonereaper_imbalance_thr: 200,
   bonereaper_max_avg_sum: 1.05,
+  bonereaper_first_spread_min: 0.02,
   bonereaper_size_longshot_usdc: 5,
   bonereaper_size_mid_usdc: 10,
   bonereaper_size_high_usdc: 15,
@@ -567,6 +575,8 @@ export function mergeBonereaperStrategyDefaults(
       p.bonereaper_imbalance_thr ?? d.bonereaper_imbalance_thr,
     bonereaper_max_avg_sum:
       p.bonereaper_max_avg_sum ?? d.bonereaper_max_avg_sum,
+    bonereaper_first_spread_min:
+      p.bonereaper_first_spread_min ?? d.bonereaper_first_spread_min,
     bonereaper_size_longshot_usdc:
       p.bonereaper_size_longshot_usdc ?? d.bonereaper_size_longshot_usdc,
     bonereaper_size_mid_usdc:
