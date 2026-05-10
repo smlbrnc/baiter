@@ -145,6 +145,9 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const bonereaperLoserScalpUsdc =
     params.bonereaper_loser_scalp_usdc ??
     STRATEGY_PARAMS_DEFAULTS.bonereaper_loser_scalp_usdc
+  const bonereaperLoserScalpMaxPrice =
+    params.bonereaper_loser_scalp_max_price ??
+    STRATEGY_PARAMS_DEFAULTS.bonereaper_loser_scalp_max_price
   const bonereaperLatePyramidSecs =
     params.bonereaper_late_pyramid_secs ??
     STRATEGY_PARAMS_DEFAULTS.bonereaper_late_pyramid_secs
@@ -758,6 +761,22 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                       value={bonereaperLoserScalpUsdc}
                       onChange={(e) =>
                         patch({ bonereaper_loser_scalp_usdc: Number(e.target.value) })
+                      }
+                    />
+                  </Field>
+                  <Field
+                    label="Loser scalp üst bid"
+                    tooltip="Loser side bid bu eşiğin altında ise scalp boyutu uygulanır (longshot bucket yerine). Real bot 0.10-0.30 bandında bilet topluyor."
+                    hint={`0.05 – 0.50 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_loser_scalp_max_price}).`}
+                  >
+                    <Input
+                      type="number"
+                      step="0.01"
+                      min="0.05"
+                      max="0.5"
+                      value={bonereaperLoserScalpMaxPrice}
+                      onChange={(e) =>
+                        patch({ bonereaper_loser_scalp_max_price: Number(e.target.value) })
                       }
                     />
                   </Field>

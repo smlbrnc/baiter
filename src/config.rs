@@ -197,9 +197,8 @@ pub struct StrategyParams {
     #[serde(default)]
     pub bonereaper_imbalance_thr: Option<f64>,
     /// avg_sum yumuşak cap. `new_avg + opp_avg > X` ise yeni alım yok.
-    /// Default 1.05 (bot 100 grid backtest optimum: pyramid maliyetini −$1442,
-    /// NET PnL'i 5.6× artırdı). Real bot 1.20'ye kadar trade görüldü ama bizde
-    /// ufak size'lar sebebiyle sıkı cap daha verimli.
+    /// Default 1.30 (bot 107 karşılaştırması: 1.05 cap winner pyramid'i fren'liyor;
+    /// gerçek Bonereaper 1.20'ye kadar trade ediyor).
     #[serde(default)]
     pub bonereaper_max_avg_sum: Option<f64>,
     /// İlk emir için minimum |up_bid - down_bid| spread eşiği. Bu eşik
@@ -232,14 +231,22 @@ pub struct StrategyParams {
     /// 0 = scalp KAPALI.
     #[serde(default)]
     pub bonereaper_loser_scalp_usdc: Option<f64>,
+    /// Loser scalp üst eşiği (bid). Loser side bid bu eşiğin altında ise
+    /// scalp boyutu (`loser_scalp_usdc`) uygulanır. Default 0.30 (real bot
+    /// 0.10-0.30 bandında bilet topluyor; eski mantık sadece bid<min_price=0.10
+    /// kullanıyordu, çoğu loser scalp tetiklenmiyordu).
+    #[serde(default)]
+    pub bonereaper_loser_scalp_max_price: Option<f64>,
 
     // === Bonereaper - Aşama 4 (winner pyramid scaling) ===
-    /// T-X sn'den itibaren winner tarafa size çarpanı uygula. Default 100 sn.
-    /// 0 = scaling KAPALI (eski sabit bucket).
+    /// T-X sn'den itibaren winner tarafa size çarpanı uygula. Default 60 sn
+    /// (real bot T-145s..T-120s arası massive pyramid yapıyor; biz daha geç
+    /// başlayıp daha agresif vurarak yetişiriz). 0 = scaling KAPALI.
     #[serde(default)]
     pub bonereaper_late_pyramid_secs: Option<u32>,
     /// Winner tarafı için size çarpanı (T < late_pyramid_secs olunca).
-    /// Default 2.0 (real bot end-game'de 2-5× büyüklükte trade'ler).
+    /// Default 5.0 (real bot tek trade'de 78-136 share atıyor, biz 17 sh atıyorduk;
+    /// 5× = 85 sh ile gerçek bot büyüklüğüne yaklaşır).
     #[serde(default)]
     pub bonereaper_winner_size_factor: Option<f64>,
 
@@ -444,13 +451,13 @@ impl StrategyParams {
             .unwrap_or(50.0)
             .clamp(0.0, 10_000.0)
     }
-    /// avg_sum yumuşak cap; 0.50–2.00 sınırlı; default 1.05.
-    /// Bot 100 grid backtest (31 session): 1.05 + N=3 longshot pyramid maliyetini
-    /// $1442 düşürdü, NET +$73 → +$415 (5.6×). Sıkılaştırma kazançtan çok kayıp
-    /// ön ödemesini kestiği için ROI'yi katladı.
+    /// avg_sum yumuşak cap; 0.50–2.00 sınırlı; default 1.30.
+    /// Bot 107 vs gerçek Bonereaper karşılaştırması: 1.05 cap winner pyramid'i
+    /// erken donduruyor (avg_up=0.687 + avg_dn=0.36 = 1.047 > 1.05 → reject).
+    /// Gerçek bot 1.20'ye kadar trade görüyor; 1.30 default güvenli üst sınır.
     pub fn bonereaper_max_avg_sum(&self) -> f64 {
         self.bonereaper_max_avg_sum
-            .unwrap_or(1.05)
+            .unwrap_or(1.30)
             .clamp(0.50, 2.00)
     }
     /// İlk emir spread eşiği; 0.00–0.20 sınırlı; default 0.02.
@@ -493,16 +500,21 @@ impl StrategyParams {
             .unwrap_or(1.0)
             .clamp(0.0, 10.0)
     }
-    /// Late pyramid penceresi (sn); 0–300 sınırlı; default 100. T-X sn'den
-    /// sonra winner tarafa size çarpanı uygula. 0 = scaling KAPALI.
-    pub fn bonereaper_late_pyramid_secs(&self) -> u32 {
-        self.bonereaper_late_pyramid_secs.unwrap_or(100).min(300)
+    /// Loser scalp üst bid eşiği; 0.05–0.50 sınırlı; default 0.30. Loser side
+    /// bid bu eşiğin altındaysa scalp boyutu uygulanır (longshot bucket yerine).
+    pub fn bonereaper_loser_scalp_max_price(&self) -> f64 {
+        self.bonereaper_loser_scalp_max_price
+            .unwrap_or(0.30)
+            .clamp(0.05, 0.50)
     }
-    /// Winner pyramid size çarpanı; 1.0–10.0 sınırlı; default 2.0
-    /// (real bot end-game 2-5× büyüklük).
+    /// Late pyramid penceresi (sn); 0–300 sınırlı; default 60.
+    pub fn bonereaper_late_pyramid_secs(&self) -> u32 {
+        self.bonereaper_late_pyramid_secs.unwrap_or(60).min(300)
+    }
+    /// Winner pyramid size çarpanı; 1.0–10.0 sınırlı; default 5.0.
     pub fn bonereaper_winner_size_factor(&self) -> f64 {
         self.bonereaper_winner_size_factor
-            .unwrap_or(2.0)
+            .unwrap_or(5.0)
             .clamp(1.0, 10.0)
     }
     /// LW burst pencere (sn); 0–60 sınırlı; default 12. T-X kala 2. dalga LW.

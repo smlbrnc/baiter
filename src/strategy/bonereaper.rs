@@ -341,11 +341,15 @@ impl BonereaperEngine {
 
                 // Dinamik size hesabı
                 let scalp_usdc = p.bonereaper_loser_scalp_usdc();
+                let scalp_max_price = p.bonereaper_loser_scalp_max_price();
+                // Loser side scalp koşulu: bid scalp_max_price altında olduğunda
+                // scalp boyutu kullan (1¢-30¢ bandı, real bot'a uygun).
+                let is_scalp_band = is_loser_dir && bid <= scalp_max_price && scalp_usdc > 0.0;
                 let usdc = if scalp_only && scalp_usdc > 0.0 {
                     // Pahalı martingale-down → sadece $1 bilet
                     scalp_usdc
-                } else if is_loser_dir && bid < ctx.min_price && scalp_usdc > 0.0 {
-                    // Loser side 1¢-9¢ band (winner için kapalı), scalp boyutu
+                } else if is_scalp_band {
+                    // Loser side scalp bandı → kuruşluk bilet
                     scalp_usdc
                 } else {
                     let base = if bid <= 0.30 {
@@ -370,7 +374,8 @@ impl BonereaperEngine {
                 let size = (usdc / ask).ceil();
 
                 // avg_sum soft cap — loser scalp HARİÇ (scalp her zaman serbest)
-                if !scalp_only && opp_filled > 0.0 {
+                let is_any_scalp = scalp_only || is_scalp_band;
+                if !is_any_scalp && opp_filled > 0.0 {
                     let max_avg_sum = p.bonereaper_max_avg_sum();
                     let new_avg = if cur_filled > 0.0 {
                         (cur_avg * cur_filled + ask * size) / (cur_filled + size)
@@ -382,7 +387,7 @@ impl BonereaperEngine {
                     }
                 }
 
-                let reason = if scalp_only || (is_loser_dir && bid < ctx.min_price) {
+                let reason = if is_any_scalp {
                     reason_scalp(dir)
                 } else {
                     reason_buy(dir)

@@ -150,6 +150,12 @@ export interface StrategyParams {
   bonereaper_loser_min_price?: number | null
   /** Loser side scalp USDC notional. Default $1. 0 = scalp KAPALI. */
   bonereaper_loser_scalp_usdc?: number | null
+  /**
+   * Loser scalp üst bid eşiği. Loser side `bid <= eşik` ise scalp boyutu
+   * uygulanır (longshot bucket yerine). Default 0.30 (real bot 0.10-0.30
+   * bandında bilet topluyor).
+   */
+  bonereaper_loser_scalp_max_price?: number | null
 
   // ── Bonereaper - Aşama 4 (winner pyramid scaling) ────────────────────────
   /**
@@ -564,7 +570,7 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   bonereaper_late_winner_usdc: 500,
   bonereaper_lw_max_per_session: 5,
   bonereaper_imbalance_thr: 50,
-  bonereaper_max_avg_sum: 1.05,
+  bonereaper_max_avg_sum: 1.30,
   bonereaper_first_spread_min: 0.02,
   bonereaper_size_longshot_usdc: 5,
   bonereaper_size_mid_usdc: 10,
@@ -572,9 +578,10 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   // Aşama 3 — loser long-shot scalp
   bonereaper_loser_min_price: 0.01,
   bonereaper_loser_scalp_usdc: 1,
+  bonereaper_loser_scalp_max_price: 0.3,
   // Aşama 4 — winner pyramid scaling
-  bonereaper_late_pyramid_secs: 100,
-  bonereaper_winner_size_factor: 2.0,
+  bonereaper_late_pyramid_secs: 60,
+  bonereaper_winner_size_factor: 5.0,
   // Aşama 5 — multi-LW burst
   bonereaper_lw_burst_secs: 12,
   bonereaper_lw_burst_usdc: 200,
@@ -632,6 +639,8 @@ export function mergeBonereaperStrategyDefaults(
       p.bonereaper_loser_min_price ?? d.bonereaper_loser_min_price,
     bonereaper_loser_scalp_usdc:
       p.bonereaper_loser_scalp_usdc ?? d.bonereaper_loser_scalp_usdc,
+    bonereaper_loser_scalp_max_price:
+      p.bonereaper_loser_scalp_max_price ?? d.bonereaper_loser_scalp_max_price,
     bonereaper_late_pyramid_secs:
       p.bonereaper_late_pyramid_secs ?? d.bonereaper_late_pyramid_secs,
     bonereaper_winner_size_factor:
