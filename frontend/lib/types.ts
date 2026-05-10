@@ -110,10 +110,15 @@ export interface StrategyParams {
   /** Late winner için kazanan tarafın bid eşiği. Default 0.85. */
   bonereaper_late_winner_bid_thr?: number | null
   /**
-   * Late winner trade büyüklüğü (USDC notional). Real bot $1000+ atıyor;
-   * konservatif default $100. 0 = kural KAPALI.
+   * Late winner trade büyüklüğü (USDC notional). Real bot 3 log analizinde
+   * big-bet medyan $1000-1300. Default $1000. 0 = kural KAPALI.
    */
   bonereaper_late_winner_usdc?: number | null
+  /**
+   * Session başına max LW injection sayısı. Real bot 4-5 market'te 1 big-bet
+   * (~0.2-0.33/market). Default 1. 0 = sınırsız (eski spam riski).
+   */
+  bonereaper_lw_max_per_session?: number | null
   /**
    * |up_filled − down_filled| bu eşiği aşarsa weaker side rebalance. Default 100.
    */
@@ -509,13 +514,16 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   elis_max_order_age_ms: 30000,
   elis_imp_fail_cooldown_ms: 30000,
   elis_imbalance_taker_threshold: 100,
-  // Bonereaper (order-book reactive martingale + late winner injection)
-  bonereaper_buy_cooldown_ms: 2000,
+  // Bonereaper (LIVE_safe_500 — fee dahil NET ROI +%0.23, worst -$438)
+  // Backend optimum G_lw_only $2000 LW, ama UI safe live test default $500 LW.
+  // Backtest sonuçları ile kullanıcı bilinçli olarak büyütebilir.
+  bonereaper_buy_cooldown_ms: 15000,
   bonereaper_late_winner_secs: 30,
-  bonereaper_late_winner_bid_thr: 0.85,
-  bonereaper_late_winner_usdc: 100,
-  bonereaper_imbalance_thr: 100,
-  bonereaper_max_avg_sum: 1.3,
+  bonereaper_late_winner_bid_thr: 0.92,
+  bonereaper_late_winner_usdc: 500,
+  bonereaper_lw_max_per_session: 1,
+  bonereaper_imbalance_thr: 200,
+  bonereaper_max_avg_sum: 1.1,
   bonereaper_size_longshot_usdc: 5,
   bonereaper_size_mid_usdc: 10,
   bonereaper_size_high_usdc: 15,

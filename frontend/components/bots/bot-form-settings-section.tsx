@@ -17,19 +17,19 @@ export function BotFormSettingsSection({ form, setForm }: Props) {
   const description = isElis
     ? "Fiyat aralığı (min/max price). Elis loop süresi ve emir boyutu aşağıdaki strateji parametrelerinden ayarlanır."
     : isBonereaper
-      ? "Order USDC = sabit emir boyutu (size = ceil(order_usdc / price)). Min/Max price emir filtresi (executor reddi)."
+      ? "Order USDC bonereaper'da api_min_order_size kontrolü için kullanılır. Trade size'ları aşağıdaki bonereaper parametrelerinden (long-shot/mid/high USDC) gelir. Min/Max price executor filtresi."
       : "Emir boyutu, cooldown ve fiyat aralığı."
 
   const orderTooltip = isElis
     ? "Elis: api_min_order_size kontrolü için kullanılır. Gerçek emir boyutu strategy_params.elis_max_buy_order_size (share) ile belirlenir."
     : isBonereaper
-      ? "Bonereaper sabit USDC: her emir bu kadar USDC notional'da yapılır. Default 10 → real bot medyan $12.32 ile birebir uyumlu. Trade size = ceil(order_usdc / price)."
+      ? "Bonereaper trade size'ları stratejide ayrı (long-shot/mid/high USDC). Order USDC sadece api_min_order_size eşiği için. LIVE_safe başlangıç: 5 USDC."
       : "Emir başına harcanacak USDC miktarı. GTC size = max(order_usdc / fiyat, api_min_order_size)."
 
   const orderHint = isElis
     ? "api_min_order_size kontrolü için; min 1 USDC."
     : isBonereaper
-      ? "Default 10 USDC (sabit, real bot medyan $12 uyumlu)."
+      ? "LIVE_safe default 5 USDC (advanced trade size'ları aşağıdan)."
       : "Minimum 1 USDC."
 
   return (
@@ -79,8 +79,12 @@ export function BotFormSettingsSection({ form, setForm }: Props) {
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field
             label="Min price"
-            tooltip="Executor: emirlerin kabul edildiği minimum fiyat eşiği. Strateji bu değerin altında bir fiyat önerirse otomatik reddedilir. Aşırı düşük likiditeye karşı koruma."
-            hint="0.01 – 0.50; default 0.05."
+            tooltip="Executor: emirlerin kabul edildiği minimum fiyat eşiği. Strateji bu değerin altında bir fiyat önerirse otomatik reddedilir. LIVE_safe default 0.10 — extreme long-shot riskini eler."
+            hint={
+              isBonereaper
+                ? "0.01 – 0.50; LIVE_safe default 0.10."
+                : "0.01 – 0.50; default 0.10."
+            }
           >
             <Input
               type="number"
@@ -95,12 +99,8 @@ export function BotFormSettingsSection({ form, setForm }: Props) {
           </Field>
           <Field
             label="Max price"
-            tooltip="Executor: emirlerin kabul edildiği maksimum fiyat eşiği. Bonereaper için 0.99 önerilir (real bot 0.99'a kadar trade yapıyor)."
-            hint={
-              isBonereaper
-                ? "0.50 – 0.99; default 0.99 (real bot uyumu)."
-                : "0.50 – 0.99; default 0.95."
-            }
+            tooltip="Executor: emirlerin kabul edildiği maksimum fiyat eşiği. LIVE_safe default 0.95 — yanlış 0.99 inject riskini eler. Late winner injection bu filtreden bağımsız (kendi bid eşiği var)."
+            hint="0.50 – 0.99; LIVE_safe default 0.95."
           >
             <Input
               type="number"

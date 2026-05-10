@@ -118,6 +118,9 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const bonereaperLateWinnerUsdc =
     params.bonereaper_late_winner_usdc ??
     STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_usdc
+  const bonereaperLwMaxPerSession =
+    params.bonereaper_lw_max_per_session ??
+    STRATEGY_PARAMS_DEFAULTS.bonereaper_lw_max_per_session
   const bonereaperImbalanceThr =
     params.bonereaper_imbalance_thr ??
     STRATEGY_PARAMS_DEFAULTS.bonereaper_imbalance_thr
@@ -496,32 +499,54 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
         </div>
       )}
 
-      {/* ── Bonereaper parametreleri (real wallet kopyası) ──────────────── */}
+      {/* ── Bonereaper parametreleri ────────────────────────────────────── */}
       {isBonereaper && (
         <div className="space-y-3">
           <div>
             <SectionLabel icon={Target} title="Bonereaper parametreleri" />
             <p className="mt-1 text-sm text-muted-foreground">
-              Polymarket{" "}
-              <a
-                href="https://polymarket.com/profile/"
-                className="underline"
-                target="_blank"
-                rel="noreferrer"
-              >
-                Bonereaper
-              </a>{" "}
-              wallet davranış kopyası: order-book reactive martingale + late
-              winner injection. Sinyal kullanmaz; her tick bid değişen tarafa
-              taker BUY ve T-X sn kala kazanan tarafa massive inject.
+              Order-book reactive martingale + late winner injection. Backtest
+              optimum (3-bot 468 session): NET ROI %0.23 (LIVE_safe).
             </p>
           </div>
 
-          <div className="space-y-4 rounded-md border border-border/40 bg-muted/25 p-3">
+          <div className="space-y-3 rounded-md border border-border/40 bg-muted/25 p-3">
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Field
+                label="Late winner USDC"
+                tooltip="Kapanışa yakın kazanan tarafa tek büyük taker BUY notional'ı. LIVE_safe başlangıç: $500. 0 = kapalı."
+                hint={`0 – 10000 USDC (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_usdc}).`}
+              >
+                <Input
+                  type="number"
+                  step="50"
+                  min="0"
+                  max="10000"
+                  value={bonereaperLateWinnerUsdc}
+                  onChange={(e) =>
+                    patch({ bonereaper_late_winner_usdc: Number(e.target.value) })
+                  }
+                />
+              </Field>
+              <Field
+                label="LW bid eşiği"
+                tooltip="Late winner için kazanan tarafın min bid değeri. Yüksek = daha sıkı/güvenli."
+                hint={`0.50 – 0.99 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_bid_thr}).`}
+              >
+                <Input
+                  type="number"
+                  step="0.01"
+                  min="0.5"
+                  max="0.99"
+                  value={bonereaperLateWinnerBidThr}
+                  onChange={(e) =>
+                    patch({ bonereaper_late_winner_bid_thr: Number(e.target.value) })
+                  }
+                />
+              </Field>
+              <Field
                 label="BUY cooldown (ms)"
-                tooltip="Ardışık BUY emirleri arasındaki minimum bekleme. Real bot ortalama ~3-5 sn aralıkla emir veriyor. Düşük = daha agresif (daha çok trade), yüksek = daha az."
+                tooltip="Ardışık BUY emirleri arası min bekleme. Düşük = daha çok trade."
                 hint={`500 – 60000 ms (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_buy_cooldown_ms}).`}
               >
                 <Input
@@ -536,182 +561,145 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                 />
               </Field>
               <Field
-                label="Imbalance threshold (share)"
-                tooltip="|UP_filled − DOWN_filled| bu eşiği aşarsa weaker side rebalance trade'i yapılır (orderbook-driven yön seçimi bypass edilir). Çok düşük = sürekli rebalance, yüksek = serbest pyramid."
-                hint={`0 – 10000 share (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_imbalance_thr}).`}
+                label="LW max / session"
+                tooltip="Session başına maksimum late winner injection. 0 = sınırsız (spam, KULLANMA)."
+                hint={`0 – 20 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_lw_max_per_session}).`}
               >
                 <Input
                   type="number"
-                  step="10"
+                  step="1"
                   min="0"
-                  max="10000"
-                  value={bonereaperImbalanceThr}
+                  max="20"
+                  value={bonereaperLwMaxPerSession}
                   onChange={(e) =>
-                    patch({ bonereaper_imbalance_thr: Number(e.target.value) })
-                  }
-                />
-              </Field>
-              <Field
-                label="Max avg_sum (yumuşak cap)"
-                tooltip="new_avg + opp_avg bu değeri aşarsa yeni alım yok. Real bot 1.20'ye kadar trade görüldü; default 1.30 güvenli üst sınır. Düşük = sıkı (aşırı pyramid'i durdurur)."
-                hint={`0.50 – 2.00 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_max_avg_sum}).`}
-              >
-                <Input
-                  type="number"
-                  step="0.05"
-                  min="0.5"
-                  max="2"
-                  value={bonereaperMaxAvgSum}
-                  onChange={(e) =>
-                    patch({ bonereaper_max_avg_sum: Number(e.target.value) })
-                  }
-                />
-              </Field>
-              <Field
-                label="Late winner penceresi (sn)"
-                tooltip="T-X sn'den itibaren bid≥thr olan tarafa massive taker BUY (cooldown bypass). Real bot kapanışa <30 sn kala bid 0.95+ tarafa $1000+ atıyor. 0 = kural KAPALI."
-                hint={`0 – 300 sn (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_secs}).`}
-              >
-                <Input
-                  type="number"
-                  step="5"
-                  min="0"
-                  max="300"
-                  value={bonereaperLateWinnerSecs}
-                  onChange={(e) =>
-                    patch({ bonereaper_late_winner_secs: Number(e.target.value) })
-                  }
-                />
-              </Field>
-              <Field
-                label="Late winner bid eşiği"
-                tooltip="Late winner penceresinde bu bid'in üstündeki taraf 'kazanan' sayılır ve massive BUY tetiklenir."
-                hint={`0.50 – 0.99 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_bid_thr}).`}
-              >
-                <Input
-                  type="number"
-                  step="0.05"
-                  min="0.5"
-                  max="0.99"
-                  value={bonereaperLateWinnerBidThr}
-                  onChange={(e) =>
-                    patch({ bonereaper_late_winner_bid_thr: Number(e.target.value) })
-                  }
-                />
-              </Field>
-              <Field
-                label="Late winner USDC notional"
-                tooltip="Late winner trade büyüklüğü. Real bot $1000+ atıyor; biz $100 default ile başlayıp izleyip artırırız. 0 = kural KAPALI."
-                hint={`0 – 10000 USDC (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_usdc}).`}
-              >
-                <Input
-                  type="number"
-                  step="10"
-                  min="0"
-                  max="10000"
-                  value={bonereaperLateWinnerUsdc}
-                  onChange={(e) =>
-                    patch({ bonereaper_late_winner_usdc: Number(e.target.value) })
+                    patch({ bonereaper_lw_max_per_session: Number(e.target.value) })
                   }
                 />
               </Field>
             </div>
 
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <Field
-                label="Long-shot USDC (bid ≤ 0.30)"
-                tooltip="Düşük confidence bid'lerde (uzun-vade, yüksek pay-off) trade büyüklüğü. Real bot bu bantta küçük trade'ler ($1-5)."
-                hint={`0 – 10000 USDC (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_size_longshot_usdc}).`}
-              >
-                <Input
-                  type="number"
-                  step="1"
-                  min="0"
-                  max="10000"
-                  value={bonereaperSizeLongshotUsdc}
-                  onChange={(e) =>
-                    patch({ bonereaper_size_longshot_usdc: Number(e.target.value) })
-                  }
-                />
-              </Field>
-              <Field
-                label="Mid USDC (0.30 < bid ≤ 0.85)"
-                tooltip="Orta band trade büyüklüğü; çoğu trade burada (bizim default 10 USDC, real bot medyanı ~$5-15)."
-                hint={`0 – 10000 USDC (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_size_mid_usdc}).`}
-              >
-                <Input
-                  type="number"
-                  step="1"
-                  min="0"
-                  max="10000"
-                  value={bonereaperSizeMidUsdc}
-                  onChange={(e) =>
-                    patch({ bonereaper_size_mid_usdc: Number(e.target.value) })
-                  }
-                />
-              </Field>
-              <Field
-                label="High-conf USDC (bid > 0.85)"
-                tooltip="Yüksek confidence (kazanan taraf belirginleşmiş) trade büyüklüğü. Real bot burada $20-50 trade'ler."
-                hint={`0 – 10000 USDC (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_size_high_usdc}).`}
-              >
-                <Input
-                  type="number"
-                  step="1"
-                  min="0"
-                  max="10000"
-                  value={bonereaperSizeHighUsdc}
-                  onChange={(e) =>
-                    patch({ bonereaper_size_high_usdc: Number(e.target.value) })
-                  }
-                />
-              </Field>
-            </div>
+            <details className="group">
+              <summary className="cursor-pointer text-xs font-medium text-muted-foreground hover:text-foreground">
+                Gelişmiş ayarlar
+              </summary>
+              <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <Field
+                  label="LW penceresi (sn)"
+                  tooltip="T-X sn'den itibaren late winner taraması başlar."
+                  hint={`0 – 300 sn (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_secs}).`}
+                >
+                  <Input
+                    type="number"
+                    step="5"
+                    min="0"
+                    max="300"
+                    value={bonereaperLateWinnerSecs}
+                    onChange={(e) =>
+                      patch({ bonereaper_late_winner_secs: Number(e.target.value) })
+                    }
+                  />
+                </Field>
+                <Field
+                  label="Imbalance eşik (share)"
+                  tooltip="|UP-DN| bu eşiği aşarsa weaker side rebalance."
+                  hint={`0 – 10000 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_imbalance_thr}).`}
+                >
+                  <Input
+                    type="number"
+                    step="10"
+                    min="0"
+                    max="10000"
+                    value={bonereaperImbalanceThr}
+                    onChange={(e) =>
+                      patch({ bonereaper_imbalance_thr: Number(e.target.value) })
+                    }
+                  />
+                </Field>
+                <Field
+                  label="Max avg_sum"
+                  tooltip="new_avg + opp_avg bu değerin üstünde yeni alım yok (pyramid frenleyici)."
+                  hint={`0.50 – 2.00 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_max_avg_sum}).`}
+                >
+                  <Input
+                    type="number"
+                    step="0.05"
+                    min="0.5"
+                    max="2"
+                    value={bonereaperMaxAvgSum}
+                    onChange={(e) =>
+                      patch({ bonereaper_max_avg_sum: Number(e.target.value) })
+                    }
+                  />
+                </Field>
+              </div>
+              <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
+                <Field
+                  label="Long-shot USDC"
+                  tooltip="bid ≤ 0.30 trade büyüklüğü."
+                  hint={`default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_size_longshot_usdc}.`}
+                >
+                  <Input
+                    type="number"
+                    step="1"
+                    min="0"
+                    max="10000"
+                    value={bonereaperSizeLongshotUsdc}
+                    onChange={(e) =>
+                      patch({ bonereaper_size_longshot_usdc: Number(e.target.value) })
+                    }
+                  />
+                </Field>
+                <Field
+                  label="Mid USDC"
+                  tooltip="0.30 < bid ≤ 0.85 trade büyüklüğü."
+                  hint={`default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_size_mid_usdc}.`}
+                >
+                  <Input
+                    type="number"
+                    step="1"
+                    min="0"
+                    max="10000"
+                    value={bonereaperSizeMidUsdc}
+                    onChange={(e) =>
+                      patch({ bonereaper_size_mid_usdc: Number(e.target.value) })
+                    }
+                  />
+                </Field>
+                <Field
+                  label="High-conf USDC"
+                  tooltip="bid > 0.85 trade büyüklüğü."
+                  hint={`default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_size_high_usdc}.`}
+                >
+                  <Input
+                    type="number"
+                    step="1"
+                    min="0"
+                    max="10000"
+                    value={bonereaperSizeHighUsdc}
+                    onChange={(e) =>
+                      patch({ bonereaper_size_high_usdc: Number(e.target.value) })
+                    }
+                  />
+                </Field>
+              </div>
+            </details>
           </div>
 
-          <div className="space-y-2 rounded-md border border-border/40 bg-muted/10 px-3 py-2.5 text-xs leading-relaxed text-muted-foreground">
-            <p className="font-medium text-foreground">
-              Bonereaper — nasıl çalışır?
-            </p>
-            <ul className="list-disc space-y-1 pl-4">
-              <li>
-                <strong>Sinyal kullanmaz:</strong> Binance/OKX composite,
-                triple gate, profit lock, freeze, mid-band ban gibi sinyal
-                kuralları YOK (real bot da kullanmıyor).
-              </li>
-              <li>
-                <strong>Yön seçimi (orderbook-driven):</strong> Her tick
-                <code> |Δup_bid|</code> vs <code>|Δdn_bid|</code> karşılaştırılır;
-                bid&apos;i daha çok değişen tarafa taker BUY @ ask.
-              </li>
-              <li>
-                <strong>Imbalance rebalance:</strong>{" "}
-                <code>|up_filled − down_filled| &gt; thr</code> ise weaker side
-                seçilir (orderbook bypass).
-              </li>
-              <li>
-                <strong>Late winner injection:</strong> T-X sn kala max(bid) ≥
-                threshold ise winner tarafa <code>late_winner_usdc</code>
-                notional taker BUY (cooldown bypass). Real bot kapanışta bid
-                0.95+ tarafa $1000+ atıyor.
-              </li>
-              <li>
-                <strong>Dinamik size:</strong> bid bucket&apos;ına göre USDC
-                notional (long-shot / mid / high). Boyut ASK fiyatına bölünüp
-                yukarı yuvarlanır.
-              </li>
-              <li>
-                <strong>avg_sum yumuşak cap:</strong>{" "}
-                <code>new_avg + opp_avg &gt; max_avg_sum</code> ise yeni alım
-                yok (martingale güvenliği).
-              </li>
-              <li>
-                <strong>Cooldown:</strong> Ardışık BUY arasında{" "}
-                <code>buy_cooldown_ms</code> bekleme; late winner bunu bypass
-                eder.
-              </li>
-            </ul>
-          </div>
+          <ul className="list-disc space-y-1 rounded-md border border-border/40 bg-muted/10 px-4 py-2.5 pl-7 text-xs text-muted-foreground">
+            <li>
+              <strong>Yön seçimi:</strong> Her tick bid'i daha çok değişen tarafa
+              taker BUY @ ask. <code>|imbalance|</code> eşiği aşarsa weaker side.
+            </li>
+            <li>
+              <strong>Late winner:</strong> T-{STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_secs}s
+              kala max(bid) ≥ eşik ise winner tarafa <code>LW USDC</code>{" "}
+              tek atış (cooldown bypass).
+            </li>
+            <li>
+              <strong>Güvenlik:</strong> <code>max_avg_sum</code> aşırı pyramid'i
+              durdurur, <code>cooldown</code> spam'i engeller.
+            </li>
+          </ul>
         </div>
       )}
 

@@ -115,10 +115,19 @@ impl BonereaperEngine {
 
                 // ── LATE WINNER ─────────────────────────────────────────
                 // T ≤ X sn ve max(bid) ≥ thr → winner tarafa massive taker BUY.
+                // `lw_max_per_session` ile session başına sınırlı (default 1) —
+                // real bot ~0.2-0.33 big-bet/market pattern'i. 0 = sınırsız.
                 let lw_secs = p.bonereaper_late_winner_secs() as f64;
                 let lw_usdc = p.bonereaper_late_winner_usdc();
                 let lw_thr = p.bonereaper_late_winner_bid_thr();
-                if lw_usdc > 0.0 && lw_secs > 0.0 && to_end > 0.0 && to_end <= lw_secs {
+                let lw_max = p.bonereaper_lw_max_per_session();
+                let lw_quota_ok = lw_max == 0 || st.lw_injections < lw_max;
+                if lw_usdc > 0.0
+                    && lw_secs > 0.0
+                    && to_end > 0.0
+                    && to_end <= lw_secs
+                    && lw_quota_ok
+                {
                     let (winner, w_bid, w_ask) = if ctx.up_best_bid >= ctx.down_best_bid {
                         (Outcome::Up, ctx.up_best_bid, ctx.up_best_ask)
                     } else {

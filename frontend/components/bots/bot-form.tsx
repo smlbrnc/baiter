@@ -25,14 +25,17 @@ import { BotFormStrategyParamsSection } from "@/components/bots/bot-form-strateg
 export function BotForm() {
   const router = useRouter()
 
+  // LIVE_safe_500 defaults — backtest +%0.23 NET ROI, worst -$438
+  // (3-bot 468 session cross-validation, %2 taker fee dahil).
+  // Kullanıcı her zaman override edebilir; live'a geçmeden önce dryrun ile dene.
   const [form, setForm] = useState<CreateBotReq>({
     name: "",
     slug_pattern: slugPattern(DEFAULT_MARKET.asset, DEFAULT_MARKET.interval),
     strategy: "alis",
     run_mode: "dryrun",
-    order_usdc: 10,
-    min_price: 0.05,
-    max_price: 0.99,
+    order_usdc: 5,
+    min_price: 0.1,
+    max_price: 0.95,
     cooldown_threshold: 30000,
     start_offset: 1,
     strategy_params: {},

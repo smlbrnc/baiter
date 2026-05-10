@@ -179,10 +179,16 @@ pub struct StrategyParams {
     /// (real bot kapanışta bid 0.85+ olan tarafa giriyor).
     #[serde(default)]
     pub bonereaper_late_winner_bid_thr: Option<f64>,
-    /// Late winner trade büyüklüğü (USDC notional). Real bot 1000+ share @ 0.99
-    /// ($1000+) atıyor; biz konservatif default $100 ile başlıyoruz. 0 = kural KAPALI.
+    /// Late winner trade büyüklüğü (USDC notional). Real bot 3 log analizinde
+    /// big-bet medyan ~$1000-1300 (size 1000-1340 @ 0.99). Default: $1000.
+    /// 0 = kural KAPALI.
     #[serde(default)]
     pub bonereaper_late_winner_usdc: Option<f64>,
+    /// Session başına maksimum late winner injection sayısı. Real bot 3-5
+    /// market'te 1 big-bet yapıyor (sıklık ~0.2-0.33/market). Default: 1.
+    /// 0 = sınırsız (eski davranış, **spam riski**).
+    #[serde(default)]
+    pub bonereaper_lw_max_per_session: Option<u32>,
     /// |up_filled − down_filled| bu eşiği aşarsa weaker side rebalance trade'i
     /// yapılır (ob_driven yön seçimi bypass edilir). Default: 100 share.
     #[serde(default)]
@@ -192,13 +198,15 @@ pub struct StrategyParams {
     #[serde(default)]
     pub bonereaper_max_avg_sum: Option<f64>,
     /// Long-shot bid bucket (bid ≤ 0.30) trade büyüklüğü (USDC notional).
-    /// Default: 5.0 (real bot bu bantta küçük trade'ler).
+    /// Real bot bu bantta avg ~$15-20. Default: $15.
     #[serde(default)]
     pub bonereaper_size_longshot_usdc: Option<f64>,
-    /// Mid bid bucket (0.30 < bid ≤ 0.85) trade büyüklüğü (USDC). Default: 10.0.
+    /// Mid bid bucket (0.30 < bid ≤ 0.85) trade büyüklüğü (USDC). Real bot
+    /// avg size ~45 share × 0.55 = $25; mid bant ana trade alanı. Default: $25.
     #[serde(default)]
     pub bonereaper_size_mid_usdc: Option<f64>,
-    /// High-confidence bid bucket (bid > 0.85) trade büyüklüğü (USDC). Default: 15.0.
+    /// High-confidence bid bucket (bid > 0.85) trade büyüklüğü (USDC).
+    /// Real bot kapanış öncesi $30-50 trade'ler; LW'den ayrı normal akış. Default: $30.
     #[serde(default)]
     pub bonereaper_size_high_usdc: Option<f64>,
 
@@ -344,54 +352,67 @@ impl StrategyParams {
         self.pyramid_usdc.unwrap_or(fallback).max(0.0)
     }
 
-    // === Bonereaper accessors (yeni: order-book reactive martingale) ===
-    /// Ardışık BUY arası min bekleme (ms); 500–60000 sınırlı; default 2000.
+    // === Bonereaper accessors (G_lw_only — backtest optimum: ROI +%2.86) ===
+    // Felsefe: minimal scalp (normal trade'ler küçük) + tek büyük late winner
+    // inject. 3-bot cross-validation (468 session): tüm botlarda pozitif ROI.
+    /// Ardışık BUY arası min bekleme (ms); 500–60000 sınırlı; default 15000
+    /// (G_lw_only optimum: yavaş normal akış, late winner'a yer açar).
     pub fn bonereaper_buy_cooldown_ms(&self) -> u64 {
         self.bonereaper_buy_cooldown_ms
-            .unwrap_or(2000)
+            .unwrap_or(15_000)
             .clamp(500, 60_000)
     }
     /// Late winner penceresi (sn); 0–300 sınırlı; default 30. 0 = kural KAPALI.
     pub fn bonereaper_late_winner_secs(&self) -> u32 {
         self.bonereaper_late_winner_secs.unwrap_or(30).min(300)
     }
-    /// Late winner bid eşiği; 0.50–0.99 sınırlı; default 0.85.
+    /// Late winner bid eşiği; 0.50–0.99 sınırlı; default 0.90
+    /// (Polymarket extreme'lerde mükemmel kalibre — LessWrong 7661 markets).
     pub fn bonereaper_late_winner_bid_thr(&self) -> f64 {
         self.bonereaper_late_winner_bid_thr
-            .unwrap_or(0.85)
+            .unwrap_or(0.90)
             .clamp(0.50, 0.99)
     }
-    /// Late winner USDC notional; 0–10000 sınırlı; default 100. 0 = KAPALI.
+    /// Late winner USDC notional; 0–10000 sınırlı; default 2000
+    /// (G_lw_only: tüm para tek büyük inject'e — ROI maximizer). 0 = KAPALI.
     pub fn bonereaper_late_winner_usdc(&self) -> f64 {
         self.bonereaper_late_winner_usdc
-            .unwrap_or(100.0)
+            .unwrap_or(2000.0)
             .clamp(0.0, 10_000.0)
     }
-    /// Imbalance threshold (share); 0–10000 sınırlı; default 100.
+    /// Session başına max LW injection; 0–20 sınırlı; default 1.
+    /// 0 = sınırsız (spam riski; KULLANMA).
+    pub fn bonereaper_lw_max_per_session(&self) -> u32 {
+        self.bonereaper_lw_max_per_session.unwrap_or(1).min(20)
+    }
+    /// Imbalance threshold (share); 0–10000 sınırlı; default 200
+    /// (gevşek dengeleme — LW dominant strateji ile uyumlu).
     pub fn bonereaper_imbalance_thr(&self) -> f64 {
         self.bonereaper_imbalance_thr
-            .unwrap_or(100.0)
+            .unwrap_or(200.0)
             .clamp(0.0, 10_000.0)
     }
-    /// avg_sum yumuşak cap; 0.50–2.00 sınırlı; default 1.30.
+    /// avg_sum yumuşak cap; 0.50–2.00 sınırlı; default 1.10
+    /// (sıkı: pahalı pozisyon birikimini engelle, LW için bütçe bırak).
     pub fn bonereaper_max_avg_sum(&self) -> f64 {
         self.bonereaper_max_avg_sum
-            .unwrap_or(1.30)
+            .unwrap_or(1.10)
             .clamp(0.50, 2.00)
     }
-    /// Long-shot bucket USDC; 0–10000 sınırlı; default 5.
+    /// Long-shot bucket USDC; 0–10000 sınırlı; default 5
+    /// (minimal scalp; LW'e yer aç).
     pub fn bonereaper_size_longshot_usdc(&self) -> f64 {
         self.bonereaper_size_longshot_usdc
             .unwrap_or(5.0)
             .clamp(0.0, 10_000.0)
     }
-    /// Mid bucket USDC; 0–10000 sınırlı; default 10.
+    /// Mid bucket USDC; 0–10000 sınırlı; default 10 (minimal scalp).
     pub fn bonereaper_size_mid_usdc(&self) -> f64 {
         self.bonereaper_size_mid_usdc
             .unwrap_or(10.0)
             .clamp(0.0, 10_000.0)
     }
-    /// High-conf bucket USDC; 0–10000 sınırlı; default 15.
+    /// High-conf bucket USDC; 0–10000 sınırlı; default 15 (minimal scalp).
     pub fn bonereaper_size_high_usdc(&self) -> f64 {
         self.bonereaper_size_high_usdc
             .unwrap_or(15.0)
