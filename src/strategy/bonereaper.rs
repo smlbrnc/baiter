@@ -7,30 +7,38 @@
 //! her tick orderbook'a bakıp bid değişen tarafa BUY ediyor, kapanışa <30 sn
 //! kala kazanan tarafa massive inject yapıyor.
 //!
-//! ## Karar zinciri
+//! ## Karar zinciri (gerçek bot davranışına yakın v2)
 //!
 //! 1. **Window**: `now ∈ [start, end]`; OB ready.
-//! 2. **LATE WINNER** (`t_to_end ≤ secs && max(bid) ≥ thr`): winner tarafa
-//!    `late_winner_usdc` notional taker BUY @ ask. Cooldown bypass.
-//! 3. **Cooldown** (`now − last_buy < buy_cooldown_ms`): NoOp.
-//! 4. **İlk emir kapısı** (`!first_done`): `|up_bid − down_bid| < first_spread_min`
-//!    ise NoOp (sinyal henüz net değil); aksi halde yön = yüksek bid tarafı
-//!    (winner momentum). 0.0 = devre dışı.
-//! 5. **Yön seçimi (sonraki emirler)**:
-//!    - `|up_filled − down_filled| > imbalance_thr` → weaker side
+//! 2. **LATE WINNER (ana)** (`t_to_end ≤ late_winner_secs && max(bid) ≥ thr`):
+//!    winner tarafa `late_winner_usdc` notional taker BUY @ ask. Cooldown bypass.
+//! 3. **LATE WINNER (burst)** (`t_to_end ≤ lw_burst_secs && max(bid) ≥ thr`):
+//!    winner tarafa `lw_burst_usdc` ek dalga (multi-LW pyramid).
+//! 4. **Cooldown** (`now − last_buy < buy_cooldown_ms`): NoOp.
+//! 5. **İlk emir kapısı** (`!first_done`): `|up_bid − down_bid| < first_spread_min`
+//!    ise NoOp; aşılınca yön = yüksek bid tarafı (winner momentum).
+//! 6. **Yön seçimi (sonraki emirler)**:
+//!    - `|up_filled − down_filled| > imbalance_thr` → weaker side rebalance
 //!    - aksi: `|Δup_bid|` vs `|Δdn_bid|` → büyük delta tarafı (`ob_driven`)
-//! 6. **Min/max price filter**: `bid ∉ [min, max]` → NoOp.
-//! 7. **Dinamik size** (USDC notional bid bucket'ına göre):
-//!    - `bid ≤ 0.30`: longshot
-//!    - `0.30 < bid ≤ 0.85`: mid
-//!    - `bid > 0.85`: high
-//! 8. **avg_sum soft cap** (`new_avg + opp_avg > max_avg_sum`): NoOp.
-//! 9. **Place taker BUY @ ask** (GTC limit, anında fill).
+//! 7. **Yön bazlı min_price filter**: winner side `ctx.min_price`,
+//!    loser side `loser_min_price` (1¢ scalp).
+//! 8. **Martingale-down guard**: loser side avg fiyatı `avg_loser_max` aşarsa
+//!    o yöne `loser_scalp_usdc` minimal scalp ile sınırlı.
+//! 9. **Dinamik size**:
+//!    - Loser side scalp: `loser_scalp_usdc`
+//!    - Bid bucket'a göre: longshot / mid / high
+//!    - **Winner pyramid scaling**: `to_end < late_pyramid_secs && dir == winner`
+//!      ise size × `winner_size_factor`.
+//! 10. **avg_sum soft cap** (`new_avg + opp_avg > max_avg_sum`): NoOp (loser
+//!     scalp HARİÇ — scalp her zaman serbest).
+//! 11. **Place taker BUY @ ask** (GTC limit, anında fill).
 //!
 //! ## Reason etiketleri
 //!
-//! `bonereaper:buy:{up,down}` — normal BUY.
-//! `bonereaper:lw:{up,down}` — late winner injection.
+//! `bonereaper:buy:{up,down}` — normal BUY (winner pyramid dahil).
+//! `bonereaper:scalp:{up,down}` — loser side 1¢ long-shot scalp.
+//! `bonereaper:lw:{up,down}` — late winner ana dalga.
+//! `bonereaper:lwb:{up,down}` — late winner burst (2. dalga).
 
 use serde::{Deserialize, Serialize};
 
@@ -50,6 +58,56 @@ const fn reason_lw(dir: Outcome) -> &'static str {
     match dir {
         Outcome::Up => "bonereaper:lw:up",
         Outcome::Down => "bonereaper:lw:down",
+    }
+}
+
+#[inline]
+const fn reason_lw_burst(dir: Outcome) -> &'static str {
+    match dir {
+        Outcome::Up => "bonereaper:lwb:up",
+        Outcome::Down => "bonereaper:lwb:down",
+    }
+}
+
+#[inline]
+const fn reason_scalp(dir: Outcome) -> &'static str {
+    match dir {
+        Outcome::Up => "bonereaper:scalp:up",
+        Outcome::Down => "bonereaper:scalp:down",
+    }
+}
+
+/// Loser tarafın hangi outcome olduğunu döndürür: avg fiyatı düşük olan winner
+/// (real bot loser'ı 1¢-5¢ ucuz, winner'ı 0.5-0.95 pahalı tutuyor). İki taraf
+/// da boşsa veya eşitse → bid'i düşük olan loser sayılır.
+#[inline]
+fn loser_side(
+    avg_up: f64,
+    avg_dn: f64,
+    up_filled: f64,
+    dn_filled: f64,
+    up_bid: f64,
+    dn_bid: f64,
+) -> Outcome {
+    if up_filled <= 0.0 && dn_filled <= 0.0 {
+        // Henüz pozisyon yok → bid düşük olan loser kabul edilir.
+        if up_bid <= dn_bid {
+            Outcome::Up
+        } else {
+            Outcome::Down
+        }
+    } else if up_filled > 0.0 && dn_filled > 0.0 {
+        // İki tarafta pozisyon var → avg fiyatı yüksek olan winner.
+        if avg_up >= avg_dn {
+            Outcome::Down
+        } else {
+            Outcome::Up
+        }
+    } else if up_filled > 0.0 {
+        // Sadece UP pozisyonu var → DOWN loser kandidatı (boşsa ucuza topla).
+        Outcome::Down
+    } else {
+        Outcome::Up
     }
 }
 
@@ -120,38 +178,60 @@ impl BonereaperEngine {
                     return (BonereaperState::Active(st), Decision::NoOp);
                 }
 
-                // ── LATE WINNER ─────────────────────────────────────────
-                // T ≤ X sn ve max(bid) ≥ thr → winner tarafa massive taker BUY.
-                // `lw_max_per_session` ile session başına sınırlı (default 1) —
-                // real bot ~0.2-0.33 big-bet/market pattern'i. 0 = sınırsız.
+                // ── LATE WINNER (ana + burst) ───────────────────────────
+                // Multi-LW pyramid: ana dalga T-late_winner_secs, burst dalga
+                // T-lw_burst_secs. Her iki dalga `lw_max_per_session` quota'sı
+                // ile sınırlı; cooldown bypass.
                 let lw_secs = p.bonereaper_late_winner_secs() as f64;
                 let lw_usdc = p.bonereaper_late_winner_usdc();
                 let lw_thr = p.bonereaper_late_winner_bid_thr();
                 let lw_max = p.bonereaper_lw_max_per_session();
+                let lw_burst_secs = p.bonereaper_lw_burst_secs() as f64;
+                let lw_burst_usdc = p.bonereaper_lw_burst_usdc();
                 let lw_quota_ok = lw_max == 0 || st.lw_injections < lw_max;
-                if lw_usdc > 0.0
-                    && lw_secs > 0.0
-                    && to_end > 0.0
-                    && to_end <= lw_secs
-                    && lw_quota_ok
-                {
-                    let (winner, w_bid, w_ask) = if ctx.up_best_bid >= ctx.down_best_bid {
-                        (Outcome::Up, ctx.up_best_bid, ctx.up_best_ask)
+
+                if lw_quota_ok && to_end > 0.0 {
+                    // Burst dalga (daha öncelikli, daha geç tetiklenir)
+                    let burst_active = lw_burst_usdc > 0.0
+                        && lw_burst_secs > 0.0
+                        && to_end <= lw_burst_secs;
+                    let main_active = lw_usdc > 0.0
+                        && lw_secs > 0.0
+                        && to_end <= lw_secs
+                        && !burst_active;
+
+                    let lw_kind = if burst_active {
+                        Some((lw_burst_usdc, true))
+                    } else if main_active {
+                        Some((lw_usdc, false))
                     } else {
-                        (Outcome::Down, ctx.down_best_bid, ctx.down_best_ask)
+                        None
                     };
-                    if w_bid >= lw_thr && w_ask > 0.0 {
-                        let size = (lw_usdc / w_ask).ceil();
-                        if let Some(o) = make_buy(ctx, winner, w_ask, size, reason_lw(winner)) {
-                            st.last_buy_ms = ctx.now_ms;
-                            st.lw_injections = st.lw_injections.saturating_add(1);
-                            st.last_up_bid = ctx.up_best_bid;
-                            st.last_dn_bid = ctx.down_best_bid;
-                            st.first_done = true;
-                            return (
-                                BonereaperState::Active(st),
-                                Decision::PlaceOrders(vec![o]),
-                            );
+
+                    if let Some((usdc, is_burst)) = lw_kind {
+                        let (winner, w_bid, w_ask) = if ctx.up_best_bid >= ctx.down_best_bid {
+                            (Outcome::Up, ctx.up_best_bid, ctx.up_best_ask)
+                        } else {
+                            (Outcome::Down, ctx.down_best_bid, ctx.down_best_ask)
+                        };
+                        if w_bid >= lw_thr && w_ask > 0.0 {
+                            let size = (usdc / w_ask).ceil();
+                            let reason = if is_burst {
+                                reason_lw_burst(winner)
+                            } else {
+                                reason_lw(winner)
+                            };
+                            if let Some(o) = make_buy(ctx, winner, w_ask, size, reason) {
+                                st.last_buy_ms = ctx.now_ms;
+                                st.lw_injections = st.lw_injections.saturating_add(1);
+                                st.last_up_bid = ctx.up_best_bid;
+                                st.last_dn_bid = ctx.down_best_bid;
+                                st.first_done = true;
+                                return (
+                                    BonereaperState::Active(st),
+                                    Decision::PlaceOrders(vec![o]),
+                                );
+                            }
                         }
                     }
                 }
@@ -218,27 +298,31 @@ impl BonereaperEngine {
                     return (BonereaperState::Active(st), Decision::NoOp);
                 }
 
-                // Min/max price filter (session config)
-                if bid < ctx.min_price || bid > ctx.max_price {
-                    return (BonereaperState::Active(st), Decision::NoOp);
-                }
-
-                // Dinamik size
-                let usdc = if bid <= 0.30 {
-                    p.bonereaper_size_longshot_usdc()
-                } else if bid <= 0.85 {
-                    p.bonereaper_size_mid_usdc()
-                } else {
-                    p.bonereaper_size_high_usdc()
-                };
-                if usdc <= 0.0 {
-                    return (BonereaperState::Active(st), Decision::NoOp);
-                }
-                let size = (usdc / ask).ceil();
-
-                // avg_sum soft cap — yeni alımdan SONRA cur_avg + opp_avg
-                let max_avg_sum = p.bonereaper_max_avg_sum();
+                // Loser/winner taraf belirle (size scaling + min_price + scalp)
                 let metrics = ctx.metrics;
+                let loser = loser_side(
+                    metrics.avg_up,
+                    metrics.avg_down,
+                    metrics.up_filled,
+                    metrics.down_filled,
+                    ctx.up_best_bid,
+                    ctx.down_best_bid,
+                );
+                let is_loser_dir = dir == loser;
+
+                // Yön bazlı min_price (loser side 1¢ scalp serbest)
+                let effective_min = if is_loser_dir {
+                    p.bonereaper_loser_min_price().min(ctx.min_price)
+                } else {
+                    ctx.min_price
+                };
+                if bid < effective_min || bid > ctx.max_price {
+                    return (BonereaperState::Active(st), Decision::NoOp);
+                }
+
+                // Martingale-down guard: loser tarafta avg fiyatı yüksekse
+                // (pahalı down-pyramid) sadece minimal scalp yap.
+                let avg_loser_max = p.bonereaper_avg_loser_max();
                 let (cur_filled, cur_avg, opp_filled, opp_avg) = match dir {
                     Outcome::Up => (
                         metrics.up_filled,
@@ -253,7 +337,41 @@ impl BonereaperEngine {
                         metrics.avg_up,
                     ),
                 };
-                if opp_filled > 0.0 {
+                let scalp_only = is_loser_dir && cur_filled > 0.0 && cur_avg > avg_loser_max;
+
+                // Dinamik size hesabı
+                let scalp_usdc = p.bonereaper_loser_scalp_usdc();
+                let usdc = if scalp_only && scalp_usdc > 0.0 {
+                    // Pahalı martingale-down → sadece $1 bilet
+                    scalp_usdc
+                } else if is_loser_dir && bid < ctx.min_price && scalp_usdc > 0.0 {
+                    // Loser side 1¢-9¢ band (winner için kapalı), scalp boyutu
+                    scalp_usdc
+                } else {
+                    let base = if bid <= 0.30 {
+                        p.bonereaper_size_longshot_usdc()
+                    } else if bid <= 0.85 {
+                        p.bonereaper_size_mid_usdc()
+                    } else {
+                        p.bonereaper_size_high_usdc()
+                    };
+                    // Winner pyramid scaling: T-late_pyramid_secs içinde winner
+                    // tarafa size çarpanı uygula.
+                    let lp_secs = p.bonereaper_late_pyramid_secs() as f64;
+                    if !is_loser_dir && lp_secs > 0.0 && to_end > 0.0 && to_end <= lp_secs {
+                        base * p.bonereaper_winner_size_factor()
+                    } else {
+                        base
+                    }
+                };
+                if usdc <= 0.0 {
+                    return (BonereaperState::Active(st), Decision::NoOp);
+                }
+                let size = (usdc / ask).ceil();
+
+                // avg_sum soft cap — loser scalp HARİÇ (scalp her zaman serbest)
+                if !scalp_only && opp_filled > 0.0 {
+                    let max_avg_sum = p.bonereaper_max_avg_sum();
                     let new_avg = if cur_filled > 0.0 {
                         (cur_avg * cur_filled + ask * size) / (cur_filled + size)
                     } else {
@@ -264,7 +382,12 @@ impl BonereaperEngine {
                     }
                 }
 
-                if let Some(o) = make_buy(ctx, dir, ask, size, reason_buy(dir)) {
+                let reason = if scalp_only || (is_loser_dir && bid < ctx.min_price) {
+                    reason_scalp(dir)
+                } else {
+                    reason_buy(dir)
+                };
+                if let Some(o) = make_buy(ctx, dir, ask, size, reason) {
                     st.last_buy_ms = ctx.now_ms;
                     st.first_done = true;
                     return (

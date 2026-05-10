@@ -142,6 +142,40 @@ export interface StrategyParams {
   /** High-confidence bid bucket (bid > 0.85) trade büyüklüğü (USDC). Default 15. */
   bonereaper_size_high_usdc?: number | null
 
+  // ── Bonereaper - Aşama 3 (loser long-shot scalp) ─────────────────────────
+  /**
+   * Loser side için minimum bid eşiği (1¢ scalp). Winner tarafı genel
+   * `min_price` ile sınırlı. Default 0.01 (real bot 0.01–0.05'te bilet topluyor).
+   */
+  bonereaper_loser_min_price?: number | null
+  /** Loser side scalp USDC notional. Default $1. 0 = scalp KAPALI. */
+  bonereaper_loser_scalp_usdc?: number | null
+
+  // ── Bonereaper - Aşama 4 (winner pyramid scaling) ────────────────────────
+  /**
+   * T-X sn'den itibaren winner tarafa size çarpanı uygula. Default 100 sn.
+   * 0 = scaling KAPALI.
+   */
+  bonereaper_late_pyramid_secs?: number | null
+  /**
+   * Winner tarafı için size çarpanı (T < late_pyramid_secs). Default 2.0
+   * (real bot end-game 2-5× büyüklük).
+   */
+  bonereaper_winner_size_factor?: number | null
+
+  // ── Bonereaper - Aşama 5 (multi-LW burst) ────────────────────────────────
+  /** LW burst pencere (sn). T-X kala 2. dalga LW. Default 12. 0 = burst KAPALI. */
+  bonereaper_lw_burst_secs?: number | null
+  /** LW burst USDC. Default $200 (ana $500 LW'nin yarısı). */
+  bonereaper_lw_burst_usdc?: number | null
+
+  // ── Bonereaper - Aşama 6 (martingale-down guard) ─────────────────────────
+  /**
+   * Loser side avg fiyatı bu eşiği aşarsa o yöne sadece minimal scalp ($1).
+   * Pahalı down-pyramid birikimini engeller. Default 0.50.
+   */
+  bonereaper_avg_loser_max?: number | null
+
   // ── Gravie (Bot 66 davranış kopyası) ─────────────────────────────────────
   /**
    * Karar tick aralığı (sn). Bot 66 ortalama inter-arrival 4-5 sn.
@@ -521,20 +555,31 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   elis_max_order_age_ms: 30000,
   elis_imp_fail_cooldown_ms: 30000,
   elis_imbalance_taker_threshold: 100,
-  // Bonereaper (LIVE_safe_500 — fee dahil NET ROI +%0.23, worst -$438)
-  // Backend optimum G_lw_only $2000 LW, ama UI safe live test default $500 LW.
-  // Backtest sonuçları ile kullanıcı bilinçli olarak büyütebilir.
-  bonereaper_buy_cooldown_ms: 15000,
+  // Bonereaper (RealBot v2 — gerçek 0xeebde7a0... cüzdan davranışına yakın)
+  // 3 örnek session backtest: trade frekansı 14× artış, multi-LW pyramid,
+  // loser 1¢ scalp, winner pyramid scaling, SAF guard.
+  bonereaper_buy_cooldown_ms: 3000,
   bonereaper_late_winner_secs: 30,
   bonereaper_late_winner_bid_thr: 0.92,
   bonereaper_late_winner_usdc: 500,
-  bonereaper_lw_max_per_session: 1,
-  bonereaper_imbalance_thr: 200,
+  bonereaper_lw_max_per_session: 5,
+  bonereaper_imbalance_thr: 50,
   bonereaper_max_avg_sum: 1.05,
   bonereaper_first_spread_min: 0.02,
   bonereaper_size_longshot_usdc: 5,
   bonereaper_size_mid_usdc: 10,
   bonereaper_size_high_usdc: 15,
+  // Aşama 3 — loser long-shot scalp
+  bonereaper_loser_min_price: 0.01,
+  bonereaper_loser_scalp_usdc: 1,
+  // Aşama 4 — winner pyramid scaling
+  bonereaper_late_pyramid_secs: 100,
+  bonereaper_winner_size_factor: 2.0,
+  // Aşama 5 — multi-LW burst
+  bonereaper_lw_burst_secs: 12,
+  bonereaper_lw_burst_usdc: 200,
+  // Aşama 6 — martingale-down guard
+  bonereaper_avg_loser_max: 0.5,
   // Gravie (Bot 66 davranış kopyası — optimum kalibre)
   gravie_tick_interval_secs: 5,
   gravie_buy_cooldown_ms: 4000,
@@ -583,6 +628,20 @@ export function mergeBonereaperStrategyDefaults(
       p.bonereaper_size_mid_usdc ?? d.bonereaper_size_mid_usdc,
     bonereaper_size_high_usdc:
       p.bonereaper_size_high_usdc ?? d.bonereaper_size_high_usdc,
+    bonereaper_loser_min_price:
+      p.bonereaper_loser_min_price ?? d.bonereaper_loser_min_price,
+    bonereaper_loser_scalp_usdc:
+      p.bonereaper_loser_scalp_usdc ?? d.bonereaper_loser_scalp_usdc,
+    bonereaper_late_pyramid_secs:
+      p.bonereaper_late_pyramid_secs ?? d.bonereaper_late_pyramid_secs,
+    bonereaper_winner_size_factor:
+      p.bonereaper_winner_size_factor ?? d.bonereaper_winner_size_factor,
+    bonereaper_lw_burst_secs:
+      p.bonereaper_lw_burst_secs ?? d.bonereaper_lw_burst_secs,
+    bonereaper_lw_burst_usdc:
+      p.bonereaper_lw_burst_usdc ?? d.bonereaper_lw_burst_usdc,
+    bonereaper_avg_loser_max:
+      p.bonereaper_avg_loser_max ?? d.bonereaper_avg_loser_max,
   }
 }
 

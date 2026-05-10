@@ -139,6 +139,27 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const bonereaperSizeHighUsdc =
     params.bonereaper_size_high_usdc ??
     STRATEGY_PARAMS_DEFAULTS.bonereaper_size_high_usdc
+  const bonereaperLoserMinPrice =
+    params.bonereaper_loser_min_price ??
+    STRATEGY_PARAMS_DEFAULTS.bonereaper_loser_min_price
+  const bonereaperLoserScalpUsdc =
+    params.bonereaper_loser_scalp_usdc ??
+    STRATEGY_PARAMS_DEFAULTS.bonereaper_loser_scalp_usdc
+  const bonereaperLatePyramidSecs =
+    params.bonereaper_late_pyramid_secs ??
+    STRATEGY_PARAMS_DEFAULTS.bonereaper_late_pyramid_secs
+  const bonereaperWinnerSizeFactor =
+    params.bonereaper_winner_size_factor ??
+    STRATEGY_PARAMS_DEFAULTS.bonereaper_winner_size_factor
+  const bonereaperLwBurstSecs =
+    params.bonereaper_lw_burst_secs ??
+    STRATEGY_PARAMS_DEFAULTS.bonereaper_lw_burst_secs
+  const bonereaperLwBurstUsdc =
+    params.bonereaper_lw_burst_usdc ??
+    STRATEGY_PARAMS_DEFAULTS.bonereaper_lw_burst_usdc
+  const bonereaperAvgLoserMax =
+    params.bonereaper_avg_loser_max ??
+    STRATEGY_PARAMS_DEFAULTS.bonereaper_avg_loser_max
 
   return (
     <div className="space-y-3">
@@ -701,6 +722,127 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                   />
                 </Field>
               </div>
+
+              {/* RealBot v2: loser scalp + winner pyramid + LW burst + martingale-down guard */}
+              <div className="mt-4 border-t border-border/40 pt-3">
+                <p className="mb-2 text-xs font-medium text-muted-foreground">
+                  RealBot v2 — gerçek bot davranışı
+                </p>
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                  <Field
+                    label="Loser min bid (1¢ scalp)"
+                    tooltip="Kaybeden taraf için min bid eşiği. Real bot 0.01-0.05 fiyatlarda bilet topluyor. Winner için genel min_price geçerli."
+                    hint={`0.001 – 0.10 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_loser_min_price}).`}
+                  >
+                    <Input
+                      type="number"
+                      step="0.005"
+                      min="0.001"
+                      max="0.1"
+                      value={bonereaperLoserMinPrice}
+                      onChange={(e) =>
+                        patch({ bonereaper_loser_min_price: Number(e.target.value) })
+                      }
+                    />
+                  </Field>
+                  <Field
+                    label="Loser scalp USDC"
+                    tooltip="Kaybeden tarafa kuruşluk bilet boyutu. 0 = scalp KAPALI."
+                    hint={`0 – 10 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_loser_scalp_usdc}).`}
+                  >
+                    <Input
+                      type="number"
+                      step="0.5"
+                      min="0"
+                      max="10"
+                      value={bonereaperLoserScalpUsdc}
+                      onChange={(e) =>
+                        patch({ bonereaper_loser_scalp_usdc: Number(e.target.value) })
+                      }
+                    />
+                  </Field>
+                  <Field
+                    label="Late pyramid sn"
+                    tooltip="T-X sn'den itibaren winner tarafa size çarpanı uygula. 0 = scaling KAPALI."
+                    hint={`0 – 300 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_late_pyramid_secs}).`}
+                  >
+                    <Input
+                      type="number"
+                      step="10"
+                      min="0"
+                      max="300"
+                      value={bonereaperLatePyramidSecs}
+                      onChange={(e) =>
+                        patch({ bonereaper_late_pyramid_secs: Number(e.target.value) })
+                      }
+                    />
+                  </Field>
+                  <Field
+                    label="Winner size factor"
+                    tooltip="Late pyramid penceresinde winner size çarpanı."
+                    hint={`1.0 – 10.0 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_winner_size_factor}).`}
+                  >
+                    <Input
+                      type="number"
+                      step="0.5"
+                      min="1"
+                      max="10"
+                      value={bonereaperWinnerSizeFactor}
+                      onChange={(e) =>
+                        patch({ bonereaper_winner_size_factor: Number(e.target.value) })
+                      }
+                    />
+                  </Field>
+                  <Field
+                    label="LW burst sn"
+                    tooltip="T-X kala 2. dalga LW. 0 = burst KAPALI. Ana late_winner_secs > burst > 0 olmalı."
+                    hint={`0 – 60 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_lw_burst_secs}).`}
+                  >
+                    <Input
+                      type="number"
+                      step="2"
+                      min="0"
+                      max="60"
+                      value={bonereaperLwBurstSecs}
+                      onChange={(e) =>
+                        patch({ bonereaper_lw_burst_secs: Number(e.target.value) })
+                      }
+                    />
+                  </Field>
+                  <Field
+                    label="LW burst USDC"
+                    tooltip="Burst dalga trade büyüklüğü."
+                    hint={`0 – 10000 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_lw_burst_usdc}).`}
+                  >
+                    <Input
+                      type="number"
+                      step="50"
+                      min="0"
+                      max="10000"
+                      value={bonereaperLwBurstUsdc}
+                      onChange={(e) =>
+                        patch({ bonereaper_lw_burst_usdc: Number(e.target.value) })
+                      }
+                    />
+                  </Field>
+                  <Field
+                    label="Avg loser max"
+                    tooltip="Loser tarafta avg fiyat bu eşiği aşarsa o yöne sadece minimal scalp ($1). Pahalı martingale-down engeli."
+                    hint={`0.10 – 0.95 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_avg_loser_max}).`}
+                  >
+                    <Input
+                      type="number"
+                      step="0.05"
+                      min="0.1"
+                      max="0.95"
+                      value={bonereaperAvgLoserMax}
+                      onChange={(e) =>
+                        patch({ bonereaper_avg_loser_max: Number(e.target.value) })
+                      }
+                    />
+                  </Field>
+                </div>
+              </div>
             </details>
           </div>
 
@@ -711,17 +853,28 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
               olana kadar bekler; sonra yüksek bid tarafına BUY (winner momentum).
             </li>
             <li>
-              <strong>Sonraki emirler:</strong> Her tick bid'i daha çok değişen
-              tarafa taker BUY @ ask. <code>|imbalance|</code> eşiği aşarsa weaker side.
+              <strong>Loser scalp:</strong> Kaybeden tarafa{" "}
+              <code>{STRATEGY_PARAMS_DEFAULTS.bonereaper_loser_min_price}</code>+
+              fiyatlardan <code>{STRATEGY_PARAMS_DEFAULTS.bonereaper_loser_scalp_usdc}</code>$
+              kuruşluk bilet topla. <code>|imbalance|</code> eşiği aşarsa weaker side rebalance.
             </li>
             <li>
-              <strong>Late winner:</strong> T-{STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_secs}s
-              kala max(bid) ≥ eşik ise winner tarafa <code>LW USDC</code>{" "}
-              tek atış (cooldown bypass).
+              <strong>Winner pyramid:</strong> T-
+              {STRATEGY_PARAMS_DEFAULTS.bonereaper_late_pyramid_secs}s'den itibaren
+              winner tarafa size ×{STRATEGY_PARAMS_DEFAULTS.bonereaper_winner_size_factor}.
             </li>
             <li>
-              <strong>Güvenlik:</strong> <code>max_avg_sum</code> aşırı pyramid'i
-              durdurur, <code>cooldown</code> spam'i engeller.
+              <strong>Multi-LW:</strong> T-
+              {STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_secs}s ana dalga (
+              <code>LW USDC</code>) + T-
+              {STRATEGY_PARAMS_DEFAULTS.bonereaper_lw_burst_secs}s burst (
+              <code>LW burst USDC</code>). Toplam{" "}
+              <code>{STRATEGY_PARAMS_DEFAULTS.bonereaper_lw_max_per_session}</code> dalga.
+            </li>
+            <li>
+              <strong>Güvenlik:</strong> <code>avg_loser_max</code> pahalı
+              martingale-down'u durdurur, <code>max_avg_sum</code> pyramid'i,{" "}
+              <code>cooldown</code> spam'i engeller.
             </li>
           </ul>
         </div>

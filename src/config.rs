@@ -167,8 +167,9 @@ pub struct StrategyParams {
     // === Bonereaper parametreleri ===
     // Strateji: Polymarket "Bonereaper" wallet (0xeebde7a0...) davranış kopyası.
     // Order-book reactive martingale + late winner injection. Sinyal kullanmaz.
-    /// Ardışık BUY emirleri arası minimum bekleme (ms). Real bot ~3-5 sn aralık
-    /// gözlendi; default 2000 ms (~30 trade/dk).
+    /// Ardışık BUY emirleri arası minimum bekleme (ms). Real bot 3 örnek
+    /// session'da 1.5–4 sn aralık gözlendi (gerçek 17–40 trade/dk). Default
+    /// 3000 ms (~20 trade/dk). Alt clamp 1000 ms (sub-sec spam koruması).
     #[serde(default)]
     pub bonereaper_buy_cooldown_ms: Option<u64>,
     /// Late winner injection penceresi (sn). T-X anında bid≥thr olan tarafa
@@ -190,7 +191,9 @@ pub struct StrategyParams {
     #[serde(default)]
     pub bonereaper_lw_max_per_session: Option<u32>,
     /// |up_filled − down_filled| bu eşiği aşarsa weaker side rebalance trade'i
-    /// yapılır (ob_driven yön seçimi bypass edilir). Default: 100 share.
+    /// yapılır (ob_driven yön seçimi bypass edilir). Default 50 share — bot
+    /// 101 örnek 4908'de imbalance 199 oldu, eski 200 eşik tetiklenmedi → SAF
+    /// tam kayıp. Düşük eşik SAF riskini erken hedge ile keser.
     #[serde(default)]
     pub bonereaper_imbalance_thr: Option<f64>,
     /// avg_sum yumuşak cap. `new_avg + opp_avg > X` ise yeni alım yok.
@@ -218,6 +221,44 @@ pub struct StrategyParams {
     /// Real bot kapanış öncesi $30-50 trade'ler; LW'den ayrı normal akış. Default: $30.
     #[serde(default)]
     pub bonereaper_size_high_usdc: Option<f64>,
+
+    // === Bonereaper - Aşama 3 (loser long-shot scalp) ===
+    /// Kaybeden taraf için minimum bid eşiği (1¢ scalp). Winner tarafı yine
+    /// genel `min_price` ile sınırlı. Default 0.01 (real bot 0.01–0.05'te
+    /// yüzlerce share bilet topluyor).
+    #[serde(default)]
+    pub bonereaper_loser_min_price: Option<f64>,
+    /// Kaybeden taraf 1¢ scalp USDC notional. Default $1 (kuruşluk bilet).
+    /// 0 = scalp KAPALI.
+    #[serde(default)]
+    pub bonereaper_loser_scalp_usdc: Option<f64>,
+
+    // === Bonereaper - Aşama 4 (winner pyramid scaling) ===
+    /// T-X sn'den itibaren winner tarafa size çarpanı uygula. Default 100 sn.
+    /// 0 = scaling KAPALI (eski sabit bucket).
+    #[serde(default)]
+    pub bonereaper_late_pyramid_secs: Option<u32>,
+    /// Winner tarafı için size çarpanı (T < late_pyramid_secs olunca).
+    /// Default 2.0 (real bot end-game'de 2-5× büyüklükte trade'ler).
+    #[serde(default)]
+    pub bonereaper_winner_size_factor: Option<f64>,
+
+    // === Bonereaper - Aşama 5 (multi-LW burst) ===
+    /// Ek LW burst tetikleyici penceresi (sn). T-X sn kala 2. dalga LW.
+    /// Default 12 (real bot T-12s civarında ek pyramid). 0 = burst KAPALI.
+    #[serde(default)]
+    pub bonereaper_lw_burst_secs: Option<u32>,
+    /// Burst LW USDC notional. Default $200 (ana $500 LW'nin yarısı).
+    #[serde(default)]
+    pub bonereaper_lw_burst_usdc: Option<f64>,
+
+    // === Bonereaper - Aşama 6 (martingale-down guard) ===
+    /// Loser side avg fiyatı bu eşiği aşarsa o yöne sadece minimal scalp
+    /// ($1) yapılır. Pahalı martingale-down birikimini engeller. Default 0.50.
+    /// Real bot loser tarafa avg ~0.05'te ucuz alıyor; bizde avg 0.5+ olunca
+    /// her yeni alım üst paritede pahalı kayıp.
+    #[serde(default)]
+    pub bonereaper_avg_loser_max: Option<f64>,
 
     // === Gravie (Bot 66 davranış kopyası) ===
     /// Karar tick aralığı (sn). Bot 66 ortalama inter-arrival 4-5 sn.
@@ -364,12 +405,13 @@ impl StrategyParams {
     // === Bonereaper accessors (G_lw_only — backtest optimum: ROI +%2.86) ===
     // Felsefe: minimal scalp (normal trade'ler küçük) + tek büyük late winner
     // inject. 3-bot cross-validation (468 session): tüm botlarda pozitif ROI.
-    /// Ardışık BUY arası min bekleme (ms); 500–60000 sınırlı; default 15000
-    /// (G_lw_only optimum: yavaş normal akış, late winner'a yer açar).
+    /// Ardışık BUY arası min bekleme (ms); 1000–60000 sınırlı; default 3000.
+    /// Real bot 3 örnek session'da ~1.5–4 sn aralık yaptı. Eski 15s default
+    /// 14× daha az trade üretiyordu (bot 101: 30 trade vs gerçek ~600).
     pub fn bonereaper_buy_cooldown_ms(&self) -> u64 {
         self.bonereaper_buy_cooldown_ms
-            .unwrap_or(15_000)
-            .clamp(500, 60_000)
+            .unwrap_or(3_000)
+            .clamp(1_000, 60_000)
     }
     /// Late winner penceresi (sn); 0–300 sınırlı; default 30. 0 = kural KAPALI.
     pub fn bonereaper_late_winner_secs(&self) -> u32 {
@@ -389,16 +431,17 @@ impl StrategyParams {
             .unwrap_or(2000.0)
             .clamp(0.0, 10_000.0)
     }
-    /// Session başına max LW injection; 0–20 sınırlı; default 1.
-    /// 0 = sınırsız (spam riski; KULLANMA).
+    /// Session başına max LW injection; 0–20 sınırlı; default 5 (multi-LW
+    /// için: ana T-30s + burst T-12s + 3 emniyet). 0 = sınırsız.
     pub fn bonereaper_lw_max_per_session(&self) -> u32 {
-        self.bonereaper_lw_max_per_session.unwrap_or(1).min(20)
+        self.bonereaper_lw_max_per_session.unwrap_or(5).min(20)
     }
-    /// Imbalance threshold (share); 0–10000 sınırlı; default 200
-    /// (gevşek dengeleme — LW dominant strateji ile uyumlu).
+    /// Imbalance threshold (share); 0–10000 sınırlı; default 50.
+    /// Düşük eşik = SAF kayıp riskini erken hedge ile keser. Bot 101 örnek
+    /// 4908'de imb 199 oldu, eski 200 eşik tetiklenmedi → tam loss.
     pub fn bonereaper_imbalance_thr(&self) -> f64 {
         self.bonereaper_imbalance_thr
-            .unwrap_or(200.0)
+            .unwrap_or(50.0)
             .clamp(0.0, 10_000.0)
     }
     /// avg_sum yumuşak cap; 0.50–2.00 sınırlı; default 1.05.
@@ -435,6 +478,51 @@ impl StrategyParams {
         self.bonereaper_size_high_usdc
             .unwrap_or(15.0)
             .clamp(0.0, 10_000.0)
+    }
+    /// Loser side min bid eşiği; 0.001–0.10 sınırlı; default 0.01 (1¢ scalp).
+    /// Real bot 0.01–0.05 fiyatlarında bilet topluyor.
+    pub fn bonereaper_loser_min_price(&self) -> f64 {
+        self.bonereaper_loser_min_price
+            .unwrap_or(0.01)
+            .clamp(0.001, 0.10)
+    }
+    /// Loser side scalp USDC; 0–10 sınırlı; default $1 (kuruşluk bilet).
+    /// 0 = scalp KAPALI.
+    pub fn bonereaper_loser_scalp_usdc(&self) -> f64 {
+        self.bonereaper_loser_scalp_usdc
+            .unwrap_or(1.0)
+            .clamp(0.0, 10.0)
+    }
+    /// Late pyramid penceresi (sn); 0–300 sınırlı; default 100. T-X sn'den
+    /// sonra winner tarafa size çarpanı uygula. 0 = scaling KAPALI.
+    pub fn bonereaper_late_pyramid_secs(&self) -> u32 {
+        self.bonereaper_late_pyramid_secs.unwrap_or(100).min(300)
+    }
+    /// Winner pyramid size çarpanı; 1.0–10.0 sınırlı; default 2.0
+    /// (real bot end-game 2-5× büyüklük).
+    pub fn bonereaper_winner_size_factor(&self) -> f64 {
+        self.bonereaper_winner_size_factor
+            .unwrap_or(2.0)
+            .clamp(1.0, 10.0)
+    }
+    /// LW burst pencere (sn); 0–60 sınırlı; default 12. T-X kala 2. dalga LW.
+    /// 0 = burst KAPALI. Ana LW (`late_winner_secs`) > burst > 0 olmalı.
+    pub fn bonereaper_lw_burst_secs(&self) -> u32 {
+        self.bonereaper_lw_burst_secs.unwrap_or(12).min(60)
+    }
+    /// LW burst USDC; 0–10000 sınırlı; default 200.
+    pub fn bonereaper_lw_burst_usdc(&self) -> f64 {
+        self.bonereaper_lw_burst_usdc
+            .unwrap_or(200.0)
+            .clamp(0.0, 10_000.0)
+    }
+    /// Loser avg fiyat üst sınırı (martingale-down guard); 0.10–0.95 sınırlı;
+    /// default 0.50. Loser side avg bu eşiği aşarsa o yöne sadece minimal
+    /// scalp ($1). Pahalı down-pyramid birikimini engeller.
+    pub fn bonereaper_avg_loser_max(&self) -> f64 {
+        self.bonereaper_avg_loser_max
+            .unwrap_or(0.50)
+            .clamp(0.10, 0.95)
     }
 }
 
