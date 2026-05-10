@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import type { MarketAsset, MarketInterval } from "@/lib/market"
 import { ASSETS, INTERVALS, previewSlug, slugPattern } from "@/lib/market"
-import type { CreateBotReq } from "@/lib/types"
+import { mergeBonereaperStrategyDefaults, type CreateBotReq } from "@/lib/types"
 import { cn } from "@/lib/utils"
 import { STRATEGY_OPTIONS } from "@/components/bots/bot-form-constants"
 import {
@@ -231,6 +231,10 @@ export function BotFormMarketSection({
                           elis_imbalance_taker_threshold:
                             p.elis_imbalance_taker_threshold ?? 100,
                         }
+                      }
+                      if (id === "bonereaper") {
+                        const p = f.strategy_params ?? {}
+                        next.strategy_params = mergeBonereaperStrategyDefaults(p)
                       }
                       return next
                     })

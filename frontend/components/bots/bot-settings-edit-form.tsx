@@ -5,7 +5,12 @@ import { CheckCircle2, Save } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { Separator } from "@/components/ui/separator"
 import { api } from "@/lib/api"
-import type { BotRow, CreateBotReq, UpdateBotReq } from "@/lib/types"
+import {
+  mergeBonereaperStrategyDefaults,
+  type BotRow,
+  type CreateBotReq,
+  type UpdateBotReq,
+} from "@/lib/types"
 import { CARD_SHELL_CLASS } from "@/lib/ui-constants"
 import {
   BotFormCredentialsSection,
@@ -183,6 +188,7 @@ export function BotSettingsEditForm({ bot, onUpdated }: Props) {
 }
 
 function botToForm(bot: BotRow): CreateBotReq {
+  const raw = bot.strategy_params ?? {}
   return {
     name: bot.name,
     slug_pattern: bot.slug_pattern,
@@ -193,7 +199,10 @@ function botToForm(bot: BotRow): CreateBotReq {
     max_price: bot.max_price,
     cooldown_threshold: bot.cooldown_threshold,
     start_offset: bot.start_offset,
-    strategy_params: bot.strategy_params ?? {},
+    strategy_params:
+      bot.strategy === "bonereaper"
+        ? mergeBonereaperStrategyDefaults(raw)
+        : raw,
   }
 }
 

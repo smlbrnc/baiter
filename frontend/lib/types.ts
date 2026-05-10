@@ -541,6 +541,41 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   gravie_max_fak_size: 50,
 } as const
 
+/**
+ * Bonereaper alanları `null`/eksikken UI'da `STRATEGY_PARAMS_DEFAULTS` gösterilir;
+ * bu değerler `strategy_params` içine yazılmazsa API'ye `{}` gider ve backend
+ * `unwrap_or(2000)` gibi farklı default kullanır. Seçim / kayıt öncesi merge et.
+ */
+export function mergeBonereaperStrategyDefaults(
+  params?: StrategyParams | null
+): StrategyParams {
+  const p = params ?? {}
+  const d = STRATEGY_PARAMS_DEFAULTS
+  return {
+    ...p,
+    bonereaper_buy_cooldown_ms:
+      p.bonereaper_buy_cooldown_ms ?? d.bonereaper_buy_cooldown_ms,
+    bonereaper_late_winner_secs:
+      p.bonereaper_late_winner_secs ?? d.bonereaper_late_winner_secs,
+    bonereaper_late_winner_bid_thr:
+      p.bonereaper_late_winner_bid_thr ?? d.bonereaper_late_winner_bid_thr,
+    bonereaper_late_winner_usdc:
+      p.bonereaper_late_winner_usdc ?? d.bonereaper_late_winner_usdc,
+    bonereaper_lw_max_per_session:
+      p.bonereaper_lw_max_per_session ?? d.bonereaper_lw_max_per_session,
+    bonereaper_imbalance_thr:
+      p.bonereaper_imbalance_thr ?? d.bonereaper_imbalance_thr,
+    bonereaper_max_avg_sum:
+      p.bonereaper_max_avg_sum ?? d.bonereaper_max_avg_sum,
+    bonereaper_size_longshot_usdc:
+      p.bonereaper_size_longshot_usdc ?? d.bonereaper_size_longshot_usdc,
+    bonereaper_size_mid_usdc:
+      p.bonereaper_size_mid_usdc ?? d.bonereaper_size_mid_usdc,
+    bonereaper_size_high_usdc:
+      p.bonereaper_size_high_usdc ?? d.bonereaper_size_high_usdc,
+  }
+}
+
 // ── Bot İstatistikleri ────────────────────────────────────────────────────
 
 export interface PositionTypeStats {
