@@ -736,7 +736,7 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                   >
                     <Input
                       type="number"
-                      step="0.005"
+                      step="0.001"
                       min="0.001"
                       max="0.1"
                       value={bonereaperLoserMinPrice}
