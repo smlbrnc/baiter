@@ -113,22 +113,6 @@ impl BonereaperEngine {
                     return (BonereaperState::Active(st), Decision::NoOp);
                 }
 
-                // ── PROFIT LOCK ─────────────────────────────────────────
-                // Karşılıklı pozisyon (UP+DOWN dolu) ve avg_up+avg_down<1.0
-                // → garantili arbitraj penceresi. Yeni emir (LW dahil) bloke,
-                // mevcut pozisyon kapanışta hangi taraf kazanırsa kâr eder.
-                if p.bonereaper_profit_lock_enabled() {
-                    let m = ctx.metrics;
-                    if m.up_filled > 0.0
-                        && m.down_filled > 0.0
-                        && (m.avg_up + m.avg_down) < 1.0
-                    {
-                        st.last_up_bid = ctx.up_best_bid;
-                        st.last_dn_bid = ctx.down_best_bid;
-                        return (BonereaperState::Active(st), Decision::NoOp);
-                    }
-                }
-
                 // ── LATE WINNER ─────────────────────────────────────────
                 // T ≤ X sn ve max(bid) ≥ thr → winner tarafa massive taker BUY.
                 // `lw_max_per_session` ile session başına sınırlı (default 1) —

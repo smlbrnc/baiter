@@ -211,11 +211,6 @@ pub struct StrategyParams {
     /// Real bot kapanış öncesi $30-50 trade'ler; LW'den ayrı normal akış. Default: $30.
     #[serde(default)]
     pub bonereaper_size_high_usdc: Option<f64>,
-    /// Kâr kilitle: aktif olduğunda karşılıklı pozisyon (`up_filled>0 && down_filled>0`)
-    /// var ve `avg_up + avg_down < 1.0` ise yeni emir verilmez (LW dahil). Garantili
-    /// arbitraj penceresi yakalandığında pozisyonu donduran sigorta. Default: false.
-    #[serde(default)]
-    pub bonereaper_profit_lock_enabled: Option<bool>,
 
     // === Gravie (Bot 66 davranış kopyası) ===
     /// Karar tick aralığı (sn). Bot 66 ortalama inter-arrival 4-5 sn.
@@ -426,11 +421,6 @@ impl StrategyParams {
         self.bonereaper_size_high_usdc
             .unwrap_or(15.0)
             .clamp(0.0, 10_000.0)
-    }
-    /// Kâr kilitle aktif mi; default false. Karşılıklı pozisyon altında
-    /// `avg_up + avg_down < 1.0` ise her yeni emri (LW dahil) bloke eder.
-    pub fn bonereaper_profit_lock_enabled(&self) -> bool {
-        self.bonereaper_profit_lock_enabled.unwrap_or(false)
     }
 }
 

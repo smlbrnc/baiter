@@ -134,12 +134,6 @@ export interface StrategyParams {
   bonereaper_size_mid_usdc?: number | null
   /** High-confidence bid bucket (bid > 0.85) trade büyüklüğü (USDC). Default 15. */
   bonereaper_size_high_usdc?: number | null
-  /**
-   * Kâr kilitle: aktifken karşılıklı pozisyon var ve `avg_up + avg_down < 1.0`
-   * ise bot yeni emir vermez (LW dahil). Garantili arbitraj penceresinde
-   * pozisyonu donduran sigorta. Default false.
-   */
-  bonereaper_profit_lock_enabled?: boolean | null
 
   // ── Gravie (Bot 66 davranış kopyası) ─────────────────────────────────────
   /**
@@ -533,7 +527,6 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   bonereaper_size_longshot_usdc: 5,
   bonereaper_size_mid_usdc: 10,
   bonereaper_size_high_usdc: 15,
-  bonereaper_profit_lock_enabled: false,
   // Gravie (Bot 66 davranış kopyası — optimum kalibre)
   gravie_tick_interval_secs: 5,
   gravie_buy_cooldown_ms: 4000,
@@ -580,8 +573,6 @@ export function mergeBonereaperStrategyDefaults(
       p.bonereaper_size_mid_usdc ?? d.bonereaper_size_mid_usdc,
     bonereaper_size_high_usdc:
       p.bonereaper_size_high_usdc ?? d.bonereaper_size_high_usdc,
-    bonereaper_profit_lock_enabled:
-      p.bonereaper_profit_lock_enabled ?? d.bonereaper_profit_lock_enabled,
   }
 }
 
