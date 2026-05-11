@@ -13,7 +13,7 @@ export const STRATEGY_OPTIONS: {
     id: "bonereaper",
     label: "Bonereaper",
     description:
-      "5dk btc-updown için 1sn decision loop; hibrit composite + EMA sinyal yön kararı; Dutch Book + Signal (sabit order_usdc size, avg_sum<1.25); opt-in profit lock. BUY-only, çıkış REDEEM.",
+      "OB-reaktif martingale + fiyat-bazlı winner injection. Winner ask $0.99'a gelince (zaman bağımsız) $200/shot × 20 = $4000 cap atar; loser tarafa $0.10-$0.20 lottery scalp toplar. BUY-only, çıkış REDEEM.",
   },
   {
     id: "gravie",

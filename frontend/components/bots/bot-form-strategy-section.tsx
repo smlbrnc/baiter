@@ -173,16 +173,17 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
           <div>
             <SectionLabel icon={Target} title="Bonereaper parametreleri" />
             <p className="mt-1 text-sm text-muted-foreground">
-              Order-book reactive martingale + late winner injection. Backtest
-              optimum (3-bot 468 session): NET ROI %0.23 (LIVE_safe).
+              Order-book reactive martingale + fiyat-bazlı winner injection.
+              Winner ask <code>$0.99</code>'a geldiği anda (zaman bağımsız)
+              atlar; küçük lot × quota = toplam cap.
             </p>
           </div>
 
           <div className="space-y-3 rounded-md border border-border/40 bg-muted/25 p-3">
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Field
-                label="Late winner USDC"
-                tooltip="Kapanışa yakın kazanan tarafa tek büyük taker BUY notional'ı. LIVE_safe başlangıç: $500. 0 = kapalı."
+                label="LW USDC / shot"
+                tooltip="Winner ask $0.99'a geldiğinde her injection'ın notional büyüklüğü. Toplam risk = LW USDC × LW max. 0 = kapalı."
                 hint={`0 – 10000 USDC (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_usdc}).`}
               >
                 <Input
@@ -198,7 +199,7 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
               </Field>
               <Field
                 label="LW bid eşiği"
-                tooltip="Late winner için kazanan tarafın min bid değeri. Yüksek = daha sıkı/güvenli."
+                tooltip="Winner bid bu değerin üstünde iken injection tetiklenir. 0.98 = winner ask tam $0.99 — gerçek bot davranışı."
                 hint={`0.50 – 0.99 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_bid_thr}).`}
               >
                 <Input
@@ -214,7 +215,7 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
               </Field>
               <Field
                 label="BUY cooldown (ms)"
-                tooltip="Ardışık BUY emirleri arası min bekleme. Düşük = daha çok trade."
+                tooltip="Ardışık BUY emirleri arası min bekleme (LW cooldown'u bypass eder)."
                 hint={`500 – 60000 ms (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_buy_cooldown_ms}).`}
               >
                 <Input
@@ -230,14 +231,14 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
               </Field>
               <Field
                 label="LW max / session"
-                tooltip="Session başına maksimum late winner injection. 0 = sınırsız (spam, KULLANMA)."
-                hint={`0 – 20 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_lw_max_per_session}).`}
+                tooltip="Market başına maksimum injection sayısı. Toplam risk = LW USDC × bu değer. 0 = sınırsız."
+                hint={`0 – 50 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_lw_max_per_session}).`}
               >
                 <Input
                   type="number"
                   step="1"
                   min="0"
-                  max="20"
+                  max="50"
                   value={bonereaperLwMaxPerSession}
                   onChange={(e) =>
                     patch({ bonereaper_lw_max_per_session: Number(e.target.value) })
@@ -253,12 +254,12 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
               <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2">
                 <Field
                   label="LW penceresi (sn)"
-                  tooltip="T-X sn'den itibaren late winner taraması başlar."
+                  tooltip="Kapanışa X sn kala LW taraması aktif olur. 300 = penceresiz (tüm market — önerilen). Fiyat bazlı tetikleyici olduğu için büyük değer her zaman iyidir."
                   hint={`0 – 300 sn (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_secs}).`}
                 >
                   <Input
                     type="number"
-                    step="5"
+                    step="30"
                     min="0"
                     max="300"
                     value={bonereaperLateWinnerSecs}
@@ -367,38 +368,19 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                 </Field>
               </div>
 
-              {/* RealBot v2: loser scalp + winner pyramid + LW burst + martingale-down guard */}
+              {/* Loser scalp + winner pyramid + martingale-down guard */}
               <div className="mt-4 border-t border-border/40 pt-3">
-                <p className="mb-2 text-xs font-medium text-muted-foreground">
-                  RealBot v2 — gerçek bot davranışı
-                </p>
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <Field
-                    label="Loser min bid (1¢ scalp)"
-                    tooltip="Kaybeden taraf için min bid eşiği. Real bot 0.01-0.05 fiyatlarda bilet topluyor. Winner için genel min_price geçerli."
-                    hint={`0.001 – 0.10 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_loser_min_price}).`}
-                  >
-                    <Input
-                      type="number"
-                      step="0.001"
-                      min="0.001"
-                      max="0.1"
-                      value={bonereaperLoserMinPrice}
-                      onChange={(e) =>
-                        patch({ bonereaper_loser_min_price: Number(e.target.value) })
-                      }
-                    />
-                  </Field>
-                  <Field
                     label="Loser scalp USDC"
-                    tooltip="Kaybeden tarafa kuruşluk bilet boyutu. 0 = scalp KAPALI."
-                    hint={`0 – 10 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_loser_scalp_usdc}).`}
+                    tooltip="Kaybeden tarafa $0.10–$0.20 bandında kuruşluk bilet boyutu. Gerçek bot market başına $40–$450 harcıyor. 0 = scalp KAPALI."
+                    hint={`0 – 50 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_loser_scalp_usdc}).`}
                   >
                     <Input
                       type="number"
-                      step="0.5"
+                      step="1"
                       min="0"
-                      max="10"
+                      max="50"
                       value={bonereaperLoserScalpUsdc}
                       onChange={(e) =>
                         patch({ bonereaper_loser_scalp_usdc: Number(e.target.value) })
@@ -407,12 +389,12 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                   </Field>
                   <Field
                     label="Loser scalp üst bid"
-                    tooltip="Loser side bid bu eşiğin altında ise scalp boyutu uygulanır (longshot bucket yerine). Real bot 0.10-0.30 bandında bilet topluyor."
+                    tooltip="Loser bid bu eşiğin altındaysa scalp boyutu uygulanır. Gerçek bot $0.10–$0.17 bandında bilet topluyor."
                     hint={`0.05 – 0.50 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_loser_scalp_max_price}).`}
                   >
                     <Input
                       type="number"
-                      step="0.01"
+                      step="0.05"
                       min="0.05"
                       max="0.5"
                       value={bonereaperLoserScalpMaxPrice}
@@ -422,8 +404,8 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                     />
                   </Field>
                   <Field
-                    label="Late pyramid sn"
-                    tooltip="T-X sn'den itibaren winner tarafa size çarpanı uygula. 0 = scaling KAPALI."
+                    label="Winner pyramid (sn)"
+                    tooltip="T-X sn'den itibaren winner tarafa size × factor uygula. Gerçek bot T-150s civarında erken accumulation yapıyor. 0 = KAPALI."
                     hint={`0 – 300 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_late_pyramid_secs}).`}
                   >
                     <Input
@@ -439,7 +421,7 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                   </Field>
                   <Field
                     label="Winner size factor"
-                    tooltip="Late pyramid penceresinde winner size çarpanı."
+                    tooltip="Pyramid penceresinde winner tarafa uygulanacak size çarpanı."
                     hint={`1.0 – 10.0 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_winner_size_factor}).`}
                   >
                     <Input
@@ -454,40 +436,8 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                     />
                   </Field>
                   <Field
-                    label="LW burst sn"
-                    tooltip="T-X kala 2. dalga LW. 0 = burst KAPALI. Ana late_winner_secs > burst > 0 olmalı."
-                    hint={`0 – 60 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_lw_burst_secs}).`}
-                  >
-                    <Input
-                      type="number"
-                      step="2"
-                      min="0"
-                      max="60"
-                      value={bonereaperLwBurstSecs}
-                      onChange={(e) =>
-                        patch({ bonereaper_lw_burst_secs: Number(e.target.value) })
-                      }
-                    />
-                  </Field>
-                  <Field
-                    label="LW burst USDC"
-                    tooltip="Burst dalga trade büyüklüğü."
-                    hint={`0 – 10000 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_lw_burst_usdc}).`}
-                  >
-                    <Input
-                      type="number"
-                      step="50"
-                      min="0"
-                      max="10000"
-                      value={bonereaperLwBurstUsdc}
-                      onChange={(e) =>
-                        patch({ bonereaper_lw_burst_usdc: Number(e.target.value) })
-                      }
-                    />
-                  </Field>
-                  <Field
                     label="Avg loser max"
-                    tooltip="Loser tarafta avg fiyat bu eşiği aşarsa o yöne sadece minimal scalp ($1). Pahalı martingale-down engeli."
+                    tooltip="Loser tarafta avg fiyat bu eşiği aşarsa o yöne sadece minimal scalp. Pahalı martingale-down engeli."
                     hint={`0.10 – 0.95 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_avg_loser_max}).`}
                   >
                     <Input
@@ -508,32 +458,28 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
 
           <ul className="list-disc space-y-1 rounded-md border border-border/40 bg-muted/10 px-4 py-2.5 pl-7 text-xs text-muted-foreground">
             <li>
-              <strong>İlk emir:</strong> <code>|up_bid - down_bid|</code> ≥{" "}
-              <code>{STRATEGY_PARAMS_DEFAULTS.bonereaper_first_spread_min}</code>{" "}
-              olana kadar bekler; sonra yüksek bid tarafına BUY (winner momentum).
-            </li>
-            <li>
-              <strong>Loser scalp:</strong> Kaybeden tarafa{" "}
-              <code>{STRATEGY_PARAMS_DEFAULTS.bonereaper_loser_min_price}</code>+
-              fiyatlardan <code>{STRATEGY_PARAMS_DEFAULTS.bonereaper_loser_scalp_usdc}</code>$
-              kuruşluk bilet topla. <code>|imbalance|</code> eşiği aşarsa weaker side rebalance.
+              <strong>$0.99 injection (fiyat bazlı):</strong> Winner ask{" "}
+              <code>$0.99</code>'a geldiği anda — zaman bağımsız —{" "}
+              <code>{STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_usdc} USDC</code> lot atlar.
+              Maks <code>{STRATEGY_PARAMS_DEFAULTS.bonereaper_lw_max_per_session}</code> shot ×{" "}
+              <code>{STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_usdc}$</code> ={" "}
+              <code>{STRATEGY_PARAMS_DEFAULTS.bonereaper_lw_max_per_session * STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_usdc}$</code> cap/market.
             </li>
             <li>
               <strong>Winner pyramid:</strong> T-
               {STRATEGY_PARAMS_DEFAULTS.bonereaper_late_pyramid_secs}s'den itibaren
-              winner tarafa size ×{STRATEGY_PARAMS_DEFAULTS.bonereaper_winner_size_factor}.
+              winner tarafa size ×{STRATEGY_PARAMS_DEFAULTS.bonereaper_winner_size_factor}{" "}
+              (erken accumulation fazı).
             </li>
             <li>
-              <strong>Multi-LW:</strong> T-
-              {STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_secs}s ana dalga (
-              <code>LW USDC</code>) + T-
-              {STRATEGY_PARAMS_DEFAULTS.bonereaper_lw_burst_secs}s burst (
-              <code>LW burst USDC</code>). Toplam{" "}
-              <code>{STRATEGY_PARAMS_DEFAULTS.bonereaper_lw_max_per_session}</code> dalga.
+              <strong>Loser scalp:</strong> Kaybeden tarafa{" "}
+              <code>≤${STRATEGY_PARAMS_DEFAULTS.bonereaper_loser_scalp_max_price}</code>{" "}
+              bandında <code>{STRATEGY_PARAMS_DEFAULTS.bonereaper_loser_scalp_usdc}$</code>{" "}
+              bilet topla (lottery aspect). <code>|imbalance| ≥ {STRATEGY_PARAMS_DEFAULTS.bonereaper_imbalance_thr}</code> aşarsa weaker side rebalance.
             </li>
             <li>
               <strong>Güvenlik:</strong> <code>avg_loser_max</code> pahalı
-              martingale-down'u durdurur, <code>max_avg_sum</code> pyramid'i,{" "}
+              martingale-down'u, <code>max_avg_sum</code> pyramid'i,{" "}
               <code>cooldown</code> spam'i engeller.
             </li>
           </ul>

@@ -520,31 +520,30 @@ export interface GlobalCredentials {
 
 /** `StrategyParams` default'ları (`config::StrategyParams::*_or_default`). */
 export const STRATEGY_PARAMS_DEFAULTS = {
-  // Bonereaper (RealBot v2 — gerçek 0xeebde7a0... cüzdan davranışına yakın)
-  // 3 örnek session backtest: trade frekansı 14× artış, multi-LW pyramid,
-  // loser 1¢ scalp, winner pyramid scaling, SAF guard.
-  bonereaper_buy_cooldown_ms: 3000,
-  bonereaper_late_winner_secs: 30,
-  bonereaper_late_winner_bid_thr: 0.92,
-  bonereaper_late_winner_usdc: 500,
-  bonereaper_lw_max_per_session: 5,
-  bonereaper_imbalance_thr: 50,
+  // Bonereaper (realbot.log 3472-trade analizi: fiyat-bazlı LW, T-161s'de bile
+  // winner ask $0.99'a gelince atla; küçük lot × 20 = $4000 cap/market)
+  bonereaper_buy_cooldown_ms: 2000,
+  bonereaper_late_winner_secs: 300,   // penceresiz — fiyat bazlı tetikleyici
+  bonereaper_late_winner_bid_thr: 0.98, // winner ask = $0.99
+  bonereaper_late_winner_usdc: 200,   // küçük lot × 20 = $4000 cap
+  bonereaper_lw_max_per_session: 20,
+  bonereaper_imbalance_thr: 30,
   bonereaper_max_avg_sum: 1.30,
   bonereaper_first_spread_min: 0.02,
   bonereaper_size_longshot_usdc: 5,
   bonereaper_size_mid_usdc: 10,
   bonereaper_size_high_usdc: 15,
-  // Aşama 3 — loser long-shot scalp
+  // Loser long-shot scalp ($0.10–$0.20 bant, realbot $40–$450/market)
   bonereaper_loser_min_price: 0.01,
-  bonereaper_loser_scalp_usdc: 1,
-  bonereaper_loser_scalp_max_price: 0.3,
-  // Aşama 4 — winner pyramid scaling
-  bonereaper_late_pyramid_secs: 60,
+  bonereaper_loser_scalp_usdc: 5,
+  bonereaper_loser_scalp_max_price: 0.20,
+  // Winner pyramid (T-150s'den erken accumulation)
+  bonereaper_late_pyramid_secs: 150,
   bonereaper_winner_size_factor: 5.0,
-  // Aşama 5 — multi-LW burst
-  bonereaper_lw_burst_secs: 12,
-  bonereaper_lw_burst_usdc: 200,
-  // Aşama 6 — martingale-down guard
+  // LW burst — KAPALI (realbot ayrı burst wave kullanmıyor)
+  bonereaper_lw_burst_secs: 0,
+  bonereaper_lw_burst_usdc: 0,
+  // Martingale-down guard
   bonereaper_avg_loser_max: 0.5,
   // Arbitrage (Bot 108 backtest optimum: cost<0.95, mt=5, $100 → WR %100)
   arbitrage_tick_interval_ms: 1000,
