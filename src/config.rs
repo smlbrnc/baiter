@@ -438,7 +438,7 @@ impl StrategyParams {
     /// bir market'te 40+ adet $0.99 BUY yapıyor; quota 20 → $200 × 20 = $4000
     /// max — gerçek bot'un $5000 hedefine yakın). 0 = sınırsız.
     pub fn bonereaper_lw_max_per_session(&self) -> u32 {
-        self.bonereaper_lw_max_per_session.unwrap_or(20).min(50)
+        self.bonereaper_lw_max_per_session.unwrap_or(5).min(50)
     }
     /// Imbalance threshold (share); 0–10000 sınırlı; default 200.
     /// YÜKSEK eşik = güçlü yönlü birikim. Düşük eşik (≤50) her 2-3 trade'de
