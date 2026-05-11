@@ -684,7 +684,7 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
             >
               <Input
                 type="number"
-                step="5"
+                step="1"
                 min="1"
                 max="500"
                 value={binanceLatencySigThrUsd}
@@ -702,7 +702,7 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
             >
               <Input
                 type="number"
-                step="10"
+                step="1"
                 min="5"
                 max="10000"
                 value={binanceLatencyOrderUsdc}
