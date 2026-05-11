@@ -291,6 +291,11 @@ async fn run_trading_loop(
                 if ctx.cfg.run_mode == crate::types::RunMode::Dryrun {
                     event::run_passive_fills_dryrun(&mut sess, &ctx.pool);
                 }
+                // 1 sn periodic strategy tick — Polymarket book sabitken de
+                // dış-sinyal stratejileri (BinanceLatency) tetiklenebilsin.
+                // Mevcut book-reactive stratejiler (Bonereaper/Gravie/Arbitrage)
+                // kendi cooldown/throttle mekanizmalarıyla NoOp döner; ek yük yok.
+                tick::tick(ctx, &mut sess).await;
                 let sig = observed_snapshot(ctx).await;
                 zone::emit_frontend_snapshot(ctx, &sess, &sig);
                 persist::snapshot_pnl(&ctx.pool, &sess);
