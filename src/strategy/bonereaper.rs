@@ -79,25 +79,27 @@ const fn reason_scalp(dir: Outcome) -> &'static str {
     }
 }
 
-/// Loser tarafı ANLIK BID fiyatına göre belirler.
+/// Loser tarafı anlık bid fiyatına göre belirler.
 ///
-/// Mantık: Piyasa "bid yüksek taraf = daha muhtemel kazanan" der. Düşük bid
-/// taraf = loser. Bu, avg-fiyat tabanlı eski yaklaşımdan daha doğru:
-/// - Eski: avg_up vs avg_dn karşılaştırması → T=0-60s'de her iki taraf $0.50
-///   civarında, loser_side yanlış tarafı loser gösteriyordu.
-/// - Yeni: up_bid vs dn_bid anlık piyasa sinyali → ob_driven yönüyle tam uyum.
-///   Yüksek bid tarafı yön olarak seçilir, düşük bid taraf loser'dır.
+/// ÖNEMLI: Guard yalnızca bid farkı anlamlı olduğunda etkindir.
+/// $0.40-$0.60 belirsiz bölgede $0.01-$0.05 bid farkı güvenilir sinyal değil
+/// (market henüz karar vermemiş). Loser guard bu bölgede gerekmez/zararlıdır.
+/// Fark büyük olduğunda (≥ 0.20) market net kazananı göstermiştir.
 ///
-/// Sonuç: winner yönünde alım ASLA bloke edilmez (is_loser_dir=false).
-///        Loser yönünde mid-fiyat alım bloke edilir (loser_guard).
-///        Cheap scalp her zaman serbest (is_any_scalp=true).
+/// Örnek: UP_bid=$0.80, DOWN_bid=$0.19 → fark=$0.61 → DOWN loser kesin ✓
+///        UP_bid=$0.51, DOWN_bid=$0.48 → fark=$0.03 → belirsiz, None döner
+///
+/// None → loser_guard uygulanmaz (her iki taraf serbestçe alınabilir).
 #[inline]
-fn loser_side(up_bid: f64, dn_bid: f64) -> Outcome {
-    // Yüksek bid = winner, düşük bid = loser
-    if up_bid >= dn_bid {
-        Outcome::Down // UP daha pahalı → DOWN loser
+fn loser_side(up_bid: f64, dn_bid: f64) -> Option<Outcome> {
+    const LOSER_SPREAD_MIN: f64 = 0.20; // min fark: piyasa net karar verdi
+    let spread = (up_bid - dn_bid).abs();
+    if spread < LOSER_SPREAD_MIN {
+        None // Belirsiz bölge → loser guard yok
+    } else if up_bid >= dn_bid {
+        Some(Outcome::Down) // UP dominant → DOWN loser
     } else {
-        Outcome::Up // DOWN daha pahalı → UP loser
+        Some(Outcome::Up) // DOWN dominant → UP loser
     }
 }
 
@@ -302,11 +304,11 @@ impl BonereaperEngine {
                     return (BonereaperState::Active(st), Decision::NoOp);
                 }
 
-                // Loser/winner taraf: anlık bid fiyatına göre (düşük bid = loser)
-                // Eski avg-fiyat mantığı T=0-60s'de yanlış loser belirliyordu.
+                // Loser/winner: bid farkı ≥ $0.20 olduğunda aktif (piyasa net karar verdi)
+                // $0.40-$0.60 belirsiz bölgede guard devreye girmez.
                 let metrics = ctx.metrics;
-                let loser = loser_side(ctx.up_best_bid, ctx.down_best_bid);
-                let is_loser_dir = dir == loser;
+                let loser_opt = loser_side(ctx.up_best_bid, ctx.down_best_bid);
+                let is_loser_dir = loser_opt.map_or(false, |l| dir == l);
 
                 // Yön bazlı min_price (loser side 1¢ scalp serbest)
                 let effective_min = if is_loser_dir {
