@@ -438,7 +438,7 @@ impl StrategyParams {
     /// bir market'te 40+ adet $0.99 BUY yapıyor; quota 20 → $200 × 20 = $4000
     /// max — gerçek bot'un $5000 hedefine yakın). 0 = sınırsız.
     pub fn bonereaper_lw_max_per_session(&self) -> u32 {
-        self.bonereaper_lw_max_per_session.unwrap_or(5).min(50)
+        self.bonereaper_lw_max_per_session.unwrap_or(10).min(50)
     }
     /// Imbalance threshold (share); 0–10000 sınırlı; default 1000.
     /// 4-market analizi (bot 117): imbalance_thr=200 ile T=0-60s arası
@@ -478,22 +478,20 @@ impl StrategyParams {
             .unwrap_or(8.0)
             .clamp(0.0, 10_000.0)
     }
-    /// Mid bucket USDC (0.30 < bid ≤ 0.65); 0–10000 sınırlı; default 20.
-    /// Gerçek bot SABİT 40 SHARE kullanıyor (mode=40, median=40). 40×$0.50=$20.
-    /// ceil(20/0.50)=40sh @ $0.50 ← real bot standart lotu. Threshold 0.85→0.65.
+    /// Mid bucket USDC (0.30 < bid ≤ 0.65); 0–10000 sınırlı; default 10.
+    /// 6-market sim: $20 mid ile yanlış yönde fazla birikim → avg_sum yükselir.
+    /// $10 ile yarı birikim, LW'ye daha fazla yer açar. ceil(10/0.50)=20sh/trade.
     pub fn bonereaper_size_mid_usdc(&self) -> f64 {
         self.bonereaper_size_mid_usdc
-            .unwrap_or(20.0)
+            .unwrap_or(10.0)
             .clamp(0.0, 10_000.0)
     }
-    /// High bucket USDC (bid > 0.65); 0–10000 sınırlı; default 40.
-    /// 941-trade analizi: gerçek bot SABIT 40-45 SHARE (randint) + REBALANCE
-    /// max(40,|imb|//4) → $0.70-0.80 bandında 50-58sh gözlemlendi.
-    /// ceil(40/0.70)=58sh, ceil(40/0.75)=54sh ← gerçek 52-58sh aralığına uyumlu.
-    /// Pyramid: $40×2=$80, $0.90 bid→89sh ≈ gerçek $0.85-0.95 avg 87sh ✓
+    /// High bucket USDC (bid > 0.65); 0–10000 sınırlı; default 20.
+    /// $40 high + factor=2 → 100sh @ $0.76 — çok fazla pahalı birikim.
+    /// $20 + factor=1 (pyramid kapalı) → 27sh @ $0.75 — gerçek 40-45sh'a yakın.
     pub fn bonereaper_size_high_usdc(&self) -> f64 {
         self.bonereaper_size_high_usdc
-            .unwrap_or(40.0)
+            .unwrap_or(20.0)
             .clamp(0.0, 10_000.0)
     }
     /// Loser side min bid eşiği; 0.001–0.10 sınırlı; default 0.01 (1¢ scalp).
@@ -532,7 +530,7 @@ impl StrategyParams {
     /// 941-trade analizi: $0.85-0.95 avg 85sh. ceil(80/0.90)=89 ← tam uyum.
     pub fn bonereaper_winner_size_factor(&self) -> f64 {
         self.bonereaper_winner_size_factor
-            .unwrap_or(2.0)
+            .unwrap_or(1.0)
             .clamp(1.0, 10.0)
     }
     /// LW burst pencere (sn); 0–60 sınırlı; default 0 (KAPALI).

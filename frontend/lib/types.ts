@@ -526,20 +526,20 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   bonereaper_late_winner_secs: 300,   // penceresiz — fiyat bazlı tetikleyici
   bonereaper_late_winner_bid_thr: 0.88, // winner bid $0.88+ = loser ~$0.11
   bonereaper_late_winner_usdc: 200,   // küçük lot × 20 = $4000 cap
-  bonereaper_lw_max_per_session: 5,  // 5 × $200 = $1000 max LW cap
+  bonereaper_lw_max_per_session: 10, // 10 × $200 = $2000 max LW cap
   bonereaper_imbalance_thr: 1000, // salınım önleme: 0 osc vs thr=200'de 14 osc
   bonereaper_max_avg_sum: 1.05,
   bonereaper_first_spread_min: 0.02,
   bonereaper_size_longshot_usdc: 8,   // bid ≤ 0.30, real avg $7.18
-  bonereaper_size_mid_usdc: 20,       // 0.30 < bid ≤ 0.65, 40sh×$0.50=$20 (real mode=40sh)
-  bonereaper_size_high_usdc: 40,      // bid>0.65 → ceil(40/bid): $0.75=54sh ≈ real 58sh
+  bonereaper_size_mid_usdc: 10,       // yarı lot → yanlış yön hasarı azaltır
+  bonereaper_size_high_usdc: 20,      // pyramid=1.0 ile 27sh@$0.75
   // Loser long-shot scalp ($0.10–$0.20 bant, realbot $40–$450/market)
   bonereaper_loser_min_price: 0.01,
   bonereaper_loser_scalp_usdc: 5,
   bonereaper_loser_scalp_max_price: 0.20,
   // Winner pyramid (T-150s'den erken accumulation)
   bonereaper_late_pyramid_secs: 150,
-  bonereaper_winner_size_factor: 2.0,  // $40×2=$80 @ $0.90 = ~89sh ≈ real 87sh ✓
+  bonereaper_winner_size_factor: 1.0,  // pyramid KAPALI — yanlış yön amplifikasyonu önler
   // LW burst — KAPALI (realbot ayrı burst wave kullanmıyor)
   bonereaper_lw_burst_secs: 0,
   bonereaper_lw_burst_usdc: 0,
