@@ -414,15 +414,14 @@ impl StrategyParams {
     pub fn bonereaper_late_winner_secs(&self) -> u32 {
         self.bonereaper_late_winner_secs.unwrap_or(300).min(300)
     }
-    /// Late winner bid eşiği; 0.50–0.99 sınırlı; default 0.98
-    /// (Gerçek bot winner ask = $0.99 olduğunda agresif giriyor. 0.98 bid =
-    /// ask $0.99 anlamına gelir [sabit $0.01 spread]. Eski 0.90 threshold
-    /// T-161s'de piyasa $0.99'a gidince tetiklenmiyordu → en büyük kâr
-    /// penceresi kaçıyordu. realbot.log: 5 market'te $0.99 başlangıcı
-    /// T-15s ile T-161s arası — tamamen fiyat bazlı değişiyor).
+    /// Late winner bid eşiği; 0.50–0.99 sınırlı; default 0.88
+    /// (Canlı Bonereaper analizi [1:50-1:55 ET]: gerçek bot UP $0.92 bid'de
+    /// [T] $115 + [T] $111 = $226 büyük shot attı → LW bid_thr=0.98 ile
+    /// bu tetiklenmiyordu. 0.88 = loser ask ~$0.11, winner ~$0.89 — real bot
+    /// "$0.07-$0.13 arası DOWN loser" gözlemlenince UP'a büyük LW yapıyor).
     pub fn bonereaper_late_winner_bid_thr(&self) -> f64 {
         self.bonereaper_late_winner_bid_thr
-            .unwrap_or(0.98)
+            .unwrap_or(0.88)
             .clamp(0.50, 0.99)
     }
     /// Late winner USDC notional; 0–10000 sınırlı; default 200
