@@ -470,23 +470,28 @@ impl StrategyParams {
             .unwrap_or(0.02)
             .clamp(0.00, 0.20)
     }
-    /// Long-shot bucket USDC; 0–10000 sınırlı; default 5
-    /// (minimal scalp; LW'e yer aç).
+    /// Long-shot bucket USDC (bid ≤ 0.30); 0–10000 sınırlı; default 8.
+    /// 14-market analizi: real bot $0.15-0.30 bandında avg $7.18. $8 uyumlu.
     pub fn bonereaper_size_longshot_usdc(&self) -> f64 {
         self.bonereaper_size_longshot_usdc
-            .unwrap_or(5.0)
+            .unwrap_or(8.0)
             .clamp(0.0, 10_000.0)
     }
-    /// Mid bucket USDC; 0–10000 sınırlı; default 10 (minimal scalp).
+    /// Mid bucket USDC (0.30 < bid ≤ 0.65); 0–10000 sınırlı; default 15.
+    /// 14-market analizi: real bot $0.30-0.50 avg $11.54, $0.50-0.65 avg ~$16.
+    /// $15 iki alt bant ortalamasını dengeler. Threshold 0.85→0.65 değişti.
     pub fn bonereaper_size_mid_usdc(&self) -> f64 {
         self.bonereaper_size_mid_usdc
-            .unwrap_or(10.0)
+            .unwrap_or(15.0)
             .clamp(0.0, 10_000.0)
     }
-    /// High-conf bucket USDC; 0–10000 sınırlı; default 15 (minimal scalp).
+    /// High bucket USDC (bid > 0.65); 0–10000 sınırlı; default 30.
+    /// 14-market analizi: $0.65-0.85 band avg $33.36, $0.85-0.95 avg $77.85.
+    /// $30 normal, pyramid (×3 → $90) son 150s'de $0.90'da ~100sh ← real ~87sh.
+    /// Threshold değişimiyle $0.65+ tümü bu bucket'a → $0.70 bid: 43sh ≈ real 44sh.
     pub fn bonereaper_size_high_usdc(&self) -> f64 {
         self.bonereaper_size_high_usdc
-            .unwrap_or(15.0)
+            .unwrap_or(30.0)
             .clamp(0.0, 10_000.0)
     }
     /// Loser side min bid eşiği; 0.001–0.10 sınırlı; default 0.01 (1¢ scalp).
@@ -520,10 +525,12 @@ impl StrategyParams {
     pub fn bonereaper_late_pyramid_secs(&self) -> u32 {
         self.bonereaper_late_pyramid_secs.unwrap_or(150).min(300)
     }
-    /// Winner pyramid size çarpanı; 1.0–10.0 sınırlı; default 5.0.
+    /// Winner pyramid size çarpanı; 1.0–10.0 sınırlı; default 3.0.
+    /// size_high_usdc=$30 ile: $30×3=$90 → bid $0.90'da ~100sh ≈ real bot 87sh.
+    /// Eski 5.0 × $15=$75 ile aynı notional (5→3 çünkü base büyüdü: $15→$30).
     pub fn bonereaper_winner_size_factor(&self) -> f64 {
         self.bonereaper_winner_size_factor
-            .unwrap_or(5.0)
+            .unwrap_or(3.0)
             .clamp(1.0, 10.0)
     }
     /// LW burst pencere (sn); 0–60 sınırlı; default 0 (KAPALI).

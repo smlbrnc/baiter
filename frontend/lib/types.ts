@@ -530,16 +530,16 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   bonereaper_imbalance_thr: 200,
   bonereaper_max_avg_sum: 1.05,
   bonereaper_first_spread_min: 0.02,
-  bonereaper_size_longshot_usdc: 5,
-  bonereaper_size_mid_usdc: 10,
-  bonereaper_size_high_usdc: 15,
+  bonereaper_size_longshot_usdc: 8,   // bid ≤ 0.30, real avg $7.18
+  bonereaper_size_mid_usdc: 15,       // 0.30 < bid ≤ 0.65, real avg $12-16
+  bonereaper_size_high_usdc: 30,      // bid > 0.65 (threshold 0.85→0.65), real $33-78
   // Loser long-shot scalp ($0.10–$0.20 bant, realbot $40–$450/market)
   bonereaper_loser_min_price: 0.01,
   bonereaper_loser_scalp_usdc: 5,
   bonereaper_loser_scalp_max_price: 0.20,
   // Winner pyramid (T-150s'den erken accumulation)
   bonereaper_late_pyramid_secs: 150,
-  bonereaper_winner_size_factor: 5.0,
+  bonereaper_winner_size_factor: 3.0,  // $30×3=$90 @ $0.90 = ~100sh ≈ real 87sh
   // LW burst — KAPALI (realbot ayrı burst wave kullanmıyor)
   bonereaper_lw_burst_secs: 0,
   bonereaper_lw_burst_usdc: 0,

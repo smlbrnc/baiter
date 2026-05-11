@@ -368,9 +368,13 @@ impl BonereaperEngine {
                     // Loser side scalp bandı → kuruşluk bilet
                     scalp_usdc
                 } else {
+                    // 14-market analizi (5 önceki + 9 yeni log):
+                    // $0.30-0.65 band real avg $12-17 → size_mid_usdc ($15)
+                    // $0.65-0.85 band real avg $33    → size_high_usdc ($30) ← threshold değişti
+                    // $0.85+     band real avg $78    → size_high_usdc × winner_factor
                     let base = if bid <= 0.30 {
                         p.bonereaper_size_longshot_usdc()
-                    } else if bid <= 0.85 {
+                    } else if bid <= 0.65 {
                         p.bonereaper_size_mid_usdc()
                     } else {
                         p.bonereaper_size_high_usdc()
