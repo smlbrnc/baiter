@@ -2,18 +2,20 @@
 //! (`0xeebde7a0e019a63e6b476eb425505b7b3e6eba30`) davranış kopyası.
 //!
 //! Strateji **signal-driven değildir**; pure order-book reactive martingale +
-//! late winner injection. `data/genel.log`'da 4000 BUY trade analizi sonucu:
-//! real bot triple gate / composite signal / profit lock / freeze kullanmıyor;
-//! her tick orderbook'a bakıp bid değişen tarafa BUY ediyor, kapanışa <30 sn
-//! kala kazanan tarafa massive inject yapıyor.
+//! price-triggered winner injection. `data/realbot.log` (3472 trade, 3h window)
+//! analizi: real bot winner_bid ≥ $0.98 olduğunda HEMEN $0.99 injection yapıyor
+//! — zaman kısıtı yok! T-161s'de de T-15s'de de tetiklenebiliyor. Her injection
+//! ~$100-$200, 20-40 kez tekrarlanıyor (toplam $4000-$5000/market). Loser taraf
+//! $0.10-$0.20 bandında $40-$450 arası küçük scalp topluyor (lottery aspect).
 //!
-//! ## Karar zinciri (gerçek bot davranışına yakın v2)
+//! ## Karar zinciri (v3 — realbot.log doğrulamalı)
 //!
 //! 1. **Window**: `now ∈ [start, end]`; OB ready.
-//! 2. **LATE WINNER (ana)** (`t_to_end ≤ late_winner_secs && max(bid) ≥ thr`):
+//! 2. **LATE WINNER (ana)** (`max(bid) ≥ bid_thr [0.98]` — fiyat bazlı, ZAMAN BAĞIMSIZ):
 //!    winner tarafa `late_winner_usdc` notional taker BUY @ ask. Cooldown bypass.
-//! 3. **LATE WINNER (burst)** (`t_to_end ≤ lw_burst_secs && max(bid) ≥ thr`):
-//!    winner tarafa `lw_burst_usdc` ek dalga (multi-LW pyramid).
+//!    `lw_secs=300` default → tüm market boyunca aktif; quota ile toplam cap.
+//! 3. **LATE WINNER (burst)** — default KAPALI (`lw_burst_secs=0`); gerçek bot
+//!    ayrı burst wave kullanmıyor, tüm injection tek mekanizmadan geliyor.
 //! 4. **Cooldown** (`now − last_buy < buy_cooldown_ms`): NoOp.
 //! 5. **İlk emir kapısı** (`!first_done`): `|up_bid − down_bid| < first_spread_min`
 //!    ise NoOp; aşılınca yön = yüksek bid tarafı (winner momentum).

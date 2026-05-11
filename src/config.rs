@@ -408,28 +408,38 @@ impl StrategyParams {
             .unwrap_or(3_000)
             .clamp(1_000, 60_000)
     }
-    /// Late winner penceresi (sn); 0–300 sınırlı; default 30. 0 = kural KAPALI.
+    /// Late winner penceresi (sn); 0–300 sınırlı; default 300 (penceresiz —
+    /// gerçek bot T-161s kadar erken $0.99 injection yapıyor; zaman kısıtı yok,
+    /// tetikleyici tamamen fiyat bazlı: winner_bid ≥ bid_thr). 0 = kural KAPALI.
     pub fn bonereaper_late_winner_secs(&self) -> u32 {
-        self.bonereaper_late_winner_secs.unwrap_or(30).min(300)
+        self.bonereaper_late_winner_secs.unwrap_or(300).min(300)
     }
-    /// Late winner bid eşiği; 0.50–0.99 sınırlı; default 0.90
-    /// (Polymarket extreme'lerde mükemmel kalibre — LessWrong 7661 markets).
+    /// Late winner bid eşiği; 0.50–0.99 sınırlı; default 0.98
+    /// (Gerçek bot winner ask = $0.99 olduğunda agresif giriyor. 0.98 bid =
+    /// ask $0.99 anlamına gelir [sabit $0.01 spread]. Eski 0.90 threshold
+    /// T-161s'de piyasa $0.99'a gidince tetiklenmiyordu → en büyük kâr
+    /// penceresi kaçıyordu. realbot.log: 5 market'te $0.99 başlangıcı
+    /// T-15s ile T-161s arası — tamamen fiyat bazlı değişiyor).
     pub fn bonereaper_late_winner_bid_thr(&self) -> f64 {
         self.bonereaper_late_winner_bid_thr
-            .unwrap_or(0.90)
+            .unwrap_or(0.98)
             .clamp(0.50, 0.99)
     }
-    /// Late winner USDC notional; 0–10000 sınırlı; default 2000
-    /// (G_lw_only: tüm para tek büyük inject'e — ROI maximizer). 0 = KAPALI.
+    /// Late winner USDC notional; 0–10000 sınırlı; default 200
+    /// (Gerçek bot T-85s'de 1561+508+500+500+329 sh × $0.99 = ≈ $5000 toplam,
+    /// ama bunu küçük lotlarla ~40 shot'ta yapıyor. $200/shot × 20 quota = $4000
+    /// max. Eski $2000 tek shot: yanlış yönde -$2000 ani kayıp; küçük lot
+    /// riski yayar. realbot.log analizi: ortalama shot ~$100-$200). 0 = KAPALI.
     pub fn bonereaper_late_winner_usdc(&self) -> f64 {
         self.bonereaper_late_winner_usdc
-            .unwrap_or(2000.0)
+            .unwrap_or(200.0)
             .clamp(0.0, 10_000.0)
     }
-    /// Session başına max LW injection; 0–20 sınırlı; default 5 (multi-LW
-    /// için: ana T-30s + burst T-12s + 3 emniyet). 0 = sınırsız.
+    /// Session başına max LW injection; 0–50 sınırlı; default 20 (gerçek bot
+    /// bir market'te 40+ adet $0.99 BUY yapıyor; quota 20 → $200 × 20 = $4000
+    /// max — gerçek bot'un $5000 hedefine yakın). 0 = sınırsız.
     pub fn bonereaper_lw_max_per_session(&self) -> u32 {
-        self.bonereaper_lw_max_per_session.unwrap_or(5).min(20)
+        self.bonereaper_lw_max_per_session.unwrap_or(20).min(50)
     }
     /// Imbalance threshold (share); 0–10000 sınırlı; default 50.
     /// Düşük eşik = SAF kayıp riskini erken hedge ile keser. Bot 101 örnek
@@ -481,12 +491,15 @@ impl StrategyParams {
             .unwrap_or(0.01)
             .clamp(0.001, 0.10)
     }
-    /// Loser side scalp USDC; 0–10 sınırlı; default $1 (kuruşluk bilet).
-    /// 0 = scalp KAPALI.
+    /// Loser side scalp USDC; 0–50 sınırlı; default $5.
+    /// Gerçek bot loser scalp fazında ($0.10-$0.20 fiyat bandı) market başına
+    /// $40-$448 harcıyor (realbot.log: 703-3667 sh × $0.12-$0.15 avg). Eski
+    /// $1 default çok küçüktü — $5 ile 38 sh/trade × 20-30 tick = $100-$150
+    /// loser scalp toplam, real bot'a benzer. 0 = scalp KAPALI.
     pub fn bonereaper_loser_scalp_usdc(&self) -> f64 {
         self.bonereaper_loser_scalp_usdc
-            .unwrap_or(1.0)
-            .clamp(0.0, 10.0)
+            .unwrap_or(5.0)
+            .clamp(0.0, 50.0)
     }
     /// Loser scalp üst bid eşiği; 0.05–0.50 sınırlı; default 0.30. Loser side
     /// bid bu eşiğin altındaysa scalp boyutu uygulanır (longshot bucket yerine).
@@ -495,9 +508,12 @@ impl StrategyParams {
             .unwrap_or(0.30)
             .clamp(0.05, 0.50)
     }
-    /// Late pyramid penceresi (sn); 0–300 sınırlı; default 60.
+    /// Late pyramid penceresi (sn); 0–300 sınırlı; default 150.
+    /// Gerçek bot t=122-177s'de (to_end=123-178s) winner'a $0.80-$0.87'den
+    /// büyük lot alımları yapıyor (71, 83, 74 sh). Bu erken accumulation fazı
+    /// T-150s'den itibaren başlıyor; eski 60s default bu pencereyi kaçırıyordu.
     pub fn bonereaper_late_pyramid_secs(&self) -> u32 {
-        self.bonereaper_late_pyramid_secs.unwrap_or(60).min(300)
+        self.bonereaper_late_pyramid_secs.unwrap_or(150).min(300)
     }
     /// Winner pyramid size çarpanı; 1.0–10.0 sınırlı; default 5.0.
     pub fn bonereaper_winner_size_factor(&self) -> f64 {
@@ -505,15 +521,17 @@ impl StrategyParams {
             .unwrap_or(5.0)
             .clamp(1.0, 10.0)
     }
-    /// LW burst pencere (sn); 0–60 sınırlı; default 12. T-X kala 2. dalga LW.
-    /// 0 = burst KAPALI. Ana LW (`late_winner_secs`) > burst > 0 olmalı.
+    /// LW burst pencere (sn); 0–60 sınırlı; default 0 (KAPALI).
+    /// Gerçek bot analizi: ayrı burst wave yok, tüm $0.99 alımlar tek
+    /// mekanizmadan geliyor. Ana LW secs=300 + bid_thr=0.98 ile aynı
+    /// davranış sağlanıyor; burst ek karmaşıklık katıyor.
     pub fn bonereaper_lw_burst_secs(&self) -> u32 {
-        self.bonereaper_lw_burst_secs.unwrap_or(12).min(60)
+        self.bonereaper_lw_burst_secs.unwrap_or(0).min(60)
     }
-    /// LW burst USDC; 0–10000 sınırlı; default 200.
+    /// LW burst USDC; 0–10000 sınırlı; default 0 (KAPALI).
     pub fn bonereaper_lw_burst_usdc(&self) -> f64 {
         self.bonereaper_lw_burst_usdc
-            .unwrap_or(200.0)
+            .unwrap_or(0.0)
             .clamp(0.0, 10_000.0)
     }
     /// Loser avg fiyat üst sınırı (martingale-down guard); 0.10–0.95 sınırlı;
