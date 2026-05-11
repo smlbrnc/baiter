@@ -485,13 +485,14 @@ impl StrategyParams {
             .unwrap_or(20.0)
             .clamp(0.0, 10_000.0)
     }
-    /// High bucket USDC (bid > 0.65); 0–10000 sınırlı; default 30.
-    /// 14-market analizi: $0.65-0.85 band avg $33.36, $0.85-0.95 avg $77.85.
-    /// $30 normal, pyramid (×3 → $90) son 150s'de $0.90'da ~100sh ← real ~87sh.
-    /// Threshold değişimiyle $0.65+ tümü bu bucket'a → $0.70 bid: 43sh ≈ real 44sh.
+    /// High bucket USDC (bid > 0.65); 0–10000 sınırlı; default 40.
+    /// 941-trade analizi: gerçek bot SABIT 40-45 SHARE (randint) + REBALANCE
+    /// max(40,|imb|//4) → $0.70-0.80 bandında 50-58sh gözlemlendi.
+    /// ceil(40/0.70)=58sh, ceil(40/0.75)=54sh ← gerçek 52-58sh aralığına uyumlu.
+    /// Pyramid: $40×2=$80, $0.90 bid→89sh ≈ gerçek $0.85-0.95 avg 87sh ✓
     pub fn bonereaper_size_high_usdc(&self) -> f64 {
         self.bonereaper_size_high_usdc
-            .unwrap_or(30.0)
+            .unwrap_or(40.0)
             .clamp(0.0, 10_000.0)
     }
     /// Loser side min bid eşiği; 0.001–0.10 sınırlı; default 0.01 (1¢ scalp).
@@ -525,12 +526,12 @@ impl StrategyParams {
     pub fn bonereaper_late_pyramid_secs(&self) -> u32 {
         self.bonereaper_late_pyramid_secs.unwrap_or(150).min(300)
     }
-    /// Winner pyramid size çarpanı; 1.0–10.0 sınırlı; default 3.0.
-    /// size_high_usdc=$30 ile: $30×3=$90 → bid $0.90'da ~100sh ≈ real bot 87sh.
-    /// Eski 5.0 × $15=$75 ile aynı notional (5→3 çünkü base büyüdü: $15→$30).
+    /// Winner pyramid size çarpanı; 1.0–10.0 sınırlı; default 2.0.
+    /// size_high_usdc=$40 ile: $40×2=$80 → bid $0.90'da ~89sh ≈ real bot 87sh ✓.
+    /// 941-trade analizi: $0.85-0.95 avg 85sh. ceil(80/0.90)=89 ← tam uyum.
     pub fn bonereaper_winner_size_factor(&self) -> f64 {
         self.bonereaper_winner_size_factor
-            .unwrap_or(3.0)
+            .unwrap_or(2.0)
             .clamp(1.0, 10.0)
     }
     /// LW burst pencere (sn); 0–60 sınırlı; default 0 (KAPALI).
