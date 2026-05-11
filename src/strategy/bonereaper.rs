@@ -79,37 +79,25 @@ const fn reason_scalp(dir: Outcome) -> &'static str {
     }
 }
 
-/// Loser tarafın hangi outcome olduğunu döndürür: avg fiyatı düşük olan winner
-/// (real bot loser'ı 1¢-5¢ ucuz, winner'ı 0.5-0.95 pahalı tutuyor). İki taraf
-/// da boşsa veya eşitse → bid'i düşük olan loser sayılır.
+/// Loser tarafı ANLIK BID fiyatına göre belirler.
+///
+/// Mantık: Piyasa "bid yüksek taraf = daha muhtemel kazanan" der. Düşük bid
+/// taraf = loser. Bu, avg-fiyat tabanlı eski yaklaşımdan daha doğru:
+/// - Eski: avg_up vs avg_dn karşılaştırması → T=0-60s'de her iki taraf $0.50
+///   civarında, loser_side yanlış tarafı loser gösteriyordu.
+/// - Yeni: up_bid vs dn_bid anlık piyasa sinyali → ob_driven yönüyle tam uyum.
+///   Yüksek bid tarafı yön olarak seçilir, düşük bid taraf loser'dır.
+///
+/// Sonuç: winner yönünde alım ASLA bloke edilmez (is_loser_dir=false).
+///        Loser yönünde mid-fiyat alım bloke edilir (loser_guard).
+///        Cheap scalp her zaman serbest (is_any_scalp=true).
 #[inline]
-fn loser_side(
-    avg_up: f64,
-    avg_dn: f64,
-    up_filled: f64,
-    dn_filled: f64,
-    up_bid: f64,
-    dn_bid: f64,
-) -> Outcome {
-    if up_filled <= 0.0 && dn_filled <= 0.0 {
-        // Henüz pozisyon yok → bid düşük olan loser kabul edilir.
-        if up_bid <= dn_bid {
-            Outcome::Up
-        } else {
-            Outcome::Down
-        }
-    } else if up_filled > 0.0 && dn_filled > 0.0 {
-        // İki tarafta pozisyon var → avg fiyatı yüksek olan winner.
-        if avg_up >= avg_dn {
-            Outcome::Down
-        } else {
-            Outcome::Up
-        }
-    } else if up_filled > 0.0 {
-        // Sadece UP pozisyonu var → DOWN loser kandidatı (boşsa ucuza topla).
-        Outcome::Down
+fn loser_side(up_bid: f64, dn_bid: f64) -> Outcome {
+    // Yüksek bid = winner, düşük bid = loser
+    if up_bid >= dn_bid {
+        Outcome::Down // UP daha pahalı → DOWN loser
     } else {
-        Outcome::Up
+        Outcome::Up // DOWN daha pahalı → UP loser
     }
 }
 
@@ -314,16 +302,10 @@ impl BonereaperEngine {
                     return (BonereaperState::Active(st), Decision::NoOp);
                 }
 
-                // Loser/winner taraf belirle (size scaling + min_price + scalp)
+                // Loser/winner taraf: anlık bid fiyatına göre (düşük bid = loser)
+                // Eski avg-fiyat mantığı T=0-60s'de yanlış loser belirliyordu.
                 let metrics = ctx.metrics;
-                let loser = loser_side(
-                    metrics.avg_up,
-                    metrics.avg_down,
-                    metrics.up_filled,
-                    metrics.down_filled,
-                    ctx.up_best_bid,
-                    ctx.down_best_bid,
-                );
+                let loser = loser_side(ctx.up_best_bid, ctx.down_best_bid);
                 let is_loser_dir = dir == loser;
 
                 // Yön bazlı min_price (loser side 1¢ scalp serbest)
@@ -396,20 +378,14 @@ impl BonereaperEngine {
                 let is_any_scalp = scalp_only || is_scalp_band;
 
                 // ── LOSER GUARD ───────────────────────────────────────────────
-                // Gerçek bot loser tarafa $0.04-$0.06 ortalamasından alım yapıyor.
-                // Her iki tarafta pozisyon varken loser bid > scalp_max_price ($0.20)
-                // ise NOOp → pahalı loser ($0.40-$0.60) alımlarını engeller.
+                // Anlık bid fiyatı düşük olan taraf = loser. Loser tarafına
+                // mid-fiyat ($0.20+) alım yapma; sadece scalp bandı ($0.01-$0.20)
+                // veya LW (ayrı kod yolu) ile ucuza topla.
                 //
-                // Mantık: Her iki tarafta pozisyon = yön netleşti. Loser taraf
-                // artık sadece ucuz lottery ($0.01-$0.20) olarak alınmalı.
-                // Scalp (is_any_scalp=true) bu gardı geçer — zaten ucuz.
-                //
-                // Dikkat: up/dn_filled = 0 iken çalışmaz (ilk rebalance serbest).
-                // → İlk "0→fill" geçişi engellenmez; sadece karşılıklı pozisyon
-                //   olduğunda orta fiyatlı loser alımı bloke edilir.
-                let both_positions =
-                    metrics.up_filled > 0.0 && metrics.down_filled > 0.0;
-                if is_loser_dir && !is_any_scalp && bid > scalp_max_price && both_positions {
+                // Yeni bid-tabanlı loser_side ile ob_driven yönü her zaman WINNER
+                // taraftır → is_loser_dir=false → guard asla yanlış bloklama yapmaz.
+                // Loser yönüne ob_driven gönderme çok nadirdir; olursa scalp serbest.
+                if is_loser_dir && !is_any_scalp && bid > scalp_max_price {
                     st.last_up_bid = ctx.up_best_bid;
                     st.last_dn_bid = ctx.down_best_bid;
                     return (BonereaperState::Active(st), Decision::NoOp);
