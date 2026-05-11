@@ -3,6 +3,7 @@
 //! discriminated union üzerinden gider.
 
 pub mod arbitrage;
+pub mod binance_latency;
 pub mod bonereaper;
 pub mod common;
 pub mod gravie;
@@ -15,6 +16,7 @@ use serde::{Deserialize, Serialize};
 use crate::types::Strategy;
 
 use arbitrage::ArbitrageState;
+use binance_latency::BinanceLatencyState;
 use bonereaper::BonereaperState;
 use gravie::GravieState;
 
@@ -26,6 +28,7 @@ pub enum StrategyState {
     Bonereaper(BonereaperState),
     Gravie(GravieState),
     Arbitrage(ArbitrageState),
+    BinanceLatency(BinanceLatencyState),
 }
 
 impl StrategyState {
@@ -34,6 +37,7 @@ impl StrategyState {
             Strategy::Bonereaper => Self::Bonereaper(BonereaperState::default()),
             Strategy::Gravie => Self::Gravie(GravieState::default()),
             Strategy::Arbitrage => Self::Arbitrage(ArbitrageState::default()),
+            Strategy::BinanceLatency => Self::BinanceLatency(BinanceLatencyState::default()),
         }
     }
 
@@ -42,6 +46,7 @@ impl StrategyState {
             Self::Bonereaper(_) => "Bonereaper",
             Self::Gravie(_) => "Gravie",
             Self::Arbitrage(_) => "Arbitrage",
+            Self::BinanceLatency(_) => "BinanceLatency",
         }
     }
 }

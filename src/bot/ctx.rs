@@ -7,6 +7,7 @@ use sqlx::SqlitePool;
 use tokio::signal::unix::{signal, Signal, SignalKind};
 
 use crate::binance::{self, new_shared_state, SharedSignalState};
+use crate::binance_price::{self, SharedBinancePrice};
 use crate::config::{BotConfig, Credentials, RuntimeEnv};
 use crate::db;
 use crate::engine::{Executor, LiveExecutor, Simulator};
@@ -35,6 +36,8 @@ pub struct Ctx {
     pub okx_state: SharedOkxState,
     /// RTDS Chainlink durumu — pencere açılışı DB kaydı için tutulur.
     pub rtds_state: SharedRtdsState,
+    /// Binance Spot mid price oracle (BinanceLatency stratejisi için).
+    pub binance_price_state: SharedBinancePrice,
 }
 
 /// CLI veya `BAITER_BOT_ID` env'inden bot id parse et.
@@ -83,6 +86,7 @@ pub async fn load(bot_id: i64) -> Result<(Ctx, SlugInfo, Signal, Signal), AppErr
     let signal_state = new_shared_state();
     let okx_state = okx::new_shared_state();
     let rtds_state = rtds::new_shared_state();
+    let binance_price_state = binance_price::new_shared_state();
 
     spawn_background_tasks(BackgroundTasksArgs {
         bot_id,
@@ -91,6 +95,7 @@ pub async fn load(bot_id: i64) -> Result<(Ctx, SlugInfo, Signal, Signal), AppErr
         signal_state: signal_state.clone(),
         okx_state: okx_state.clone(),
         rtds_state: rtds_state.clone(),
+        binance_price_state: binance_price_state.clone(),
         clob: clob.as_ref(),
         cfg: &cfg,
         env_: &env_,
@@ -113,6 +118,7 @@ pub async fn load(bot_id: i64) -> Result<(Ctx, SlugInfo, Signal, Signal), AppErr
             signal_state,
             okx_state,
             rtds_state,
+            binance_price_state,
         },
         slug,
         sigterm,
@@ -195,6 +201,7 @@ struct BackgroundTasksArgs<'a> {
     signal_state: SharedSignalState,
     okx_state: SharedOkxState,
     rtds_state: SharedRtdsState,
+    binance_price_state: SharedBinancePrice,
     clob: Option<&'a Arc<ClobClient>>,
     cfg: &'a BotConfig,
     env_: &'a RuntimeEnv,
@@ -209,6 +216,7 @@ fn spawn_background_tasks(args: BackgroundTasksArgs<'_>) {
         signal_state,
         okx_state,
         rtds_state,
+        binance_price_state,
         clob,
         cfg,
         env_,
@@ -218,6 +226,12 @@ fn spawn_background_tasks(args: BackgroundTasksArgs<'_>) {
     let symbol = slug.asset.binance_symbol().to_string();
     tokio::spawn(async move {
         binance::run_binance_signal(&symbol, signal_state, bot_id).await;
+    });
+
+    // Binance Spot bookTicker fiyat oracle (BinanceLatency stratejisi için)
+    let price_symbol = slug.asset.binance_symbol().to_string();
+    tokio::spawn(async move {
+        binance_price::run_binance_price(&price_symbol, binance_price_state, bot_id).await;
     });
 
     // OKX EMA momentum task'ı

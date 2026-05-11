@@ -5,7 +5,7 @@ export type Outcome = "UP" | "DOWN"
 export type Side = "BUY" | "SELL"
 
 export type RunMode = "live" | "dryrun"
-export type Strategy = "bonereaper" | "gravie" | "arbitrage"
+export type Strategy = "bonereaper" | "gravie" | "arbitrage" | "binance_latency"
 
 /**
  * `bots.strategy_params` JSON sütunu — backend `config::StrategyParams`.
@@ -127,6 +127,23 @@ export interface StrategyParams {
   arbitrage_cooldown_ms?: number | null
   /** Entry penceresi (T-X..T-0 arası ara). Default 300 (tüm pencere). */
   arbitrage_entry_window_secs?: number | null
+
+  // ── Binance Latency Arbitrage ───────────────────────────────────────────
+  // Polymarket BTC 5dk markete karşı Binance Spot BTC/USDT lag'ini sömürür.
+  // Bot 91 backtest (665 session, 64h):
+  //   - sig=$50 mt=10 cd=3s → WR %89, NET +$8323, ROI +%4.80, yıllık ~$1.14M
+  //   - sig=$80 mt=3 cd=3s → WR %93, ROI +%9.11 (max ROI)
+  //   - sig=$50 mt=50 cd=3s → WR %91, NET +$12808 (max NET)
+  /** Sinyal eşiği (USD). |delta| ≥ X ise BUY. Default 50. */
+  binance_latency_sig_thr_usd?: number | null
+  /** Trade'ler arası min bekleme (ms). Default 3000. */
+  binance_latency_cooldown_ms?: number | null
+  /** Session başına max trade. Default 10. */
+  binance_latency_max_trades_per_session?: number | null
+  /** Order USDC notional. Default 100. */
+  binance_latency_order_usdc?: number | null
+  /** Entry penceresi (T-X..T-0). Default 300 (tüm pencere). */
+  binance_latency_entry_window_secs?: number | null
 
   // ── Gravie (Bot 66 davranış kopyası) ─────────────────────────────────────
   /**
@@ -525,6 +542,12 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   arbitrage_max_trades_per_session: 5,
   arbitrage_cooldown_ms: 5000,
   arbitrage_entry_window_secs: 300,
+  // Binance Latency (Bot 91 backtest profil B: WR %89, NET +$8323, yıllık ~$1.14M)
+  binance_latency_sig_thr_usd: 50,
+  binance_latency_cooldown_ms: 3000,
+  binance_latency_max_trades_per_session: 10,
+  binance_latency_order_usdc: 100,
+  binance_latency_entry_window_secs: 300,
   // Gravie (Bot 66 davranış kopyası — optimum kalibre)
   gravie_tick_interval_secs: 5,
   gravie_buy_cooldown_ms: 4000,

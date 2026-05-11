@@ -1,0 +1,159 @@
+#!/usr/bin/env python3
+"""Bot 91 — Yüksek sinyal threshold + multi-trade kombinasyonları.
+
+Hipotez: Yüksek sig threshold = yüksek WR, multi-trade ile kazanç katlanabilir.
+"""
+import math, sqlite3, sys, time, json, argparse
+from urllib.request import urlopen, Request
+
+BINANCE_URL = "https://api.binance.com/api/v3/klines"
+FEE_RATE = 0.02
+MIN_PRICE = 0.10
+MAX_PRICE = 0.95
+
+
+def fetch_btc(start_ms, end_ms):
+    klines = []
+    cur = start_ms
+    n = 0
+    while cur < end_ms:
+        url = f"{BINANCE_URL}?symbol=BTCUSDT&interval=1s&startTime={cur}&endTime={end_ms}&limit=1000"
+        try:
+            req = Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urlopen(req, timeout=10) as r:
+                d = json.loads(r.read().decode())
+        except Exception:
+            time.sleep(1); continue
+        if not d: break
+        klines.extend(d); cur = int(d[-1][6]) + 1; n += 1
+        if n % 50 == 0: print(f"  {n} batch...", file=sys.stderr)
+        time.sleep(0.05)
+        if len(d) < 1000: break
+    return {int(k[0]) // 1000: float(k[4]) for k in klines}
+
+
+def get_btc(lk, ts, drift=5):
+    for d in range(drift):
+        if ts - d in lk: return lk[ts - d]
+        if ts + d in lk: return lk[ts + d]
+    return None
+
+
+def winner_of(con, bot_id, sess):
+    r = con.execute(
+        "SELECT up_best_bid, down_best_bid FROM market_ticks "
+        "WHERE bot_id=? AND market_session_id=? ORDER BY ts_ms DESC LIMIT 1",
+        (bot_id, sess)).fetchone()
+    if not r or r[0] is None: return None
+    ub, db = r[0] or 0.0, r[1] or 0.0
+    if ub > 0.95: return "UP"
+    if db > 0.95: return "DOWN"
+    return None
+
+
+def sim(con, bot_id, sess, btc_lk, sig_thr, t_window, order, cooldown_s, max_trades):
+    w = winner_of(con, bot_id, sess)
+    if w is None: return None
+    sm = con.execute("SELECT start_ts, end_ts FROM market_sessions WHERE id=?", (sess,)).fetchone()
+    start_ts, end_ts = sm[0], sm[1]
+    btc_open = get_btc(btc_lk, start_ts)
+    if btc_open is None: return None
+    ticks = con.execute(
+        "SELECT ts_ms, up_best_bid, up_best_ask, down_best_bid, down_best_ask "
+        "FROM market_ticks WHERE bot_id=? AND market_session_id=? ORDER BY ts_ms",
+        (bot_id, sess)).fetchall()
+    n_t = wins = 0; cost = pnl = 0.0; last_t = 0
+    for ts_ms, ub, ua, db, da in ticks:
+        if not all(x and x > 0 for x in (ub, ua, db, da)): continue
+        ts_sec = ts_ms // 1000
+        sec_to_end = end_ts - ts_sec
+        if sec_to_end <= 0: break
+        if sec_to_end > t_window: continue
+        if n_t >= max_trades: break
+        if ts_sec - last_t < cooldown_s: continue
+        btc_now = get_btc(btc_lk, ts_sec)
+        if btc_now is None: continue
+        delta = btc_now - btc_open
+        if abs(delta) < sig_thr: continue
+        sig_dir = "UP" if delta > 0 else "DOWN"
+        ask = ua if sig_dir == "UP" else da
+        bid = ub if sig_dir == "UP" else db
+        if ask <= 0 or bid < MIN_PRICE or bid > MAX_PRICE or ask >= 0.99: continue
+        size = math.ceil(order / ask)
+        c = size * ask
+        if c < 5: continue
+        cost += c
+        if sig_dir == w: pnl += size * 1.0 - c; wins += 1
+        else: pnl -= c
+        n_t += 1; last_t = ts_sec
+    return dict(cost=cost, pnl=pnl, n=n_t, wins=wins)
+
+
+def aggregate(con, bot_id, sessions, btc_lk, **kw):
+    triggered = total = wins = 0; cost = pnl = 0.0
+    for s in sessions:
+        r = sim(con, bot_id, s, btc_lk, **kw)
+        if r is None or r["n"] == 0: continue
+        triggered += 1; total += r["n"]; wins += r["wins"]
+        cost += r["cost"]; pnl += r["pnl"]
+    fees = cost * FEE_RATE
+    n_s = len(sessions)
+    return dict(triggered=triggered, total=total, cost=cost, pnl=pnl, fees=fees,
+                net=pnl - fees, roi=100 * (pnl - fees) / max(1, cost),
+                wr=100 * wins / max(1, total),
+                avg_per_session=total / max(1, n_s),
+                avg_per_active=total / max(1, triggered))
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("bot_id", type=int)
+    ap.add_argument("db", nargs="?", default="/home/ubuntu/baiter/data/baiter.db")
+    args = ap.parse_args()
+    con = sqlite3.connect(args.db)
+    sessions = [r[0] for r in con.execute(
+        "SELECT id FROM market_sessions WHERE bot_id=? ORDER BY id", (args.bot_id,)).fetchall()]
+    span = con.execute("SELECT MIN(start_ts), MAX(end_ts) FROM market_sessions WHERE bot_id=?",
+                       (args.bot_id,)).fetchone()
+    span_h = (span[1] - span[0]) / 3600
+    print(f"BOT {args.bot_id} | {len(sessions)} session | {span_h:.1f}h | High-Sig + High-Freq")
+    print(f"\nBinance API çekiliyor...")
+    btc_lk = fetch_btc(span[0] * 1000, span[1] * 1000)
+    print(f"  {len(btc_lk)} kline\n")
+
+    print(f"  {'Senaryo':<60} {'trd':>5} {'avg/s':>6} {'WR%':>5} "
+          f"{'cost':>10} {'NET':>10} {'ROI%':>6}")
+    print("  " + "-" * 115)
+
+    sc = []
+    # Yüksek threshold + multi-trade
+    for sig in [20, 30, 50, 80]:
+        for mt in [3, 5, 10, 20, 50]:
+            for cd in [3, 5, 10]:
+                sc.append((f"sig=${sig:<2} mt={mt:<2} cd={cd}s T=300",
+                           dict(sig_thr=sig, t_window=300, order=100, cooldown_s=cd, max_trades=mt)))
+
+    results = []
+    for label, kw in sc:
+        r = aggregate(con, args.bot_id, sessions, btc_lk, **kw)
+        results.append((label, r))
+
+    # Sırala
+    print("\n[NET TOP 15]")
+    for i, (l, r) in enumerate(sorted(results, key=lambda x: x[1]["net"], reverse=True)[:15], 1):
+        m = " ⭐" if i == 1 else ""
+        yearly = r["net"] * (8760 / span_h)
+        print(f"  {i:>2}. {l:<60} trd={r['total']:>5} avg/s={r['avg_per_session']:>5.2f} "
+              f"WR={r['wr']:>4.1f}% NET=${r['net']:+8.2f} ROI={r['roi']:+6.2f}% "
+              f"yıllık~${yearly:+,.0f}{m}")
+
+    print("\n[ROI TOP 10 (>=200 trade)]")
+    valid = [(l, r) for l, r in results if r["total"] >= 200]
+    for i, (l, r) in enumerate(sorted(valid, key=lambda x: x[1]["roi"], reverse=True)[:10], 1):
+        m = " ⭐" if i == 1 else ""
+        print(f"  {i:>2}. {l:<60} trd={r['total']:>5} WR={r['wr']:>4.1f}% "
+              f"NET=${r['net']:+8.2f} ROI={r['roi']:+6.2f}%{m}")
+
+
+if __name__ == "__main__":
+    main()

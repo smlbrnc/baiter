@@ -23,6 +23,7 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const isBonereaper = form.strategy === "bonereaper"
   const isGravie = form.strategy === "gravie"
   const isArbitrage = form.strategy === "arbitrage"
+  const isBinanceLatency = form.strategy === "binance_latency"
 
   const patch = (next: Partial<StrategyParams>) => {
     setForm({
@@ -140,6 +141,23 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const arbitrageEntryWindowSecs =
     params.arbitrage_entry_window_secs ??
     STRATEGY_PARAMS_DEFAULTS.arbitrage_entry_window_secs
+
+  // ── Binance Latency Arbitrage ──────────────────────────────────────────
+  const binanceLatencySigThrUsd =
+    params.binance_latency_sig_thr_usd ??
+    STRATEGY_PARAMS_DEFAULTS.binance_latency_sig_thr_usd
+  const binanceLatencyCooldownMs =
+    params.binance_latency_cooldown_ms ??
+    STRATEGY_PARAMS_DEFAULTS.binance_latency_cooldown_ms
+  const binanceLatencyMaxTrades =
+    params.binance_latency_max_trades_per_session ??
+    STRATEGY_PARAMS_DEFAULTS.binance_latency_max_trades_per_session
+  const binanceLatencyOrderUsdc =
+    params.binance_latency_order_usdc ??
+    STRATEGY_PARAMS_DEFAULTS.binance_latency_order_usdc
+  const binanceLatencyEntryWindow =
+    params.binance_latency_entry_window_secs ??
+    STRATEGY_PARAMS_DEFAULTS.binance_latency_entry_window_secs
 
   return (
     <div className="space-y-3">
@@ -638,6 +656,136 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
             <li>
               <strong>Risk:</strong> Tek leg fill (winner_bid fill, loser_bid fill
               olmaz) → directional pozisyon. Sermaye 2× order büyüklüğü.
+            </li>
+          </ul>
+        </div>
+      )}
+
+      {/* ── Binance Latency Arbitrage parametreleri ─────────────────────── */}
+      {isBinanceLatency && (
+        <div className="space-y-3">
+          <SectionLabel icon={Zap} title="Binance Latency parametreleri" />
+          <p className="text-sm text-muted-foreground">
+            Binance Spot BTC/USDT mid fiyat lag arbitrajı. Session başında
+            BTC mid snapshot, her tick <code>delta = current − open</code>;{" "}
+            <code>|delta| ≥ sig_thr</code> (USD) ise BUY yönü:{" "}
+            <code>delta&gt;0 → UP</code>, <code>&lt;0 → DOWN</code>.
+            <br />
+            <strong>Backtest (bot 91, 665 session, 64h):</strong>{" "}
+            <code>sig=$50 mt=10 cd=3s</code> → WR <strong>%89</strong>, NET{" "}
+            <strong>+$8 323</strong>, ROI <strong>+%4.80</strong>, yıllık
+            ~<strong>$1.14M</strong>.
+          </p>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field
+              label="Sinyal eşiği (USD)"
+              tooltip="|delta| ≥ X ise trade. $50 = sweet spot (WR %89). $80 → WR %93 ama düşük frekans. $30 → WR %83."
+              hint={`1 – 500 USD (default ${STRATEGY_PARAMS_DEFAULTS.binance_latency_sig_thr_usd}).`}
+            >
+              <Input
+                type="number"
+                step="5"
+                min="1"
+                max="500"
+                value={binanceLatencySigThrUsd}
+                onChange={(e) =>
+                  patch({
+                    binance_latency_sig_thr_usd: Number(e.target.value),
+                  })
+                }
+              />
+            </Field>
+            <Field
+              label="Order USDC"
+              tooltip="Trade başına notional. $100 default; backtest tüm sonuçlar bu değerle."
+              hint={`5 – 10000 (default ${STRATEGY_PARAMS_DEFAULTS.binance_latency_order_usdc}).`}
+            >
+              <Input
+                type="number"
+                step="10"
+                min="5"
+                max="10000"
+                value={binanceLatencyOrderUsdc}
+                onChange={(e) =>
+                  patch({
+                    binance_latency_order_usdc: Number(e.target.value),
+                  })
+                }
+              />
+            </Field>
+            <Field
+              label="Max trades / session"
+              tooltip="Pencere başına max trade. 10=denge, 50=max NET (+$12808 ama düşük ROI), 3=max ROI (+%9)."
+              hint={`1 – 100 (default ${STRATEGY_PARAMS_DEFAULTS.binance_latency_max_trades_per_session}).`}
+            >
+              <Input
+                type="number"
+                step="1"
+                min="1"
+                max="100"
+                value={binanceLatencyMaxTrades}
+                onChange={(e) =>
+                  patch({
+                    binance_latency_max_trades_per_session: Number(
+                      e.target.value
+                    ),
+                  })
+                }
+              />
+            </Field>
+            <Field
+              label="Cooldown (ms)"
+              tooltip="Trade'ler arası min bekleme. 3000=optimum (frekans + sinyal kalitesi dengesi)."
+              hint={`1000 – 60000 (default ${STRATEGY_PARAMS_DEFAULTS.binance_latency_cooldown_ms}).`}
+            >
+              <Input
+                type="number"
+                step="500"
+                min="1000"
+                max="60000"
+                value={binanceLatencyCooldownMs}
+                onChange={(e) =>
+                  patch({
+                    binance_latency_cooldown_ms: Number(e.target.value),
+                  })
+                }
+              />
+            </Field>
+            <Field
+              label="Entry window (sn)"
+              tooltip="Pencere kapanmasına bu kadar sn kala kadar trade ara. 300=tüm 5dk pencere, 60=son 1dk."
+              hint={`15 – 600 (default ${STRATEGY_PARAMS_DEFAULTS.binance_latency_entry_window_secs}).`}
+            >
+              <Input
+                type="number"
+                step="15"
+                min="15"
+                max="600"
+                value={binanceLatencyEntryWindow}
+                onChange={(e) =>
+                  patch({
+                    binance_latency_entry_window_secs: Number(e.target.value),
+                  })
+                }
+              />
+            </Field>
+          </div>
+          <ul className="list-disc space-y-1 rounded-md border border-border/40 bg-muted/10 px-4 py-2.5 pl-7 text-xs text-muted-foreground">
+            <li>
+              <strong>Mantık:</strong> Polymarket bid/ask Binance&apos;den birkaç
+              saniye geride. Binance fiyatı sıçrarsa Polymarket henüz tepki
+              vermeden BUY yapılır.
+            </li>
+            <li>
+              <strong>3 profil:</strong>{" "}
+              <code>sig=$80 mt=3</code> (max ROI %9.11) /{" "}
+              <code>sig=$50 mt=10</code> (denge) /{" "}
+              <code>sig=$50 mt=50</code> (max NET +$12 808).
+            </li>
+            <li>
+              <strong>Risk:</strong> Tek-yön directional (yön yanlışsa tam
+              kayıp). Sinyal kalitesi sigortadır — düşük sig_thr (&lt;$10)
+              kayıp riskini büyütür.
             </li>
           </ul>
         </div>

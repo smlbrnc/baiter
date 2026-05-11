@@ -121,4 +121,9 @@ pub enum Strategy {
     /// Pure arbitrage: avg_sum<1 sentetik dolar (FAK BID winner+loser cross-leg).
     /// Backtest (bot 108): %100 WR, ROI %4.35, NET +$994/12.4h ($100 order).
     Arbitrage,
+    /// Binance Latency Arbitrage — Binance Spot BTC/USDT spot fiyat lag'ini
+    /// sömürür. Session başında BTC mid snapshot, her tick delta hesabı; eşik
+    /// aşılınca yön (UP/DOWN) BUY. Backtest (bot 91, 64h, 665 session):
+    /// `sig=$50 mt=10 cd=3s` → WR %89, ROI +%4.80, NET +$8323, yıllık ~$1.14M.
+    BinanceLatency,
 }
