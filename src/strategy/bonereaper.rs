@@ -391,6 +391,26 @@ impl BonereaperEngine {
                 // Scalp türü tespit (avg_sum cap ve order_price için kullanılır)
                 let is_any_scalp = scalp_only || is_scalp_band;
 
+                // ── LOSER GUARD ───────────────────────────────────────────────
+                // Gerçek bot loser tarafa $0.04-$0.06 ortalamasından alım yapıyor.
+                // Her iki tarafta pozisyon varken loser bid > scalp_max_price ($0.20)
+                // ise NOOp → pahalı loser ($0.40-$0.60) alımlarını engeller.
+                //
+                // Mantık: Her iki tarafta pozisyon = yön netleşti. Loser taraf
+                // artık sadece ucuz lottery ($0.01-$0.20) olarak alınmalı.
+                // Scalp (is_any_scalp=true) bu gardı geçer — zaten ucuz.
+                //
+                // Dikkat: up/dn_filled = 0 iken çalışmaz (ilk rebalance serbest).
+                // → İlk "0→fill" geçişi engellenmez; sadece karşılıklı pozisyon
+                //   olduğunda orta fiyatlı loser alımı bloke edilir.
+                let both_positions =
+                    metrics.up_filled > 0.0 && metrics.down_filled > 0.0;
+                if is_loser_dir && !is_any_scalp && bid > scalp_max_price && both_positions {
+                    st.last_up_bid = ctx.up_best_bid;
+                    st.last_dn_bid = ctx.down_best_bid;
+                    return (BonereaperState::Active(st), Decision::NoOp);
+                }
+
                 // Emir fiyatı: Maker (BID) vs Taker (ASK)
                 // Gerçek bot: normal alımlar LIMIT BID (maker) = stale fill avantajı.
                 // Scalp: taker (ASK) — ucuz loser fiyatını hemen kilitler.
