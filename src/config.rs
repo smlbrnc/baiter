@@ -477,12 +477,12 @@ impl StrategyParams {
             .unwrap_or(8.0)
             .clamp(0.0, 10_000.0)
     }
-    /// Mid bucket USDC (0.30 < bid ≤ 0.65); 0–10000 sınırlı; default 15.
-    /// 14-market analizi: real bot $0.30-0.50 avg $11.54, $0.50-0.65 avg ~$16.
-    /// $15 iki alt bant ortalamasını dengeler. Threshold 0.85→0.65 değişti.
+    /// Mid bucket USDC (0.30 < bid ≤ 0.65); 0–10000 sınırlı; default 20.
+    /// Gerçek bot SABİT 40 SHARE kullanıyor (mode=40, median=40). 40×$0.50=$20.
+    /// ceil(20/0.50)=40sh @ $0.50 ← real bot standart lotu. Threshold 0.85→0.65.
     pub fn bonereaper_size_mid_usdc(&self) -> f64 {
         self.bonereaper_size_mid_usdc
-            .unwrap_or(15.0)
+            .unwrap_or(20.0)
             .clamp(0.0, 10_000.0)
     }
     /// High bucket USDC (bid > 0.65); 0–10000 sınırlı; default 30.

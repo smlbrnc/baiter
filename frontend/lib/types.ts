@@ -531,7 +531,7 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   bonereaper_max_avg_sum: 1.05,
   bonereaper_first_spread_min: 0.02,
   bonereaper_size_longshot_usdc: 8,   // bid ≤ 0.30, real avg $7.18
-  bonereaper_size_mid_usdc: 15,       // 0.30 < bid ≤ 0.65, real avg $12-16
+  bonereaper_size_mid_usdc: 20,       // 0.30 < bid ≤ 0.65, 40sh×$0.50=$20 (real mode=40sh)
   bonereaper_size_high_usdc: 30,      // bid > 0.65 (threshold 0.85→0.65), real $33-78
   // Loser long-shot scalp ($0.10–$0.20 bant, realbot $40–$450/market)
   bonereaper_loser_min_price: 0.01,
