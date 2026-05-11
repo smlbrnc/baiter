@@ -249,8 +249,12 @@ impl BonereaperEngine {
                 // ── YÖN SEÇİMİ ──────────────────────────────────────────
                 let dir = if !st.first_done {
                     // İlk emir: spread-gated. |up_bid - down_bid| eşiği aşılmadan
-                    // emir verme; aşılınca yüksek bid tarafına başla (winner momentum).
-                    // Bot 101 backtest: ROI %1.41 → %2.56, 1st=DOWN+win=DOWN −%5.45 → +%8.86.
+                    // emir verme; aşılınca yön karar zinciri:
+                    //   1) BSI (Binance CVD imbalance) primer — |bsi| ≥ 0.30:
+                    //      Gerçek Bonereaper'ın birincil sinyali. DOWN bid yüksek
+                    //      olmasına rağmen BSI>0 ise UP alır (docs/bonereaper.md §4).
+                    //      Canlı analiz: DOWN=$0.52 > UP=$0.46 iken Bonereaper UP aldı.
+                    //   2) OB fallback: yüksek bid tarafı (winner momentum).
                     let spread_min = p.bonereaper_first_spread_min();
                     let spread = ctx.up_best_bid - ctx.down_best_bid;
                     if spread.abs() < spread_min {
@@ -259,10 +263,20 @@ impl BonereaperEngine {
                         st.last_dn_bid = ctx.down_best_bid;
                         return (BonereaperState::Active(st), Decision::NoOp);
                     }
-                    if spread > 0.0 {
-                        Outcome::Up
+                    // BSI primer (docs/bonereaper.md §4): |imbalance| ≥ 0.30
+                    const BSI_THRESHOLD: f64 = 0.30;
+                    if let Some(bsi) = ctx.bsi {
+                        if bsi >= BSI_THRESHOLD {
+                            Outcome::Up
+                        } else if bsi <= -BSI_THRESHOLD {
+                            Outcome::Down
+                        } else {
+                            // |BSI| < 0.30 → OB fallback
+                            if spread > 0.0 { Outcome::Up } else { Outcome::Down }
+                        }
                     } else {
-                        Outcome::Down
+                        // BSI yok → OB fallback
+                        if spread > 0.0 { Outcome::Up } else { Outcome::Down }
                     }
                 } else {
                     let m = ctx.metrics;
@@ -373,16 +387,28 @@ impl BonereaperEngine {
                 if usdc <= 0.0 {
                     return (BonereaperState::Active(st), Decision::NoOp);
                 }
-                let size = (usdc / ask).ceil();
+
+                // Scalp türü tespit (avg_sum cap ve order_price için kullanılır)
+                let is_any_scalp = scalp_only || is_scalp_band;
+
+                // Emir fiyatı: Maker (BID) vs Taker (ASK)
+                // Gerçek bot: normal alımlar LIMIT BID (maker) = stale fill avantajı.
+                // Scalp: taker (ASK) — ucuz loser fiyatını hemen kilitler.
+                // Kazanan taraf maker → piyasa yükselirken eski düşük BID'den fill olur.
+                let order_price = if is_any_scalp {
+                    ask // scalp: agresif taker (loser ucuzu anında kilitler)
+                } else {
+                    bid // winner accumulation: maker (resting limit bid)
+                };
+                let size = (usdc / order_price).ceil();
 
                 // avg_sum soft cap — loser scalp HARİÇ (scalp her zaman serbest)
-                let is_any_scalp = scalp_only || is_scalp_band;
                 if !is_any_scalp && opp_filled > 0.0 {
                     let max_avg_sum = p.bonereaper_max_avg_sum();
                     let new_avg = if cur_filled > 0.0 {
-                        (cur_avg * cur_filled + ask * size) / (cur_filled + size)
+                        (cur_avg * cur_filled + order_price * size) / (cur_filled + size)
                     } else {
-                        ask
+                        order_price
                     };
                     if new_avg + opp_avg > max_avg_sum {
                         return (BonereaperState::Active(st), Decision::NoOp);
@@ -394,7 +420,7 @@ impl BonereaperEngine {
                 } else {
                     reason_buy(dir)
                 };
-                if let Some(o) = make_buy(ctx, dir, ask, size, reason) {
+                if let Some(o) = make_buy(ctx, dir, order_price, size, reason) {
                     st.last_buy_ms = ctx.now_ms;
                     st.first_done = true;
                     return (
