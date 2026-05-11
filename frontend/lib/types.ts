@@ -144,6 +144,17 @@ export interface StrategyParams {
   binance_latency_order_usdc?: number | null
   /** Entry penceresi (T-X..T-0). Default 300 (tüm pencere). */
   binance_latency_entry_window_secs?: number | null
+  /**
+   * Hedge leg notional (USDC). 0 = hedge KAPALI (default; backtest: hedge=$1
+   * → NET −$375, hedge=$5 → NET −$2 628). Sadece tek-yön risk azaltmak
+   * isteyenler için opt-in.
+   */
+  binance_latency_hedge_usdc?: number | null
+  /**
+   * Hedge için karşı taraf bid üst sınırı. Bid bu eşiğin altındaysa FAK BID
+   * hedge alınır. Default 0.30.
+   */
+  binance_latency_hedge_max_bid?: number | null
 
   // ── Gravie (Bot 66 davranış kopyası) ─────────────────────────────────────
   /**
@@ -548,6 +559,8 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   binance_latency_max_trades_per_session: 10,
   binance_latency_order_usdc: 100,
   binance_latency_entry_window_secs: 300,
+  binance_latency_hedge_usdc: 0,
+  binance_latency_hedge_max_bid: 0.30,
   // Gravie (Bot 66 davranış kopyası — optimum kalibre)
   gravie_tick_interval_secs: 5,
   gravie_buy_cooldown_ms: 4000,

@@ -154,7 +154,7 @@ impl BinanceLatencyEngine {
                     dir.as_lowercase(),
                     delta
                 );
-                let order = PlannedOrder {
+                let main_order = PlannedOrder {
                     outcome: dir,
                     token_id: ctx.token_id(dir).to_string(),
                     side: Side::Buy,
@@ -164,11 +164,42 @@ impl BinanceLatencyEngine {
                     reason,
                 };
 
+                // ── Hedge leg (loser scalp; opt-in) ──
+                // Karşı taraf bid çok düşükse FAK BID hedge — yön yanlışsa
+                // tam payoff sigortası. Backtest: hedge>0 NET'i azaltır
+                // (matematik aleyhine), opt-in olarak default 0 (kapalı).
+                let hedge_usdc = p.binance_latency_hedge_usdc();
+                let mut orders = vec![main_order];
+                if hedge_usdc > 0.0 {
+                    let opp_dir = dir.opposite();
+                    let opp_bid = ctx.best_bid(opp_dir);
+                    let hedge_max_bid = p.binance_latency_hedge_max_bid();
+                    if opp_bid >= 0.01 && opp_bid <= hedge_max_bid {
+                        let hedge_size = (hedge_usdc / opp_bid).ceil();
+                        if hedge_size > 0.0 && hedge_size * opp_bid >= ctx.api_min_order_size {
+                            let hedge_reason = format!(
+                                "binance_latency:hedge:{}:bid={:.3}",
+                                opp_dir.as_lowercase(),
+                                opp_bid
+                            );
+                            orders.push(PlannedOrder {
+                                outcome: opp_dir,
+                                token_id: ctx.token_id(opp_dir).to_string(),
+                                side: Side::Buy,
+                                price: opp_bid,
+                                size: hedge_size,
+                                order_type: OrderType::Gtc,
+                                reason: hedge_reason,
+                            });
+                        }
+                    }
+                }
+
                 st.last_buy_ms = ctx.now_ms;
                 st.n_trades = st.n_trades.saturating_add(1);
                 (
                     BinanceLatencyState::Active(st),
-                    Decision::PlaceOrders(vec![order]),
+                    Decision::PlaceOrders(orders),
                 )
             }
         }

@@ -264,6 +264,16 @@ pub struct StrategyParams {
     /// Entry penceresi (T-X..T-0 arası ara). Default 300 (tüm pencere).
     #[serde(default)]
     pub binance_latency_entry_window_secs: Option<u32>,
+    /// Hedge leg notional (USDC). 0 = hedge KAPALI (default; backtest
+    /// matematik aleyhine: hedge=$1 → NET -$375, hedge=$5 → NET -$2628).
+    /// Sadece tek-yön risk azaltmak isteyenler için opt-in.
+    #[serde(default)]
+    pub binance_latency_hedge_usdc: Option<f64>,
+    /// Hedge için karşı tarafın bid üst sınırı. Bid bu eşiğin altındaysa
+    /// FAK BID hedge alınır. Default 0.30. Düşük = sıkı (daha az hedge),
+    /// yüksek = gevşek (daha çok hedge → daha çok kayıp).
+    #[serde(default)]
+    pub binance_latency_hedge_max_bid: Option<f64>,
 
     // === Gravie (Bot 66 davranış kopyası) ===
     /// Karar tick aralığı (sn). Bot 66 ortalama inter-arrival 4-5 sn.
@@ -585,6 +595,19 @@ impl StrategyParams {
         self.binance_latency_entry_window_secs
             .unwrap_or(300)
             .clamp(15, 600)
+    }
+    /// Hedge leg notional (USDC); 0–100 sınırlı; default 0 (kapalı).
+    /// Pure directional optimum; hedge ekleme NET'i azaltır (backtest).
+    pub fn binance_latency_hedge_usdc(&self) -> f64 {
+        self.binance_latency_hedge_usdc
+            .unwrap_or(0.0)
+            .clamp(0.0, 100.0)
+    }
+    /// Hedge için karşı taraf bid üst sınırı; 0.05–0.50 sınırlı; default 0.30.
+    pub fn binance_latency_hedge_max_bid(&self) -> f64 {
+        self.binance_latency_hedge_max_bid
+            .unwrap_or(0.30)
+            .clamp(0.05, 0.50)
     }
 }
 

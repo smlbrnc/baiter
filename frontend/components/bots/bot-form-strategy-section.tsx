@@ -158,6 +158,12 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const binanceLatencyEntryWindow =
     params.binance_latency_entry_window_secs ??
     STRATEGY_PARAMS_DEFAULTS.binance_latency_entry_window_secs
+  const binanceLatencyHedgeUsdc =
+    params.binance_latency_hedge_usdc ??
+    STRATEGY_PARAMS_DEFAULTS.binance_latency_hedge_usdc
+  const binanceLatencyHedgeMaxBid =
+    params.binance_latency_hedge_max_bid ??
+    STRATEGY_PARAMS_DEFAULTS.binance_latency_hedge_max_bid
 
   return (
     <div className="space-y-3">
@@ -765,6 +771,42 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                 onChange={(e) =>
                   patch({
                     binance_latency_entry_window_secs: Number(e.target.value),
+                  })
+                }
+              />
+            </Field>
+            <Field
+              label="Hedge USDC (opsiyonel sigorta)"
+              tooltip="Karşı tarafa küçük FAK BID hedge. 0=KAPALI (önerilen). Backtest: hedge=$1 → NET −$375, $5 → NET −$2628. Sadece tek-yön korkusu için opt-in."
+              hint={`0 – 100 USDC (default 0 = kapalı).`}
+            >
+              <Input
+                type="number"
+                step="1"
+                min="0"
+                max="100"
+                value={binanceLatencyHedgeUsdc}
+                onChange={(e) =>
+                  patch({
+                    binance_latency_hedge_usdc: Number(e.target.value),
+                  })
+                }
+              />
+            </Field>
+            <Field
+              label="Hedge max bid"
+              tooltip="Karşı taraf bid bu eşiğin altındaysa hedge alınır. Düşük=sıkı (az hedge), yüksek=gevşek."
+              hint={`0.05 – 0.50 (default ${STRATEGY_PARAMS_DEFAULTS.binance_latency_hedge_max_bid}).`}
+            >
+              <Input
+                type="number"
+                step="0.05"
+                min="0.05"
+                max="0.50"
+                value={binanceLatencyHedgeMaxBid}
+                onChange={(e) =>
+                  patch({
+                    binance_latency_hedge_max_bid: Number(e.target.value),
                   })
                 }
               />
