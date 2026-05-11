@@ -440,14 +440,15 @@ impl StrategyParams {
     pub fn bonereaper_lw_max_per_session(&self) -> u32 {
         self.bonereaper_lw_max_per_session.unwrap_or(5).min(50)
     }
-    /// Imbalance threshold (share); 0–10000 sınırlı; default 200.
-    /// YÜKSEK eşik = güçlü yönlü birikim. Düşük eşik (≤50) her 2-3 trade'de
-    /// taraf değişimi → her iki taraf ~eşit share, avg_sum>1.0 → hangi taraf
-    /// kazanırsa kazansın kaybeder. Gerçek bot 6000+ share imbalance ile
-    /// tek yönde birikir; loser scalp (exempt from cap) karşı tarafı ucuza toplar.
+    /// Imbalance threshold (share); 0–10000 sınırlı; default 1000.
+    /// 4-market analizi (bot 117): imbalance_thr=200 ile T=0-60s arası
+    /// 14 yön değişimi (salınım) → her iki taraf $0.50 avg → avg_sum=1.00
+    /// → HER TARAF KAZANSA KAYBEDER. Simülasyon: thr=1000 → 0 salınım.
+    /// Doğal OB switch (bid değişimi) yön geçişini yönetir; imbalance
+    /// sadece aşırı birikim (1000sh fark) için tetiklenir.
     pub fn bonereaper_imbalance_thr(&self) -> f64 {
         self.bonereaper_imbalance_thr
-            .unwrap_or(200.0)
+            .unwrap_or(1000.0)
             .clamp(0.0, 10_000.0)
     }
     /// avg_sum yumuşak cap; 0.50–2.00 sınırlı; default 1.05.
