@@ -441,21 +441,27 @@ impl StrategyParams {
     pub fn bonereaper_lw_max_per_session(&self) -> u32 {
         self.bonereaper_lw_max_per_session.unwrap_or(20).min(50)
     }
-    /// Imbalance threshold (share); 0–10000 sınırlı; default 50.
-    /// Düşük eşik = SAF kayıp riskini erken hedge ile keser. Bot 101 örnek
-    /// 4908'de imb 199 oldu, eski 200 eşik tetiklenmedi → tam loss.
+    /// Imbalance threshold (share); 0–10000 sınırlı; default 200.
+    /// YÜKSEK eşik = güçlü yönlü birikim. Düşük eşik (≤50) her 2-3 trade'de
+    /// taraf değişimi → her iki taraf ~eşit share, avg_sum>1.0 → hangi taraf
+    /// kazanırsa kazansın kaybeder. Gerçek bot 6000+ share imbalance ile
+    /// tek yönde birikir; loser scalp (exempt from cap) karşı tarafı ucuza toplar.
     pub fn bonereaper_imbalance_thr(&self) -> f64 {
         self.bonereaper_imbalance_thr
-            .unwrap_or(50.0)
+            .unwrap_or(200.0)
             .clamp(0.0, 10_000.0)
     }
-    /// avg_sum yumuşak cap; 0.50–2.00 sınırlı; default 1.30.
-    /// Bot 107 vs gerçek Bonereaper karşılaştırması: 1.05 cap winner pyramid'i
-    /// erken donduruyor (avg_up=0.687 + avg_dn=0.36 = 1.047 > 1.05 → reject).
-    /// Gerçek bot 1.20'ye kadar trade görüyor; 1.30 default güvenli üst sınır.
+    /// avg_sum yumuşak cap; 0.50–2.00 sınırlı; default 1.05.
+    /// avg_sum = avg_up + avg_dn. Bu değer >1.00 olunca hangi taraf kazanırsa
+    /// kazansın zarar edilir (eğer share sayıları eşitse). Gerçek bot yüksek
+    /// avg_sum'a (1.16-1.42) sahip olsa da winner/loser share oranı 5-40:1
+    /// olduğu için zarar etmiyor. Bizim botumuz imbalance'dan dolayı eşit
+    /// share biriktirir → 1.05 hard cap: winner avg=$0.90 + loser avg=$0.15
+    /// = 1.05 → ikinci tarafı $0.15 üstü normal emirle alamaz, sadece loser
+    /// scalp (exempt) ile ucuza toplar. LW ve loser scalp bu captan muaf.
     pub fn bonereaper_max_avg_sum(&self) -> f64 {
         self.bonereaper_max_avg_sum
-            .unwrap_or(1.30)
+            .unwrap_or(1.05)
             .clamp(0.50, 2.00)
     }
     /// İlk emir spread eşiği; 0.00–0.20 sınırlı; default 0.02.

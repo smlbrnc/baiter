@@ -527,8 +527,8 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   bonereaper_late_winner_bid_thr: 0.98, // winner ask = $0.99
   bonereaper_late_winner_usdc: 200,   // küçük lot × 20 = $4000 cap
   bonereaper_lw_max_per_session: 20,
-  bonereaper_imbalance_thr: 30,
-  bonereaper_max_avg_sum: 1.30,
+  bonereaper_imbalance_thr: 200,
+  bonereaper_max_avg_sum: 1.05,
   bonereaper_first_spread_min: 0.02,
   bonereaper_size_longshot_usdc: 5,
   bonereaper_size_mid_usdc: 10,
