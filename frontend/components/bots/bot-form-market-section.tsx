@@ -209,29 +209,6 @@ export function BotFormMarketSection({
                     if (disabled) return
                     setForm((f) => {
                       const next = { ...f, strategy: id }
-                      if (id === "elis") {
-                        const p = f.strategy_params ?? {}
-                        next.strategy_params = {
-                          ...p,
-                          elis_max_buy_order_size:
-                            p.elis_max_buy_order_size ?? 20,
-                          elis_trade_cooldown_ms:
-                            p.elis_trade_cooldown_ms ?? 4000,
-                          elis_stop_before_end_secs:
-                            p.elis_stop_before_end_secs ?? 30,
-                          elis_min_improvement: p.elis_min_improvement ?? 0.005,
-                          elis_vol_threshold: p.elis_vol_threshold ?? 0.05,
-                          elis_bsi_filter_threshold:
-                            p.elis_bsi_filter_threshold ?? 0.5,
-                          elis_lock_threshold: p.elis_lock_threshold ?? 0.98,
-                          elis_max_order_age_ms:
-                            p.elis_max_order_age_ms ?? 30000,
-                          elis_imp_fail_cooldown_ms:
-                            p.elis_imp_fail_cooldown_ms ?? 30000,
-                          elis_imbalance_taker_threshold:
-                            p.elis_imbalance_taker_threshold ?? 100,
-                        }
-                      }
                       if (id === "bonereaper") {
                         const p = f.strategy_params ?? {}
                         next.strategy_params = mergeBonereaperStrategyDefaults(p)

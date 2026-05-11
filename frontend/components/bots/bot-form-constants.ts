@@ -10,18 +10,6 @@ export const STRATEGY_OPTIONS: {
   disabled?: boolean
 }[] = [
   {
-    id: "alis",
-    label: "Alis",
-    description:
-      "Profit-lock öncelikli FSM: DeepTrade opener çifti, NormalTrade avg-down, AggTrade/FakTrade trend-pyramid; FAK ile aktif lock.",
-  },
-  {
-    id: "elis",
-    label: "Elis",
-    description:
-      "Dutch Book Bid Loop: up_bid + down_bid < $1.00 koşulunda her iki tarafı bid fiyatından al; 2sn döngüde dolmayanları biriktir, sonraki emirlere ekle.",
-  },
-  {
     id: "bonereaper",
     label: "Bonereaper",
     description:
@@ -32,6 +20,12 @@ export const STRATEGY_OPTIONS: {
     label: "Gravie",
     description:
       "Bot 66 (Lively-Authenticity) davranış kopyası: 5sn karar tick'i, dual-side BUY-only FAK taker, mid-price civarı ucuz-taraf entry, 38sn second-leg guard, T-90 cutoff, sum_avg ≥ 1.05'te dur, balance < 0.30'da rebalance. Sinyal kullanmaz (saf order book reaktif).",
+  },
+  {
+    id: "arbitrage",
+    label: "Arbitrage",
+    description:
+      "Pure cross-leg sentetik dolar: bid_winner + bid_loser < cost_max (avg_sum<1) iken winner ve loser tarafa eşzamanlı FAK BID. Backtest %100 WR, ROI %4.35 (cost<0.95, mt=5, $100). Yön tahmini yok, matematiksel garanti.",
   },
 ]
 

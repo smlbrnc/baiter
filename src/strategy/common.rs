@@ -82,7 +82,6 @@ pub struct StrategyContext<'a> {
     pub min_price: f64,
     pub max_price: f64,
     pub cooldown_threshold: u64,
-    pub avg_threshold: f64,
     pub signal_ready: bool,
     pub strategy_params: &'a StrategyParams,
     // === Elis-extended sinyal alanları (forward-compatible) ===

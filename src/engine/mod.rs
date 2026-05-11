@@ -3,10 +3,8 @@
 use std::sync::Arc;
 
 use crate::config::BotConfig;
-use crate::ipc::{self, FrontendEvent};
-use crate::strategy::alis::{AlisEngine, AlisState};
+use crate::strategy::arbitrage::ArbitrageEngine;
 use crate::strategy::bonereaper::BonereaperEngine;
-use crate::strategy::elis::ElisEngine;
 use crate::strategy::gravie::GravieEngine;
 use crate::strategy::metrics::{MarketPnL, StrategyMetrics};
 use crate::strategy::{Decision, OpenOrder, PlannedOrder, StrategyContext, StrategyState};
@@ -141,7 +139,6 @@ impl MarketSession {
             min_price: self.min_price,
             max_price: self.max_price,
             cooldown_threshold: self.cooldown_threshold,
-            avg_threshold: cfg.strategy_params.avg_threshold(),
             signal_ready,
             strategy_params: &cfg.strategy_params,
             bsi,
@@ -149,16 +146,7 @@ impl MarketSession {
             cvd,
             market_remaining_secs: Some((self.end_ts as i64 - (now_ms_v / 1000) as i64) as f64),
         };
-        let prev_state = self.state.clone();
         let (next_state, decision) = match self.state.clone() {
-            StrategyState::Alis(s) => {
-                let (ns, d) = AlisEngine::decide(s, &ctx);
-                (StrategyState::Alis(ns), d)
-            }
-            StrategyState::Elis(s) => {
-                let (ns, d) = ElisEngine::decide(s, &ctx);
-                (StrategyState::Elis(ns), d)
-            }
             StrategyState::Bonereaper(s) => {
                 let (ns, d) = BonereaperEngine::decide(s, &ctx);
                 (StrategyState::Bonereaper(ns), d)
@@ -167,55 +155,14 @@ impl MarketSession {
                 let (ns, d) = GravieEngine::decide(s, &ctx);
                 (StrategyState::Gravie(ns), d)
             }
+            StrategyState::Arbitrage(s) => {
+                let (ns, d) = ArbitrageEngine::decide(s, &ctx);
+                (StrategyState::Arbitrage(ns), d)
+            }
         };
-        if let Some(method) = detect_alis_lock_transition(&prev_state, &next_state) {
-            emit_profit_locked(self, method, now_ms_v);
-        }
-        if detect_elis_lock_transition(&prev_state, &next_state) {
-            emit_profit_locked(self, "elis_avg", now_ms_v);
-        }
         self.state = next_state;
         decision
     }
-}
-
-/// Alis lock pasiftir; method etiketi `prev`'e göre türetilir.
-/// `OpenPlaced → Locked` = simetrik fill, `PositionOpen → Locked` = hedge fill.
-fn detect_alis_lock_transition(prev: &StrategyState, next: &StrategyState) -> Option<&'static str> {
-    let StrategyState::Alis(prev_alis) = prev else {
-        return None;
-    };
-    let StrategyState::Alis(next_alis) = next else {
-        return None;
-    };
-    if *next_alis != AlisState::Locked || *prev_alis == AlisState::Locked {
-        return None;
-    }
-    Some(match prev_alis {
-        AlisState::OpenPlaced { .. } => "symmetric_fill",
-        _ => "passive_hedge_fill",
-    })
-}
-
-/// Elis lock latch (`profit_locked()` ilk kez true olduğu tick).
-/// `Pending` → henüz Active'e geçmemiş, lock olamaz; `Active` içinde
-/// Dutch Book stratejisinde "lock" kavramı yoktur — her zaman `false` döner.
-fn detect_elis_lock_transition(_prev: &StrategyState, _next: &StrategyState) -> bool {
-    false
-}
-
-fn emit_profit_locked(session: &MarketSession, method: &str, ts_ms: u64) {
-    let m = &session.metrics;
-    let expected_profit = m.pair_count() - m.cost_basis() - m.fee_total;
-    ipc::emit(&FrontendEvent::ProfitLocked {
-        bot_id: session.bot_id,
-        slug: session.slug.clone(),
-        avg_up: m.avg_up,
-        avg_down: m.avg_down,
-        expected_profit,
-        lock_method: method.to_string(),
-        ts_ms,
-    });
 }
 
 /// User WS fill'ini metrics'e yansıtır + cooldown için `last_averaging_ms`'i damgalar.

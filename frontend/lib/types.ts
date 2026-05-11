@@ -5,18 +5,13 @@ export type Outcome = "UP" | "DOWN"
 export type Side = "BUY" | "SELL"
 
 export type RunMode = "live" | "dryrun"
-export type Strategy = "alis" | "elis" | "bonereaper" | "gravie"
+export type Strategy = "bonereaper" | "gravie" | "arbitrage"
 
 /**
  * `bots.strategy_params` JSON sütunu — backend `config::StrategyParams`.
  * Tüm alanlar opsiyoneldir; `null`/`undefined` → backend `_or_default()` uygular.
  */
 export interface StrategyParams {
-  /**
-   * Profit-lock canonical eşiği için kullanılan oran
-   * (örn. 0.02 → avg_threshold 0.98). Default 0.02.
-   */
-  profit_lock_pct?: number | null
   /** RTDS Chainlink window-delta sinyali aktif mi. Default true. */
   rtds_enabled?: boolean | null
   /**
@@ -30,69 +25,6 @@ export interface StrategyParams {
    * Default 3.0. 0 → projeksiyon kapalı (eski davranış).
    */
   signal_lookahead_secs?: number | null
-  /**
-   * Alis: opener GTC fiyat delta'sı (`best_ask + delta`). Skordan bağımsız,
-   * sabit; skor sadece yön belirler. Default 0.01.
-   */
-  open_delta?: number | null
-  /**
-   * Alis: AggTrade pyramid taker FAK delta'sı (`best_ask + delta`).
-   * Default 0.015.
-   */
-  pyramid_agg_delta?: number | null
-  /**
-   * Alis: FakTrade pyramid taker FAK delta'sı (daha agresif).
-   * Default 0.025.
-   */
-  pyramid_fak_delta?: number | null
-  /**
-   * Alis: pyramid emir başına USDC. `null` → opener `order_usdc` ile aynı.
-   */
-  pyramid_usdc?: number | null
-
-  // ── Elis Dutch Book Bid Loop (docs/gabagool.md) ──────────────────────────
-  /** Taraf başına temel emir büyüklüğü (share). Default 20. */
-  elis_max_buy_order_size?: number | null
-  /** Loop süresi: emir → iptal arası (ms). Default 2000. */
-  elis_trade_cooldown_ms?: number | null
-  /** Pencere kapanmadan bu kadar saniye önce döngü durur. Default 30. */
-  elis_stop_before_end_secs?: number | null
-  /**
-   * P4 Improvement threshold: avg pair cost bu kadar düşmüyorsa emir verilmez.
-   * min_improvement ≥ tick + slippage + fee/size. Default 0.005.
-   */
-  elis_min_improvement?: number | null
-  /**
-   * P5 Vol filter: bid-ask spread bu eşiği aşarsa OB ince sayılır, NoOp.
-   * Default 0.05.
-   */
-  elis_vol_threshold?: number | null
-  /**
-   * P5 BSI filter: |BSI| bu eşiği aşarsa karşı taraf engellenir.
-   * Default 0.50.
-   */
-  elis_bsi_filter_threshold?: number | null
-  /**
-   * P2 Lock threshold: avg_up + avg_down bu değerin altına düşünce pozisyon
-   * kilitli sayılır ve yeni emir verilmez. Default 0.98.
-   */
-  elis_lock_threshold?: number | null
-  /**
-   * P6 Stale cleanup: emirler bu süreden (ms) eskiyse zorla iptal edilir.
-   * Default 30000.
-   */
-  elis_max_order_age_ms?: number | null
-  /**
-   * P4 Improvement fail cooldown: improvement geçemeyince bu süre (ms) NoOp.
-   * Mevcut maker emirlere dolma fırsatı verir. Sim optimumu 30000. Default 30000.
-   */
-  elis_imp_fail_cooldown_ms?: number | null
-  /**
-   * Inventory imbalance taker threshold: |up_filled - down_filled| bu eşiği
-   * aşarsa weaker side ASK fiyatından (taker) alınır. Avellaneda-Stoikov +
-   * cascade exit hibrit. 0 = kapalı. Sim optimumu 100. Default 100.
-   */
-  elis_imbalance_taker_threshold?: number | null
 
   // ── Bonereaper ───────────────────────────────────────────────────────────
   // Polymarket "Bonereaper" wallet (0xeebde7a0...) davranış kopyası.
@@ -181,6 +113,20 @@ export interface StrategyParams {
    * Pahalı down-pyramid birikimini engeller. Default 0.50.
    */
   bonereaper_avg_loser_max?: number | null
+
+  // ── Arbitrage (pure cross-leg FAK BID, avg_sum<1 garantili) ─────────────
+  /** Tick check interval (ms). Default 1000. */
+  arbitrage_tick_interval_ms?: number | null
+  /** Maks bid_winner+bid_loser. Default 0.95 (%5 marj). 0.99 = fee yiyor. */
+  arbitrage_cost_max?: number | null
+  /** Order USDC per leg. Default 20. */
+  arbitrage_order_usdc?: number | null
+  /** Session başına max trade. Default 5. */
+  arbitrage_max_trades_per_session?: number | null
+  /** Trade'ler arası bekleme (ms). Default 5000. */
+  arbitrage_cooldown_ms?: number | null
+  /** Entry penceresi (T-X..T-0 arası ara). Default 300 (tüm pencere). */
+  arbitrage_entry_window_secs?: number | null
 
   // ── Gravie (Bot 66 davranış kopyası) ─────────────────────────────────────
   /**
@@ -546,21 +492,6 @@ export interface GlobalCredentials {
 
 /** `StrategyParams` default'ları (`config::StrategyParams::*_or_default`). */
 export const STRATEGY_PARAMS_DEFAULTS = {
-  profit_lock_pct: 0.02,
-  open_delta: 0.01,
-  pyramid_agg_delta: 0.015,
-  pyramid_fak_delta: 0.025,
-  // Elis
-  elis_max_buy_order_size: 20,
-  elis_trade_cooldown_ms: 4000,
-  elis_stop_before_end_secs: 30,
-  elis_min_improvement: 0.005,
-  elis_vol_threshold: 0.05,
-  elis_bsi_filter_threshold: 0.5,
-  elis_lock_threshold: 0.98,
-  elis_max_order_age_ms: 30000,
-  elis_imp_fail_cooldown_ms: 30000,
-  elis_imbalance_taker_threshold: 100,
   // Bonereaper (RealBot v2 — gerçek 0xeebde7a0... cüzdan davranışına yakın)
   // 3 örnek session backtest: trade frekansı 14× artış, multi-LW pyramid,
   // loser 1¢ scalp, winner pyramid scaling, SAF guard.
@@ -587,6 +518,13 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   bonereaper_lw_burst_usdc: 200,
   // Aşama 6 — martingale-down guard
   bonereaper_avg_loser_max: 0.5,
+  // Arbitrage (Bot 108 backtest optimum: cost<0.95, mt=5, $100 → WR %100)
+  arbitrage_tick_interval_ms: 1000,
+  arbitrage_cost_max: 0.95,
+  arbitrage_order_usdc: 20,
+  arbitrage_max_trades_per_session: 5,
+  arbitrage_cooldown_ms: 5000,
+  arbitrage_entry_window_secs: 300,
   // Gravie (Bot 66 davranış kopyası — optimum kalibre)
   gravie_tick_interval_secs: 5,
   gravie_buy_cooldown_ms: 4000,

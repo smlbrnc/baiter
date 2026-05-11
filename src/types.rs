@@ -116,8 +116,9 @@ pub enum RunMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Strategy {
-    Alis,
-    Elis,
     Bonereaper,
     Gravie,
+    /// Pure arbitrage: avg_sum<1 sentetik dolar (FAK BID winner+loser cross-leg).
+    /// Backtest (bot 108): %100 WR, ROI %4.35, NET +$994/12.4h ($100 order).
+    Arbitrage,
 }

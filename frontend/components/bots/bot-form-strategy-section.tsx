@@ -20,10 +20,9 @@ type Props = {
  */
 export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const params: StrategyParams = form.strategy_params ?? {}
-  const isAlis = form.strategy === "alis"
-  const isElis = form.strategy === "elis"
   const isBonereaper = form.strategy === "bonereaper"
   const isGravie = form.strategy === "gravie"
+  const isArbitrage = form.strategy === "arbitrage"
 
   const patch = (next: Partial<StrategyParams>) => {
     setForm({
@@ -31,45 +30,6 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
       strategy_params: { ...params, ...next },
     })
   }
-
-  // ── Alis / ortak parametreler ─────────────────────────────────────────
-  const profitLockPct =
-    params.profit_lock_pct ?? STRATEGY_PARAMS_DEFAULTS.profit_lock_pct
-  const openDelta = params.open_delta ?? STRATEGY_PARAMS_DEFAULTS.open_delta
-  const pyramidAggDelta =
-    params.pyramid_agg_delta ?? STRATEGY_PARAMS_DEFAULTS.pyramid_agg_delta
-  const pyramidFakDelta =
-    params.pyramid_fak_delta ?? STRATEGY_PARAMS_DEFAULTS.pyramid_fak_delta
-  const pyramidUsdc = params.pyramid_usdc ?? null
-
-  // ── Elis Dutch Book Bid Loop ──────────────────────────────────────────
-  const elisMaxBuyOrderSize =
-    params.elis_max_buy_order_size ??
-    STRATEGY_PARAMS_DEFAULTS.elis_max_buy_order_size
-  const elisTradeCooldownMs =
-    params.elis_trade_cooldown_ms ??
-    STRATEGY_PARAMS_DEFAULTS.elis_trade_cooldown_ms
-  const elisStopBeforeEndSecs =
-    params.elis_stop_before_end_secs ??
-    STRATEGY_PARAMS_DEFAULTS.elis_stop_before_end_secs
-  const elisMinImprovement =
-    params.elis_min_improvement ?? STRATEGY_PARAMS_DEFAULTS.elis_min_improvement
-  const elisVolThreshold =
-    params.elis_vol_threshold ?? STRATEGY_PARAMS_DEFAULTS.elis_vol_threshold
-  const elisBsiFilterThreshold =
-    params.elis_bsi_filter_threshold ??
-    STRATEGY_PARAMS_DEFAULTS.elis_bsi_filter_threshold
-  const elisLockThreshold =
-    params.elis_lock_threshold ?? STRATEGY_PARAMS_DEFAULTS.elis_lock_threshold
-  const elisMaxOrderAgeMs =
-    params.elis_max_order_age_ms ??
-    STRATEGY_PARAMS_DEFAULTS.elis_max_order_age_ms
-  const elisImpFailCooldownMs =
-    params.elis_imp_fail_cooldown_ms ??
-    STRATEGY_PARAMS_DEFAULTS.elis_imp_fail_cooldown_ms
-  const elisImbalanceTakerThreshold =
-    params.elis_imbalance_taker_threshold ??
-    STRATEGY_PARAMS_DEFAULTS.elis_imbalance_taker_threshold
 
   // ── Gravie (Bot 66 davranış kopyası) ──────────────────────────────────
   const gravieTickIntervalSecs =
@@ -164,368 +124,25 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
     params.bonereaper_avg_loser_max ??
     STRATEGY_PARAMS_DEFAULTS.bonereaper_avg_loser_max
 
+  // ── Arbitrage (pure cross-leg FAK BID, avg_sum<1 garantili) ──
+  const arbitrageTickIntervalMs =
+    params.arbitrage_tick_interval_ms ??
+    STRATEGY_PARAMS_DEFAULTS.arbitrage_tick_interval_ms
+  const arbitrageCostMax =
+    params.arbitrage_cost_max ?? STRATEGY_PARAMS_DEFAULTS.arbitrage_cost_max
+  const arbitrageOrderUsdc =
+    params.arbitrage_order_usdc ?? STRATEGY_PARAMS_DEFAULTS.arbitrage_order_usdc
+  const arbitrageMaxTradesPerSession =
+    params.arbitrage_max_trades_per_session ??
+    STRATEGY_PARAMS_DEFAULTS.arbitrage_max_trades_per_session
+  const arbitrageCooldownMs =
+    params.arbitrage_cooldown_ms ?? STRATEGY_PARAMS_DEFAULTS.arbitrage_cooldown_ms
+  const arbitrageEntryWindowSecs =
+    params.arbitrage_entry_window_secs ??
+    STRATEGY_PARAMS_DEFAULTS.arbitrage_entry_window_secs
+
   return (
     <div className="space-y-3">
-      {/* ── Elis Dutch Book Bid Loop parametreleri ───────────────────────── */}
-      {isElis && (
-        <div className="space-y-3">
-          <div>
-            <SectionLabel icon={Zap} title="Elis — Dutch Book Bid Loop" />
-            <p className="mt-1 text-sm text-muted-foreground">
-              Her 2 saniyede bir döngü: <code>up_bid + dn_bid &lt; $1.00</code>{" "}
-              koşulunda dominant tarafa ask (taker), weaker tarafa bid (maker)
-              emir verilir. Gabagool pattern&apos;ları: P2 lock, P4 improvement, P5
-              filter, P6 stale.
-            </p>
-          </div>
-
-          <div className="space-y-4 rounded-md border border-border/40 bg-muted/25 p-3">
-            {/* ── Emir parametreleri ─── */}
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <Field
-                label="Temel emir boyutu (share)"
-                tooltip="Her döngüde UP ve DOWN taraflarına verilecek temel share miktarı. Önceki döngüde dolmayan emirlerin kalan miktarı bu taban üstüne eklenir (cap: base×5)."
-                hint={`1 – 1000 (default ${STRATEGY_PARAMS_DEFAULTS.elis_max_buy_order_size}).`}
-              >
-                <Input
-                  type="number"
-                  step="5"
-                  min="1"
-                  max="1000"
-                  value={elisMaxBuyOrderSize}
-                  onChange={(e) =>
-                    patch({ elis_max_buy_order_size: Number(e.target.value) })
-                  }
-                />
-              </Field>
-              <Field
-                label="Loop süresi (ms)"
-                tooltip="Emir verildikten bu süre sonra açık elis emirleri iptal edilir ve yeni döngü başlar."
-                hint={`500 – 10 000 (default ${STRATEGY_PARAMS_DEFAULTS.elis_trade_cooldown_ms}).`}
-              >
-                <Input
-                  type="number"
-                  step="500"
-                  min="500"
-                  max="10000"
-                  value={elisTradeCooldownMs}
-                  onChange={(e) =>
-                    patch({ elis_trade_cooldown_ms: Number(e.target.value) })
-                  }
-                />
-              </Field>
-              <Field
-                label="Pencere stop (sn)"
-                tooltip="Market kapanışından bu kadar saniye önce yeni emir verilmez; Done'a geçilir."
-                hint={`10 – 120 (default ${STRATEGY_PARAMS_DEFAULTS.elis_stop_before_end_secs}).`}
-              >
-                <Input
-                  type="number"
-                  step="5"
-                  min="10"
-                  max="120"
-                  value={elisStopBeforeEndSecs}
-                  onChange={(e) =>
-                    patch({ elis_stop_before_end_secs: Number(e.target.value) })
-                  }
-                />
-              </Field>
-            </div>
-
-            {/* ── P4 + P2 ─── */}
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field
-                label="P4 — Min improvement"
-                tooltip="Yeni alımın avg pair cost'u (avg_up + avg_down) bu kadar düşürmesi gerekir, aksi halde emir verilmez. İlk fill'de bu kontrol atlanır. Değer = tick + slippage + fee/size ≈ 0.005."
-                hint={`0.001 – 0.05 (default ${STRATEGY_PARAMS_DEFAULTS.elis_min_improvement}).`}
-              >
-                <Input
-                  type="number"
-                  step="0.001"
-                  min="0.001"
-                  max="0.05"
-                  value={elisMinImprovement}
-                  onChange={(e) =>
-                    patch({ elis_min_improvement: Number(e.target.value) })
-                  }
-                />
-              </Field>
-              <Field
-                label="P2 — Lock threshold"
-                tooltip="avg_up + avg_down bu değerin altına düşünce VE min(up_filled, dn_filled) > cost_basis ise pozisyon kilitli sayılır — yeni emir verilmez (Done). Garantili kâr lock'u."
-                hint={`0.85 – 0.99 (default ${STRATEGY_PARAMS_DEFAULTS.elis_lock_threshold}).`}
-              >
-                <Input
-                  type="number"
-                  step="0.01"
-                  min="0.85"
-                  max="0.99"
-                  value={elisLockThreshold}
-                  onChange={(e) =>
-                    patch({ elis_lock_threshold: Number(e.target.value) })
-                  }
-                />
-              </Field>
-            </div>
-
-            {/* ── P5 + P6 ─── */}
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-              <Field
-                label="P5 — Vol threshold"
-                tooltip="bid-ask spread (ask − bid) bu eşiği aşarsa OB ince sayılır ve döngü atlanır. Her iki tarafın spreadi birden kontrol edilir."
-                hint={`0.01 – 0.20 (default ${STRATEGY_PARAMS_DEFAULTS.elis_vol_threshold}).`}
-              >
-                <Input
-                  type="number"
-                  step="0.01"
-                  min="0.01"
-                  max="0.20"
-                  value={elisVolThreshold}
-                  onChange={(e) =>
-                    patch({ elis_vol_threshold: Number(e.target.value) })
-                  }
-                />
-              </Field>
-              <Field
-                label="P5 — BSI filter eşiği"
-                tooltip="|BSI| bu eşiği aşarsa: BSI > +threshold → UP baskısı, DOWN alımı engellenir; BSI < -threshold → DOWN baskısı, UP alımı engellenir. BSI None ise filter pas geçer."
-                hint={`0.10 – 1.00 (default ${STRATEGY_PARAMS_DEFAULTS.elis_bsi_filter_threshold}).`}
-              >
-                <Input
-                  type="number"
-                  step="0.05"
-                  min="0.10"
-                  max="1.00"
-                  value={elisBsiFilterThreshold}
-                  onChange={(e) =>
-                    patch({ elis_bsi_filter_threshold: Number(e.target.value) })
-                  }
-                />
-              </Field>
-              <Field
-                label="P6 — Stale order (ms)"
-                tooltip="Bu süreden daha eski açık elis emirleri 2sn timer beklenmeden zorla iptal edilir. Ghost order birikimini önler."
-                hint={`5 000 – 60 000 ms (default ${STRATEGY_PARAMS_DEFAULTS.elis_max_order_age_ms}).`}
-              >
-                <Input
-                  type="number"
-                  step="5000"
-                  min="5000"
-                  max="60000"
-                  value={elisMaxOrderAgeMs}
-                  onChange={(e) =>
-                    patch({ elis_max_order_age_ms: Number(e.target.value) })
-                  }
-                />
-              </Field>
-            </div>
-
-            {/* P4 Improvement fail cooldown + Inventory taker threshold */}
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field
-                label="P4 — Improvement fail cooldown (ms)"
-                tooltip="P4 improvement başarısız olunca (avg pair cost yeterince düşmüyorsa) bu süre kadar yeni emir verilmez. Mevcut maker emirlere dolma fırsatı tanır. 97 market simülasyonu: 30sn → $146 PnL (2sn NoOp: $73)."
-                hint={`5 000 – 60 000 ms (default ${STRATEGY_PARAMS_DEFAULTS.elis_imp_fail_cooldown_ms}).`}
-              >
-                <Input
-                  type="number"
-                  step="5000"
-                  min="5000"
-                  max="60000"
-                  value={elisImpFailCooldownMs}
-                  onChange={(e) =>
-                    patch({ elis_imp_fail_cooldown_ms: Number(e.target.value) })
-                  }
-                />
-              </Field>
-              <Field
-                label="Inventory taker threshold (share)"
-                tooltip="|up_filled - down_filled| bu eşiği aşarsa weaker side ASK fiyatından (taker) alınır → anında dengeleme. Avellaneda-Stoikov inventory skew + cascade exit hibrit yaklaşımı. 0 = kapalı. 54 market simülasyonu: thr=100 → +%57 PnL ($47→$74), 0 zarar."
-                hint={`0 (kapalı) veya 50–200 share (default ${STRATEGY_PARAMS_DEFAULTS.elis_imbalance_taker_threshold}).`}
-              >
-                <Input
-                  type="number"
-                  step="20"
-                  min="0"
-                  max="500"
-                  value={elisImbalanceTakerThreshold}
-                  onChange={(e) =>
-                    patch({
-                      elis_imbalance_taker_threshold: Number(e.target.value),
-                    })
-                  }
-                />
-              </Field>
-            </div>
-          </div>
-
-          {/* Elis özet kartı */}
-          <div className="space-y-2 rounded-md border border-border/40 bg-muted/10 px-3 py-2.5 text-xs leading-relaxed text-muted-foreground">
-            <p className="font-medium text-foreground">Elis — nasıl çalışır?</p>
-            <ul className="list-disc space-y-1 pl-4">
-              <li>
-                <strong>Koşul:</strong> <code>up_bid + dn_bid &lt; $1.00</code>{" "}
-                → dominant taraf ask (taker), weaker taraf bid (maker) GTC emir.
-                Fill = garantili kâr.
-              </li>
-              <li>
-                <strong>P4 Improvement:</strong> Mevcut fill varsa yeni alım{" "}
-                <code>avg pair cost</code>&apos;u <code>min_improvement</code>{" "}
-                kadar düşürmedikçe emir verilmez.
-              </li>
-              <li>
-                <strong>P5 Filters:</strong> Vol filter — spread geniş ise OB
-                ince, atla. BSI filter — aşırı tek yönlü akışta karşı tarafı
-                engelle.
-              </li>
-              <li>
-                <strong>P2 Lock:</strong>{" "}
-                <code>avg_up + avg_down &lt; lock_threshold</code> VE{" "}
-                <code>pair_count &gt; cost_basis</code> → garantili kâr
-                kilitlendi, Done&apos;a geç.
-              </li>
-              <li>
-                <strong>P4 Imp.Fail Cooldown:</strong> Improvement geçemeyince{" "}
-                <code>imp_fail_cooldown_ms</code> (30sn) bekle — mevcut maker
-                emirlere dolma fırsatı. Sim: 2× daha yüksek PnL.
-              </li>
-              <li>
-                <strong>Inventory Taker (Avellaneda-Stoikov):</strong>{" "}
-                <code>|q| &gt; threshold</code> (default 100) ise weaker side
-                ASK ile anında doldurulur (cascade exit). Tek-taraflı pozisyon
-                varyansını engeller. Sim: +%57 PnL.
-              </li>
-              <li>
-                <strong>P6 Stale:</strong> <code>max_order_age_ms</code>
-                &apos;den eski emirler zorla iptal edilir (ghost order
-                koruması).
-              </li>
-            </ul>
-          </div>
-        </div>
-      )}
-
-      {/* ── Alis profit-lock (sadece Alis için) ─────────────────── */}
-      {isAlis && (
-        <div className="space-y-3">
-          <div>
-            <SectionLabel icon={Sliders} title="Strateji parametreleri" />
-            <p className="mt-1 text-sm text-muted-foreground">
-              Sinyal: Binance CVD imbalance + OKX EMA momentum (sabit, ayar
-              gerektirmez).
-            </p>
-          </div>
-
-          <div className="space-y-4 rounded-md border border-border/40 bg-muted/25 p-3">
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field
-                label="Profit-lock oranı"
-                tooltip="Hedge hedef fiyatı için kullanılan eşik. avg_threshold = 1 − pct (örn. 0.02 → 0.98); hedge emir fiyatı = avg_threshold − avg_filled_side olarak türetilir. Düşük tutmak hedge'i avg'ye yakın, yüksek tutmak ise daha karlı (ama daha az dolgun) konuma yerleştirir. Default: 0.02."
-                hint="0.00 – 0.50 (default 0.02 → avg_threshold 0.98)."
-              >
-                <Input
-                  type="number"
-                  step="0.01"
-                  min="0"
-                  max="0.5"
-                  value={profitLockPct}
-                  onChange={(e) =>
-                    patch({ profit_lock_pct: Number(e.target.value) })
-                  }
-                />
-              </Field>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ── Alis özel parametreleri ───────────────────────────────────── */}
-      {isAlis && (
-        <div className="space-y-3">
-          <div>
-            <SectionLabel icon={Sliders} title="Alis parametreleri" />
-            <p className="mt-1 text-sm text-muted-foreground">
-              Opener ve pyramid emir delta&apos;ları; pyramid bütçesi.
-            </p>
-          </div>
-
-          <div className="space-y-4 rounded-md border border-border/40 bg-muted/25 p-3">
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field
-                label="Opener delta"
-                tooltip="DeepTrade fazında kurulan açılış GTC emirlerinin fiyat ofseti. Dominant tarafın emri best_ask + open_delta'da, hedge tarafı ise (1 − profit_lock_pct) − opener_price'da kurulur. Skor sadece yön belirler, delta sabittir."
-                hint="0.00 – 0.10 (default 0.01)."
-              >
-                <Input
-                  type="number"
-                  step="0.005"
-                  min="0"
-                  max="0.10"
-                  value={openDelta}
-                  onChange={(e) =>
-                    patch({ open_delta: Number(e.target.value) })
-                  }
-                />
-              </Field>
-              <Field
-                label="Pyramid USDC (boş = order_usdc)"
-                tooltip="AggTrade/FakTrade fazlarında atılan pyramid (taker FAK) emir başına düşen notional. Boş bırakılırsa botun ana order_usdc değeri kullanılır."
-                hint="Opsiyonel; min 1 USDC."
-              >
-                <Input
-                  type="number"
-                  step="1"
-                  min="0"
-                  placeholder="order_usdc"
-                  value={pyramidUsdc ?? ""}
-                  onChange={(e) => {
-                    const raw = e.target.value.trim()
-                    patch({
-                      pyramid_usdc: raw === "" ? null : Number(raw),
-                    })
-                  }}
-                />
-              </Field>
-            </div>
-
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field
-                label="AggTrade pyramid delta"
-                tooltip="AggTrade fazında (225–270 sn) trend yönünde atılan taker FAK emirlerinin fiyat ofseti: best_ask + delta. Trend filtresi: composite skor ortalaması > 5 ve dominant tarafın best_bid > 0.5."
-                hint="0.00 – 0.10 (default 0.015)."
-              >
-                <Input
-                  type="number"
-                  step="0.005"
-                  min="0"
-                  max="0.10"
-                  value={pyramidAggDelta}
-                  onChange={(e) =>
-                    patch({ pyramid_agg_delta: Number(e.target.value) })
-                  }
-                />
-              </Field>
-              <Field
-                label="FakTrade pyramid delta"
-                tooltip="FakTrade fazında (270–294 sn) atılan taker FAK delta'sı; AggTrade'e göre daha agresif (fill önceliği için)."
-                hint="0.00 – 0.20 (default 0.025)."
-              >
-                <Input
-                  type="number"
-                  step="0.005"
-                  min="0"
-                  max="0.20"
-                  value={pyramidFakDelta}
-                  onChange={(e) =>
-                    patch({ pyramid_fak_delta: Number(e.target.value) })
-                  }
-                />
-              </Field>
-            </div>
-          </div>
-        </div>
-      )}
-
       {/* ── Bonereaper parametreleri ────────────────────────────────────── */}
       {isBonereaper && (
         <div className="space-y-3">
@@ -894,6 +511,133 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
               <strong>Güvenlik:</strong> <code>avg_loser_max</code> pahalı
               martingale-down'u durdurur, <code>max_avg_sum</code> pyramid'i,{" "}
               <code>cooldown</code> spam'i engeller.
+            </li>
+          </ul>
+        </div>
+      )}
+
+      {/* ── Arbitrage parametreleri (pure cross-leg FAK BID) ──────────── */}
+      {isArbitrage && (
+        <div className="space-y-3">
+          <SectionLabel icon={Target} title="Arbitrage parametreleri" />
+          <p className="text-sm text-muted-foreground">
+            Pure cross-leg sentetik dolar: <code>bid_winner + bid_loser &lt; cost_max</code>{" "}
+            (avg_sum&lt;1) iken winner ve loser tarafa eşzamanlı FAK BID. Yön
+            tahmini yok — matematiksel garanti.
+            <br />
+            <strong>Backtest (bot 108):</strong> WR <strong>%100</strong>, ROI{" "}
+            <strong>+%4.35</strong>, NET +$994/12.4h ($100 order, mt=5).
+          </p>
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <Field
+              label="Cost max (avg_sum cap)"
+              tooltip="bid_winner + bid_loser bu eşiğin altındaysa fırsat. 0.95 = sıkı %5 marj. 0.99 fee yiyor."
+              hint={`0.50 – 0.999 (default ${STRATEGY_PARAMS_DEFAULTS.arbitrage_cost_max}).`}
+            >
+              <Input
+                type="number"
+                step="0.005"
+                min="0.5"
+                max="0.999"
+                value={arbitrageCostMax}
+                onChange={(e) =>
+                  patch({ arbitrage_cost_max: Number(e.target.value) })
+                }
+              />
+            </Field>
+            <Field
+              label="Order USDC (per leg)"
+              tooltip="Winner ve loser leg ayrı ayrı bu büyüklükte. Sermaye = 2× bu değer."
+              hint={`0 – 10000 (default ${STRATEGY_PARAMS_DEFAULTS.arbitrage_order_usdc}).`}
+            >
+              <Input
+                type="number"
+                step="5"
+                min="0"
+                max="10000"
+                value={arbitrageOrderUsdc}
+                onChange={(e) =>
+                  patch({ arbitrage_order_usdc: Number(e.target.value) })
+                }
+              />
+            </Field>
+            <Field
+              label="Max trades / session"
+              tooltip="Pencere başına maksimum arbitrage trade. 0=sınırsız, 5=güvenli üst."
+              hint={`0 – 20 (default ${STRATEGY_PARAMS_DEFAULTS.arbitrage_max_trades_per_session}).`}
+            >
+              <Input
+                type="number"
+                step="1"
+                min="0"
+                max="20"
+                value={arbitrageMaxTradesPerSession}
+                onChange={(e) =>
+                  patch({ arbitrage_max_trades_per_session: Number(e.target.value) })
+                }
+              />
+            </Field>
+            <Field
+              label="Cooldown (ms)"
+              tooltip="Trade'ler arası minimum bekleme. Hızlı re-entry için 5000."
+              hint={`1000 – 60000 (default ${STRATEGY_PARAMS_DEFAULTS.arbitrage_cooldown_ms}).`}
+            >
+              <Input
+                type="number"
+                step="500"
+                min="1000"
+                max="60000"
+                value={arbitrageCooldownMs}
+                onChange={(e) =>
+                  patch({ arbitrage_cooldown_ms: Number(e.target.value) })
+                }
+              />
+            </Field>
+            <Field
+              label="Tick interval (ms)"
+              tooltip="Her N ms'de bir kontrol et. 1000=saniyede 1, 200=hızlı."
+              hint={`100 – 10000 (default ${STRATEGY_PARAMS_DEFAULTS.arbitrage_tick_interval_ms}).`}
+            >
+              <Input
+                type="number"
+                step="100"
+                min="100"
+                max="10000"
+                value={arbitrageTickIntervalMs}
+                onChange={(e) =>
+                  patch({ arbitrage_tick_interval_ms: Number(e.target.value) })
+                }
+              />
+            </Field>
+            <Field
+              label="Entry window (sn)"
+              tooltip="Pencere kapanmasına bu kadar sn kala kadar arbitrage ara. 300=tüm pencere, 60=son 1dk."
+              hint={`30 – 600 (default ${STRATEGY_PARAMS_DEFAULTS.arbitrage_entry_window_secs}).`}
+            >
+              <Input
+                type="number"
+                step="10"
+                min="30"
+                max="600"
+                value={arbitrageEntryWindowSecs}
+                onChange={(e) =>
+                  patch({ arbitrage_entry_window_secs: Number(e.target.value) })
+                }
+              />
+            </Field>
+          </div>
+          <ul className="list-disc space-y-1 rounded-md border border-border/40 bg-muted/10 px-4 py-2.5 pl-7 text-xs text-muted-foreground">
+            <li>
+              <strong>Mantık:</strong> Winner side (bid&gt;0.5) ve loser side
+              (bid&lt;0.5) için eşzamanlı GTC limit BUY @ bid (FAK davranışı).
+            </li>
+            <li>
+              <strong>Garanti payoff:</strong> Kim kazanırsa $1.00. Net = $1.00 −
+              cost − fee = pozitif (cost &lt; cost_max).
+            </li>
+            <li>
+              <strong>Risk:</strong> Tek leg fill (winner_bid fill, loser_bid fill
+              olmaz) → directional pozisyon. Sermaye 2× order büyüklüğü.
             </li>
           </ul>
         </div>

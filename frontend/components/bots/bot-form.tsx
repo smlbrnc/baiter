@@ -31,7 +31,7 @@ export function BotForm() {
   const [form, setForm] = useState<CreateBotReq>({
     name: "",
     slug_pattern: slugPattern(DEFAULT_MARKET.asset, DEFAULT_MARKET.interval),
-    strategy: "alis",
+    strategy: "bonereaper",
     run_mode: "dryrun",
     order_usdc: 5,
     min_price: 0.1,
