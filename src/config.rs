@@ -408,11 +408,13 @@ impl StrategyParams {
             .unwrap_or(3_000)
             .clamp(1_000, 60_000)
     }
-    /// Late winner penceresi (sn); 0–300 sınırlı; default 300 (penceresiz —
-    /// gerçek bot T-161s kadar erken $0.99 injection yapıyor; zaman kısıtı yok,
-    /// tetikleyici tamamen fiyat bazlı: winner_bid ≥ bid_thr). 0 = kural KAPALI.
+    /// Late winner penceresi (sn); 0–300 sınırlı; default 180.
+    /// 25-market doğrulaması (12 + 13 yeni log): T-180 sonrası LW oranı %98.6
+    /// (207/210 shot), T-180 öncesinde sadece 3 LW gözlemlendi (1.4%). Eski
+    /// 300sn defaultu erken LW'ye izin veriyordu; 180 gerçek bot davranışıyla
+    /// birebir uyumlu. 0 = kural KAPALI.
     pub fn bonereaper_late_winner_secs(&self) -> u32 {
-        self.bonereaper_late_winner_secs.unwrap_or(300).min(300)
+        self.bonereaper_late_winner_secs.unwrap_or(180).min(300)
     }
     /// Late winner bid eşiği; 0.50–0.99 sınırlı; default 0.88
     /// (Canlı Bonereaper analizi [1:50-1:55 ET]: gerçek bot UP $0.92 bid'de
@@ -476,27 +478,30 @@ impl StrategyParams {
             .unwrap_or(0.02)
             .clamp(0.00, 0.20)
     }
-    /// Long-shot bucket USDC (bid ≤ 0.30); 0–10000 sınırlı; default 8.
-    /// 14-market analizi: real bot $0.15-0.30 bandında avg $7.18. $8 uyumlu.
+    /// Long-shot bucket USDC (bid ≤ 0.30); 0–10000 sınırlı; default 15.
+    /// 25-market doğrulaması (12 + 13 yeni log): real bot $0.20-0.40 bandında
+    /// medyan $14.70-$15.34/shot. Eski $8 default real botun %50'si kadardı,
+    /// $15 birebir uyumlu.
     pub fn bonereaper_size_longshot_usdc(&self) -> f64 {
         self.bonereaper_size_longshot_usdc
-            .unwrap_or(8.0)
+            .unwrap_or(15.0)
             .clamp(0.0, 10_000.0)
     }
-    /// Mid bucket USDC (0.30 < bid ≤ 0.65); 0–10000 sınırlı; default 10.
-    /// 6-market sim: $20 mid ile yanlış yönde fazla birikim → avg_sum yükselir.
-    /// $10 ile yarı birikim, LW'ye daha fazla yer açar. ceil(10/0.50)=20sh/trade.
+    /// Mid bucket USDC (0.30 < bid ≤ 0.65); 0–10000 sınırlı; default 23.
+    /// 25-market doğrulaması: $0.40-0.65 bandında medyan $23.12-$23.31/shot.
+    /// Eski $10 default real botun ~%43'üydü → bot büyük accumulation
+    /// kaçırıyordu, $23 birebir uyumlu.
     pub fn bonereaper_size_mid_usdc(&self) -> f64 {
         self.bonereaper_size_mid_usdc
-            .unwrap_or(10.0)
+            .unwrap_or(23.0)
             .clamp(0.0, 10_000.0)
     }
-    /// High bucket USDC (bid > 0.65); 0–10000 sınırlı; default 20.
-    /// $40 high + factor=2 → 100sh @ $0.76 — çok fazla pahalı birikim.
-    /// $20 + factor=1 (pyramid kapalı) → 27sh @ $0.75 — gerçek 40-45sh'a yakın.
+    /// High bucket USDC (bid > 0.65); 0–10000 sınırlı; default 37.
+    /// 25-market doğrulaması: $0.65-0.85 bandında medyan $37.19-$43.12/shot.
+    /// Eski $20 default real botun ~%54'üydü, $37 medyana oturur.
     pub fn bonereaper_size_high_usdc(&self) -> f64 {
         self.bonereaper_size_high_usdc
-            .unwrap_or(20.0)
+            .unwrap_or(37.0)
             .clamp(0.0, 10_000.0)
     }
     /// Loser side min bid eşiği; 0.001–0.10 sınırlı; default 0.01 (1¢ scalp).
