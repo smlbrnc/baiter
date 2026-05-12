@@ -209,19 +209,23 @@ impl BonereaperEngine {
                         if w_bid >= lw_thr && w_ask > 0.0 {
                             let size = (usdc / w_ask).ceil();
 
-                            // LW avg_sum guard: karşı tarafta pahalı pozisyon varsa
-                            // LW avg_sum'u çok yükseltmesin.
-                            // Örnek: UP @ $0.53 birikim + LW DOWN @ $0.89 → sum=1.42 KAYIP
-                            // → Karşı tarafın avg fiyatı + LW ask > cap ise bu tick'i atla.
+                            // LW opp_avg guard: karşı pozisyon pahalıysa ($0.50+) LW bloke.
+                            // Gerçek bot loser tarafı avg $0.10-$0.35 tutar.
+                            // $0.50+ loser = yanlış yönde pahalı birikim → LW zararlı.
+                            //
+                            // 5-market doğrulama:
+                            //   1778565600: DN_avg=$0.451 < $0.50 → LW SERBEST ✓ (+$234)
+                            //   1778566800: UP_avg=$0.531 > $0.50 → LW BLOKE ✓ (DryRun yanlış tetikleme)
+                            //   1778568000: UP_avg=$0.351 < $0.50 → LW SERBEST ✓ (+$102)
                             let m = ctx.metrics;
                             let (opp_filled, opp_avg) = if winner == Outcome::Up {
                                 (m.down_filled, m.avg_down)
                             } else {
                                 (m.up_filled, m.avg_up)
                             };
-                            let lw_avg_sum_cap = p.bonereaper_max_avg_sum() + 0.15;
-                            if opp_filled > 0.0 && opp_avg + w_ask > lw_avg_sum_cap {
-                                // avg_sum çok yüksek olurdu — bu LW shot'ını atla
+                            const LW_OPP_AVG_MAX: f64 = 0.50;
+                            if opp_filled > 0.0 && opp_avg > LW_OPP_AVG_MAX {
+                                // Karşı taraf pahalı → LW bu tick'te atla
                             } else {
                                 let reason = if is_burst {
                                     reason_lw_burst(winner)
