@@ -427,11 +427,12 @@ impl StrategyParams {
     /// Late winner USDC notional; 0–10000 sınırlı; default 200
     /// (Gerçek bot T-85s'de 1561+508+500+500+329 sh × $0.99 = ≈ $5000 toplam,
     /// ama bunu küçük lotlarla ~40 shot'ta yapıyor. $200/shot × 20 quota = $4000
-    /// max. Eski $2000 tek shot: yanlış yönde -$2000 ani kayıp; küçük lot
-    /// riski yayar. realbot.log analizi: ortalama shot ~$100-$200). 0 = KAPALI.
+    /// max. Eski $200/shot: 5 shot = $1004 (gerçek botun 4.4x fazlası).
+    /// 1778588700 analizi: gerçek bot toplam 244sh@$0.91=$222 LW attı.
+    /// $50/shot × 5 shot = $250 ≈ gerçek bota uygun. 0 = KAPALI.
     pub fn bonereaper_late_winner_usdc(&self) -> f64 {
         self.bonereaper_late_winner_usdc
-            .unwrap_or(200.0)
+            .unwrap_or(50.0)
             .clamp(0.0, 10_000.0)
     }
     /// Session başına max LW injection; 0–50 sınırlı; default 20 (gerçek bot

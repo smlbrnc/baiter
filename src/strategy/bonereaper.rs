@@ -408,6 +408,24 @@ impl BonereaperEngine {
                 // Scalp türü tespit (avg_sum cap ve order_price için kullanılır)
                 let is_any_scalp = scalp_only || is_scalp_band;
 
+                // ── POST-LW WINNER PRICE CAP ──────────────────────────────────
+                // LW ateşlendikten sonra winner tarafı pahalı fiyatlardan alma.
+                //
+                // Gerçek bot analizi (1778588700):
+                //   - LW T+185s: DN@$0.91 (244sh, $222 toplam)
+                //   - LW sonrası DN: $0.52-$0.66 aralığında devam etti
+                //   - $0.77+ DN alımı: 1 tane (23sh, $0.81) — maker fill artığı
+                //
+                // Botumuz sorunu: LW 1077sh ($1004) → DN fiyatı $0.84-$0.89'da
+                // kaldı → normal alım avg_sum<1.05 olduğu için devam etti (+558sh $462)
+                //
+                // Fix: lw_injections>0 iken winner@$0.70+ almayı durdur.
+                // Fiyat düştüğünde ($0.52-$0.66) normal alım yeniden başlar.
+                const POST_LW_WINNER_MAX_BID: f64 = 0.70;
+                if st.lw_injections > 0 && !is_loser_dir && !is_any_scalp && bid > POST_LW_WINNER_MAX_BID {
+                    return (BonereaperState::Active(st), Decision::NoOp);
+                }
+
                 // ── LOSER GUARD ───────────────────────────────────────────────
                 // Anlık bid fiyatı düşük olan taraf = loser. Loser tarafına
                 // mid-fiyat ($0.20+) alım yapma; sadece scalp bandı ($0.01-$0.20)
