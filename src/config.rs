@@ -421,7 +421,7 @@ impl StrategyParams {
     /// "$0.07-$0.13 arası DOWN loser" gözlemlenince UP'a büyük LW yapıyor).
     pub fn bonereaper_late_winner_bid_thr(&self) -> f64 {
         self.bonereaper_late_winner_bid_thr
-            .unwrap_or(0.88)
+            .unwrap_or(0.90)
             .clamp(0.50, 0.99)
     }
     /// Late winner USDC notional; 0–10000 sınırlı; default 200
