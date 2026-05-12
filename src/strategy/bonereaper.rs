@@ -208,21 +208,37 @@ impl BonereaperEngine {
                         };
                         if w_bid >= lw_thr && w_ask > 0.0 {
                             let size = (usdc / w_ask).ceil();
-                            let reason = if is_burst {
-                                reason_lw_burst(winner)
+
+                            // LW avg_sum guard: karşı tarafta pahalı pozisyon varsa
+                            // LW avg_sum'u çok yükseltmesin.
+                            // Örnek: UP @ $0.53 birikim + LW DOWN @ $0.89 → sum=1.42 KAYIP
+                            // → Karşı tarafın avg fiyatı + LW ask > cap ise bu tick'i atla.
+                            let m = ctx.metrics;
+                            let (opp_filled, opp_avg) = if winner == Outcome::Up {
+                                (m.down_filled, m.avg_down)
                             } else {
-                                reason_lw(winner)
+                                (m.up_filled, m.avg_up)
                             };
-                            if let Some(o) = make_buy(ctx, winner, w_ask, size, reason) {
-                                st.last_buy_ms = ctx.now_ms;
-                                st.lw_injections = st.lw_injections.saturating_add(1);
-                                st.last_up_bid = ctx.up_best_bid;
-                                st.last_dn_bid = ctx.down_best_bid;
-                                st.first_done = true;
-                                return (
-                                    BonereaperState::Active(st),
-                                    Decision::PlaceOrders(vec![o]),
-                                );
+                            let lw_avg_sum_cap = p.bonereaper_max_avg_sum() + 0.15;
+                            if opp_filled > 0.0 && opp_avg + w_ask > lw_avg_sum_cap {
+                                // avg_sum çok yüksek olurdu — bu LW shot'ını atla
+                            } else {
+                                let reason = if is_burst {
+                                    reason_lw_burst(winner)
+                                } else {
+                                    reason_lw(winner)
+                                };
+                                if let Some(o) = make_buy(ctx, winner, w_ask, size, reason) {
+                                    st.last_buy_ms = ctx.now_ms;
+                                    st.lw_injections = st.lw_injections.saturating_add(1);
+                                    st.last_up_bid = ctx.up_best_bid;
+                                    st.last_dn_bid = ctx.down_best_bid;
+                                    st.first_done = true;
+                                    return (
+                                        BonereaperState::Active(st),
+                                        Decision::PlaceOrders(vec![o]),
+                                    );
+                                }
                             }
                         }
                     }
