@@ -209,14 +209,18 @@ impl BonereaperEngine {
                         if w_bid >= lw_thr && w_ask > 0.0 {
                             let size = (usdc / w_ask).ceil();
 
-                            // LW opp_avg guard: karşı pozisyon pahalıysa ($0.50+) LW bloke.
-                            // Gerçek bot loser tarafı avg $0.10-$0.35 tutar.
-                            // $0.50+ loser = yanlış yönde pahalı birikim → LW zararlı.
+                            // LW opp_avg guard: karşı pozisyon pahalıysa LW bloke.
                             //
-                            // 5-market doğrulama:
-                            //   1778565600: DN_avg=$0.451 < $0.50 → LW SERBEST ✓ (+$234)
-                            //   1778566800: UP_avg=$0.531 > $0.50 → LW BLOKE ✓ (DryRun yanlış tetikleme)
-                            //   1778568000: UP_avg=$0.351 < $0.50 → LW SERBEST ✓ (+$102)
+                            // Guard 1 (opp_avg > 0.50): Klasik pahalı loser engeli.
+                            // Guard 2 (opp_avg > 0.40 AND w_ask > 0.90): Kritik combo bloğu.
+                            //   Gerçek bot analizi (46 market, bot120):
+                            //     1778578800: opp_avg=0.492, w_ask=0.93 → combo=1.422 → BLOK ✓
+                            //     1778579700: opp_avg=0.490, w_ask=0.93 → combo=1.420 → BLOK ✓
+                            //     1778582700: opp_avg=0.496, w_ask=0.93 → combo=1.426 → BLOK ✓
+                            //     1778583300: opp_avg=0.467, w_ask=0.92 → combo=1.387 → BLOK ✓
+                            //     1778565600: opp_avg=0.451, w_ask=0.90 → Guard1+2 miss → SERBEST ✓
+                            //   Sorun: mevcut guard opp_avg>0.50, ama 0.492 geçiyor!
+                            //   LW anında avg_sum~1.00 sağlıklı, LW sonrası 1.28 felaket.
                             let m = ctx.metrics;
                             let (opp_filled, opp_avg) = if winner == Outcome::Up {
                                 (m.down_filled, m.avg_down)
@@ -224,8 +228,13 @@ impl BonereaperEngine {
                                 (m.up_filled, m.avg_up)
                             };
                             const LW_OPP_AVG_MAX: f64 = 0.50;
-                            if opp_filled > 0.0 && opp_avg > LW_OPP_AVG_MAX {
-                                // Karşı taraf pahalı → LW bu tick'te atla
+                            const LW_OPP_HIGH_PRICE: f64 = 0.40;
+                            const LW_WINNER_MAX_PRICE: f64 = 0.90;
+                            let lw_blocked = opp_filled > 0.0
+                                && (opp_avg > LW_OPP_AVG_MAX
+                                    || (opp_avg > LW_OPP_HIGH_PRICE && w_ask > LW_WINNER_MAX_PRICE));
+                            if lw_blocked {
+                                // Karşı taraf pahalı + kazanan da pahalı → avg_sum patlar, LW atla
                             } else {
                                 let reason = if is_burst {
                                     reason_lw_burst(winner)
