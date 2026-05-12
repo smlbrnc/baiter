@@ -215,12 +215,14 @@ impl BonereaperEngine {
                             //                T>120  T-120..60 T-60..30 T-30..10 T-10..0
                             //   $0.95-0.97   2.0x     2.0x      4.0x     4.0x      -
                             //   $0.97-0.99   9.0x     4.4x      6.1x     3.7x     1.0x
-                            //   $0.99+      13.0x    11.5x      5.5x     5.7x     1.7x
+                            //   $0.99+      20.0x    11.5x      5.5x     5.7x     1.7x
                             //   $0.85-0.95   1.0x     1.0x      1.0x     1.0x     1.0x
                             //
                             // BTC delta hipotezi çürütüldü (r=0.136 zayıf): shot
                             // büyüklüğü Polymarket fiyatı + zaman ile belirlenir.
-                            // Risk: max 13x cap (real bot 95p $5913, max $7085).
+                            // Canlı izleme (1778615100): real bot 6 LW emir = $5003
+                            // = $833/emir → mult ~17x → 13x cap yetersiz.
+                            // Risk: max 20x cap ($100 × 20 / $0.99 = 2020 sh).
                             let arb_mult = if w_ask >= 0.99 {
                                 if to_end <= 10.0 {
                                     1.7
@@ -231,7 +233,7 @@ impl BonereaperEngine {
                                 } else if to_end <= 120.0 {
                                     11.5
                                 } else {
-                                    13.0
+                                    20.0  // 13x → 20x (1778615100 doğrulamasıyla)
                                 }
                             } else if w_ask >= 0.97 {
                                 if to_end <= 10.0 {
