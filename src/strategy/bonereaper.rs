@@ -207,22 +207,50 @@ impl BonereaperEngine {
                             (Outcome::Down, ctx.down_best_bid, ctx.down_best_ask)
                         };
                         if w_bid >= lw_thr && w_ask > 0.0 {
-                            // Dinamik LW büyüklüğü: $0.95+ arbitraj bölgesinde
-                            // shot büyüt. 25-market doğrulaması (12 + 13 yeni log)
-                            // bant bazlı medyan USDC değerleri:
-                            //   $0.85-0.95 → $89-$133/shot   → 1.0x  (base $100)
-                            //   $0.95-0.97 → $250/shot       → 2.5x  ($250 birebir)
-                            //   $0.97-0.99 → $498-$942/shot  → 5.0x  ($500 birebir)
-                            //   $0.99+    → $79-$122/shot   → 1.5x  ($150)
-                            // $0.99+ bandında shot SAYISI fazla (24+/market) ama
-                            // her shot küçük; çoklu atış cooldown ile sağlanır.
-                            // Eski max 4x → revize: kademeli step formülü.
+                            // MIMIC v2: 104-market analizi (1619 LW shot, 832 arb,
+                            // 697 $0.99+ shot, newlog dahil) — backtest %95.7 hacim
+                            // uyumu (gerçek bot AVG shot büyüklüğü taklidi).
+                            //
+                            // 2D AVG-bazlı katsayı (lw_usdc=$100 base):
+                            //                T>120  T-120..60 T-60..30 T-30..10 T-10..0
+                            //   $0.95-0.97   2.0x     2.0x      4.0x     4.0x      -
+                            //   $0.97-0.99   9.0x     4.4x      6.1x     3.7x     1.0x
+                            //   $0.99+      13.0x    11.5x      5.5x     5.7x     1.7x
+                            //   $0.85-0.95   1.0x     1.0x      1.0x     1.0x     1.0x
+                            //
+                            // BTC delta hipotezi çürütüldü (r=0.136 zayıf): shot
+                            // büyüklüğü Polymarket fiyatı + zaman ile belirlenir.
+                            // Risk: max 13x cap (real bot 95p $5913, max $7085).
                             let arb_mult = if w_ask >= 0.99 {
-                                1.5
+                                if to_end <= 10.0 {
+                                    1.7
+                                } else if to_end <= 30.0 {
+                                    5.7
+                                } else if to_end <= 60.0 {
+                                    5.5
+                                } else if to_end <= 120.0 {
+                                    11.5
+                                } else {
+                                    13.0
+                                }
                             } else if w_ask >= 0.97 {
-                                5.0
+                                if to_end <= 10.0 {
+                                    1.0
+                                } else if to_end <= 30.0 {
+                                    3.7
+                                } else if to_end <= 60.0 {
+                                    6.1
+                                } else if to_end <= 120.0 {
+                                    4.4
+                                } else {
+                                    9.0
+                                }
                             } else if w_ask >= 0.95 {
-                                2.5
+                                if to_end <= 60.0 {
+                                    4.0
+                                } else {
+                                    2.0
+                                }
                             } else {
                                 1.0
                             };
