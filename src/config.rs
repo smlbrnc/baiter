@@ -424,22 +424,26 @@ impl StrategyParams {
             .unwrap_or(0.90)
             .clamp(0.50, 0.99)
     }
-    /// Late winner USDC notional; 0–10000 sınırlı; default 200
-    /// (Gerçek bot T-85s'de 1561+508+500+500+329 sh × $0.99 = ≈ $5000 toplam,
-    /// ama bunu küçük lotlarla ~40 shot'ta yapıyor. $200/shot × 20 quota = $4000
-    /// max. Eski $200/shot: 5 shot = $1004 (gerçek botun 4.4x fazlası).
-    /// 1778588700 analizi: gerçek bot toplam 244sh@$0.91=$222 LW attı.
-    /// $50/shot × 5 shot = $250 ≈ gerçek bota uygun. 0 = KAPALI.
+    /// Late winner USDC notional; 0–10000 sınırlı; default 100.
+    /// 47-market analizi (timestamp grup bazlı LW shot büyüklükleri):
+    ///   - $0.85-0.95 bant medyanı $91/shot (117 shot) → $100 default uygun.
+    ///   - $0.95+ bant medyanı $198/shot, ort $589/shot, max $4953/shot.
+    ///     Bu bantta dinamik arb_mult ölçekleme bonereaper.rs'de uygulanır
+    ///     ($0.95 → 1x, $0.97 → 2x, $0.99 → 4x).
+    ///   - Sonuç: $100 × max 4x = $400/shot, max_per_session=20 ile $8k tavan.
+    /// 0 = KAPALI.
     pub fn bonereaper_late_winner_usdc(&self) -> f64 {
         self.bonereaper_late_winner_usdc
-            .unwrap_or(50.0)
+            .unwrap_or(100.0)
             .clamp(0.0, 10_000.0)
     }
-    /// Session başına max LW injection; 0–50 sınırlı; default 20 (gerçek bot
-    /// bir market'te 40+ adet $0.99 BUY yapıyor; quota 20 → $200 × 20 = $4000
-    /// max — gerçek bot'un $5000 hedefine yakın). 0 = sınırsız.
+    /// Session başına max LW injection; 0–50 sınırlı; default 20.
+    /// 47-market analizi: gerçek bot bir markette 23'e kadar LW shot atıyor
+    /// (1778010000: 23 shot, 1778027100: 17 shot, 1778586300: 11 shot).
+    /// quota 20 + lw_usdc=$100 + arb_mult max 4x = $8k tavan, gerçek botun
+    /// max $7,147 LW örneğine ($1778568000) yakın. 0 = sınırsız.
     pub fn bonereaper_lw_max_per_session(&self) -> u32 {
-        self.bonereaper_lw_max_per_session.unwrap_or(10).min(50)
+        self.bonereaper_lw_max_per_session.unwrap_or(20).min(50)
     }
     /// Imbalance threshold (share); 0–10000 sınırlı; default 1000.
     /// 4-market analizi (bot 117): imbalance_thr=200 ile T=0-60s arası
@@ -502,14 +506,14 @@ impl StrategyParams {
             .unwrap_or(0.01)
             .clamp(0.001, 0.10)
     }
-    /// Loser side scalp USDC; 0–50 sınırlı; default $5.
-    /// Gerçek bot loser scalp fazında ($0.10-$0.20 fiyat bandı) market başına
-    /// $40-$448 harcıyor (realbot.log: 703-3667 sh × $0.12-$0.15 avg). Eski
-    /// $1 default çok küçüktü — $5 ile 38 sh/trade × 20-30 tick = $100-$150
-    /// loser scalp toplam, real bot'a benzer. 0 = scalp KAPALI.
+    /// Loser side scalp USDC; 0–50 sınırlı; default $10.
+    /// 47-market analizi (238 scoop shot, timestamp grup bazlı):
+    ///   medyan $9.90/shot, ort $11.37/shot, dağılım %32 <$5, %18 $5-10,
+    ///   %24 $10-15, %8 $15-20, %18 $20+. $10 default medyana oturuyor.
+    /// 0 = scalp KAPALI.
     pub fn bonereaper_loser_scalp_usdc(&self) -> f64 {
         self.bonereaper_loser_scalp_usdc
-            .unwrap_or(5.0)
+            .unwrap_or(10.0)
             .clamp(0.0, 50.0)
     }
     /// Loser scalp üst bid eşiği; 0.05–0.50 sınırlı; default 0.30. Loser side

@@ -207,7 +207,18 @@ impl BonereaperEngine {
                             (Outcome::Down, ctx.down_best_bid, ctx.down_best_ask)
                         };
                         if w_bid >= lw_thr && w_ask > 0.0 {
-                            let size = (usdc / w_ask).ceil();
+                            // Dinamik LW büyüklüğü: $0.95+ arbitraj bölgesinde
+                            // shot büyüt. Gerçek bot 47-market analizi:
+                            //   $0.85-0.95 bant medyanı $91/shot
+                            //   $0.95+ bant medyanı $198/shot, ort $589/shot
+                            // $0.95 → 1x, $0.97 → 2x, $0.99 → 4x (max 4x clamp)
+                            let arb_mult = if w_ask >= 0.95 {
+                                let extra = ((w_ask - 0.95) / 0.02).min(3.0);
+                                1.0 + extra
+                            } else {
+                                1.0
+                            };
+                            let size = (usdc * arb_mult / w_ask).ceil();
 
                             // LW opp_avg guard: karşı pozisyon pahalıysa LW bloke.
                             //
