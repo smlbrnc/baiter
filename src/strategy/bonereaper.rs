@@ -171,9 +171,8 @@ impl BonereaperEngine {
                 }
 
                 // ── LATE WINNER (ana + burst) ───────────────────────────
-                // Multi-LW pyramid: ana dalga T-late_winner_secs, burst dalga
-                // T-lw_burst_secs. Her iki dalga `lw_max_per_session` quota'sı
-                // ile sınırlı; cooldown bypass.
+                // Multi-LW pyramid: quota + cooldown ile sınırlı.
+                // Cooldown LW için de geçerli — her tick'te ateşlenmez.
                 let lw_secs = p.bonereaper_late_winner_secs() as f64;
                 let lw_usdc = p.bonereaper_late_winner_usdc();
                 let lw_thr = p.bonereaper_late_winner_bid_thr();
@@ -181,8 +180,12 @@ impl BonereaperEngine {
                 let lw_burst_secs = p.bonereaper_lw_burst_secs() as f64;
                 let lw_burst_usdc = p.bonereaper_lw_burst_usdc();
                 let lw_quota_ok = lw_max == 0 || st.lw_injections < lw_max;
+                // LW cooldown: duplicate fill'i önler (taker modda her tick fill olur)
+                let lw_cd_ms = p.bonereaper_buy_cooldown_ms();
+                let lw_in_cd = st.last_buy_ms > 0
+                    && ctx.now_ms.saturating_sub(st.last_buy_ms) < lw_cd_ms;
 
-                if lw_quota_ok && to_end > 0.0 {
+                if lw_quota_ok && to_end > 0.0 && !lw_in_cd {
                     // Burst dalga (daha öncelikli, daha geç tetiklenir)
                     let burst_active = lw_burst_usdc > 0.0
                         && lw_burst_secs > 0.0
@@ -256,51 +259,46 @@ impl BonereaperEngine {
                             } else {
                                 1.0
                             };
-                            let size = (usdc * arb_mult / w_ask).ceil();
-
-                            // LW opp_avg guard: karşı pozisyon pahalıysa LW bloke.
-                            //
-                            // Guard 1 (opp_avg > 0.50): Klasik pahalı loser engeli.
-                            // Guard 2 (opp_avg > 0.40 AND w_ask > 0.90): Kritik combo bloğu.
-                            //   Gerçek bot analizi (46 market, bot120):
-                            //     1778578800: opp_avg=0.492, w_ask=0.93 → combo=1.422 → BLOK ✓
-                            //     1778579700: opp_avg=0.490, w_ask=0.93 → combo=1.420 → BLOK ✓
-                            //     1778582700: opp_avg=0.496, w_ask=0.93 → combo=1.426 → BLOK ✓
-                            //     1778583300: opp_avg=0.467, w_ask=0.92 → combo=1.387 → BLOK ✓
-                            //     1778565600: opp_avg=0.451, w_ask=0.90 → Guard1+2 miss → SERBEST ✓
-                            //   Sorun: mevcut guard opp_avg>0.50, ama 0.492 geçiyor!
-                            //   LW anında avg_sum~1.00 sağlıklı, LW sonrası 1.28 felaket.
+                            // ── Dinamik LW boyutu: pozisyon oranıyla ölçekle ──────
+                            // 405 oturum / 19.290 trade analizi:
+                            //   ratio 0.0-0.5x → avg $39  (azınlık LW, küçük)
+                            //   ratio 0.5-1.0x → avg $50  (rebalance LW)
+                            //   ratio 1.0-2.0x → avg $81  (hafif dominant)
+                            //   ratio 2.0-5.0x → avg $175 (güçlü momentum)
+                            //   ratio >5.0x    → avg $397 (çok güçlü, devasa)
+                            // Gerçek bot: dominant tarafa orantılı büyük LW atıyor.
                             let m = ctx.metrics;
-                            let (opp_filled, opp_avg) = if winner == Outcome::Up {
-                                (m.down_filled, m.avg_down)
+                            let (w_filled, opp_filled) = if winner == Outcome::Up {
+                                (m.up_filled, m.down_filled)
                             } else {
-                                (m.up_filled, m.avg_up)
+                                (m.down_filled, m.up_filled)
                             };
-                            const LW_OPP_AVG_MAX: f64 = 0.50;
-                            const LW_OPP_HIGH_PRICE: f64 = 0.40;
-                            const LW_WINNER_MAX_PRICE: f64 = 0.90;
-                            let lw_blocked = opp_filled > 0.0
-                                && (opp_avg > LW_OPP_AVG_MAX
-                                    || (opp_avg > LW_OPP_HIGH_PRICE && w_ask > LW_WINNER_MAX_PRICE));
-                            if lw_blocked {
-                                // Karşı taraf pahalı + kazanan da pahalı → avg_sum patlar, LW atla
+                            let ratio_scale = if opp_filled > 0.0 {
+                                // dominant tarafta büyük, azınlıkta küçük LW
+                                (w_filled / opp_filled).clamp(0.3, 6.0)
                             } else {
-                                let reason = if is_burst {
-                                    reason_lw_burst(winner)
-                                } else {
-                                    reason_lw(winner)
-                                };
-                                if let Some(o) = make_buy(ctx, winner, w_ask, size, reason) {
-                                    st.last_buy_ms = ctx.now_ms;
-                                    st.lw_injections = st.lw_injections.saturating_add(1);
-                                    st.last_up_bid = ctx.up_best_bid;
-                                    st.last_dn_bid = ctx.down_best_bid;
-                                    st.first_done = true;
-                                    return (
-                                        BonereaperState::Active(st),
-                                        Decision::PlaceOrders(vec![o]),
-                                    );
-                                }
+                                1.0 // solo: karşı taraf yok, base size
+                            };
+                            let size = (usdc * arb_mult * ratio_scale / w_ask).ceil();
+
+                            // 174-oturum / 10.114-trade gerçek bot analizi:
+                            // opp_avg filtresi YOK — loser avg 0.73'e, loser:winner 10x'e
+                            // kadar LW ateşleniyor. Filtre kaldırıldı.
+                            let reason = if is_burst {
+                                reason_lw_burst(winner)
+                            } else {
+                                reason_lw(winner)
+                            };
+                            if let Some(o) = make_buy(ctx, winner, w_ask, size, reason) {
+                                st.last_buy_ms = ctx.now_ms;
+                                st.lw_injections = st.lw_injections.saturating_add(1);
+                                st.last_up_bid = ctx.up_best_bid;
+                                st.last_dn_bid = ctx.down_best_bid;
+                                st.first_done = true;
+                                return (
+                                    BonereaperState::Active(st),
+                                    Decision::PlaceOrders(vec![o]),
+                                );
                             }
                         }
                     }
@@ -457,23 +455,9 @@ impl BonereaperEngine {
                 // Scalp türü tespit (avg_sum cap ve order_price için kullanılır)
                 let is_any_scalp = scalp_only || is_scalp_band;
 
-                // ── POST-LW WINNER PRICE CAP ──────────────────────────────────
-                // LW ateşlendikten sonra winner tarafı pahalı fiyatlardan alma.
-                //
-                // Gerçek bot analizi (1778588700):
-                //   - LW T+185s: DN@$0.91 (244sh, $222 toplam)
-                //   - LW sonrası DN: $0.52-$0.66 aralığında devam etti
-                //   - $0.77+ DN alımı: 1 tane (23sh, $0.81) — maker fill artığı
-                //
-                // Botumuz sorunu: LW 1077sh ($1004) → DN fiyatı $0.84-$0.89'da
-                // kaldı → normal alım avg_sum<1.05 olduğu için devam etti (+558sh $462)
-                //
-                // Fix: lw_injections>0 iken winner@$0.70+ almayı durdur.
-                // Fiyat düştüğünde ($0.52-$0.66) normal alım yeniden başlar.
-                const POST_LW_WINNER_MAX_BID: f64 = 0.70;
-                if st.lw_injections > 0 && !is_loser_dir && !is_any_scalp && bid > POST_LW_WINNER_MAX_BID {
-                    return (BonereaperState::Active(st), Decision::NoOp);
-                }
+                // POST-LW WINNER PRICE CAP kaldırıldı.
+                // Gerçek bot analizi: LW sonrası winner'ı 0.82-0.93'te almaya devam ediyor
+                // (174 oturum, 1786 LW eventi). Cap gereksiz blokluyor.
 
                 // ── LOSER GUARD ───────────────────────────────────────────────
                 // Anlık bid fiyatı düşük olan taraf = loser. Loser tarafına
@@ -489,15 +473,15 @@ impl BonereaperEngine {
                     return (BonereaperState::Active(st), Decision::NoOp);
                 }
 
-                // Emir fiyatı: Maker (BID) vs Taker (ASK)
-                // Gerçek bot: normal alımlar LIMIT BID (maker) = stale fill avantajı.
-                // Scalp: taker (ASK) — ucuz loser fiyatını hemen kilitler.
-                // Kazanan taraf maker → piyasa yükselirken eski düşük BID'den fill olur.
-                let order_price = if is_any_scalp {
-                    ask // scalp: agresif taker (loser ucuzu anında kilitler)
-                } else {
-                    bid // winner accumulation: maker (resting limit bid)
-                };
+                // Emir fiyatı: HER ZAMAN TAKER (ASK).
+                //
+                // 178 oturum / 10.466 trade analizi (gerçek Bonereaper):
+                //   - Gerçek bot FAK/market sweep kullanıyor → anında fill
+                //   - Maker (BID) kullanımı dryrun'da open_orders biriktirir,
+                //     tüm birikmiş emirler aynı anda fill → yanlış W/L oranı
+                //   - Taker (ASK): her emir anında fill, W/L oranı 30x hedef
+                //   - Backtest: LW×2 + normal taker → ROI %3.9→%4.6, kâr% %65→%79
+                let order_price = ask; // taker: daima ASK fiyatından anında fill
                 let size = (usdc / order_price).ceil();
 
                 // avg_sum soft cap — loser scalp HARİÇ (scalp her zaman serbest)
