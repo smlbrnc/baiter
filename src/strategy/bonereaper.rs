@@ -352,15 +352,34 @@ impl BonereaperEngine {
                 } else {
                     let m = ctx.metrics;
                     let imb = m.up_filled - m.down_filled;
-                    // Dinamik imbalance eşiği: zamanla büyüyen eşik.
-                    // 407 oturum: erken faz P50=80sh, geç faz P50=405sh
-                    // Erken fazda küçük imbalance'ta rebalance → loser birikimi sağlanır.
-                    // Formül: 50 + (300 - to_end) × 1.2, clamp 50..400
-                    let dynamic_imb = if to_end < f64::MAX {
-                        (50.0_f64 + (300.0 - to_end).max(0.0) * 1.2).clamp(50.0, 400.0)
+                    // Dinamik imbalance eşiği: trade büyüklüğüne orantılı N-trade modeli.
+                    //
+                    // 410 oturum gerçek bot analizi: yön değişimi imbalance / trade_size:
+                    //   Erken (T>240s): P50 = 2.9 trade
+                    //   Erken (T>120s): P50 = 4.4 trade
+                    //   Orta  (T 120-60s): P50 = 7.0 trade
+                    //   Geç   (T<30s): P50 = 10.5 trade
+                    //
+                    // Formül: thr = N(to_end) × est_trade_size
+                    //   N(T>120s) = 3, N(T<120s) → linear 3..10
+                    //   est_size = size_mid_usdc / dominant_bid
+                    // Bu formül her botun kendi trade boyutuna otomatik uyum sağlar:
+                    //   bot153 (mid=$4, bid=0.72): size≈6sh → early_thr=18sh ✓
+                    //   bot151 (mid=$15, bid=0.68): size≈22sh → early_thr=66sh ✓
+                    //   bot152 (mid=$10, bid=0.68): size≈15sh → early_thr=45sh ✓
+                    let dominant_bid = ctx.up_best_bid.max(ctx.down_best_bid);
+                    let est_trade_size = if dominant_bid > 0.0 {
+                        (p.bonereaper_size_mid_usdc() / dominant_bid).ceil().max(1.0)
                     } else {
-                        200.0
+                        10.0_f64
                     };
+                    let n_trades = if to_end >= 120.0 || to_end >= f64::MAX / 2.0 {
+                        3.0_f64
+                    } else {
+                        // T-120 → T-0: N=3 → N=10 linear
+                        3.0 + (120.0 - to_end.min(120.0)) / 120.0 * 7.0
+                    };
+                    let dynamic_imb = (n_trades * est_trade_size).clamp(15.0, 400.0);
                     // Parametre override: null (→1000) = dinamik kullan
                     let param_imb = p.bonereaper_imbalance_thr();
                     let imb_thr = if param_imb < 500.0 { param_imb } else { dynamic_imb };
