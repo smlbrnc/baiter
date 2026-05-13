@@ -60,42 +60,90 @@ Market başına ~$0.55–$1.00+ net kâr; 88% yön doğruluğu (15/17 market, ge
 
 ## 2. Karar Akış Şeması
 
-### Mermaid Flowchart
+### Karar Akış Şeması
 
-```mermaid
-flowchart TD
-    A([Tick Geldi]) --> B{to_end < 0?}
-    B -- Evet --> Z([NoOp — Market Kapandı])
-    B -- Hayır --> C{LW Penceresi?\nto_end ≤ 180s\nAND max_bid ≥ 0.90}
-    C -- Evet --> D[Kazanan Tarafı Bul\nw_ask ile arb_mult hesapla]
-    D --> E[Taker BUY @ w_ask\nlw_usdc × arb_mult / w_ask lot]
-    E --> F{lw_injections\n≥ lw_max_per_session?}
-    F -- Evet --> Z
-    F -- Hayır --> E2([Emir Gönder ✓])
-    C -- Hayır --> G{Cooldown?\nnow_ms - last_buy_ms\n< 3000ms}
-    G -- Evet --> Z
-    G -- Hayır --> H{first_done == false?}
-    H -- Evet --> I{|up_bid - down_bid|\n≥ 0.02?}
-    I -- Hayır --> Z
-    I -- Evet --> J{|BSI| ≥ 0.30?}
-    J -- Evet --> K[BSI yönü seç]
-    J -- Hayır --> L[OB: yüksek bid tarafı seç]
-    K --> M
-    L --> M
-    H -- Hayır --> N{|imbalance|\n> 1000 sh?}
-    N -- Evet --> O[Zayıf tarafı seç\nrebalans]
-    N -- Hayır --> P[En büyük bid delta\ntarafını seç]
-    O --> M
-    P --> M
-    M([Yön Seçildi]) --> Q{Deep lot?\nloser_bid < 1 - winner_bid + 0.05}
-    Q -- Evet --> R[Taker BUY @ loser_ask\nloser_scalp_usdc]
-    Q -- Hayır --> S{Boyut Hesapla\nbid bandına göre}
-    S --> T{avg_sum cap?\nnew_avg + opp_avg > 1.05}
-    T -- Evet --> Z
-    T -- Hayır --> U[Maker BUY @ bid\nboyut = usdc / bid lot]
-    R --> E2
-    U --> E2
-```
+<svg xmlns="http://www.w3.org/2000/svg" width="540" height="568" viewBox="0 0 540 568" style="font-family:system-ui,Arial,sans-serif;font-size:12px;background:#0f1117;border-radius:10px;">
+  <defs>
+    <marker id="ah" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#6c757d"/>
+    </marker>
+  </defs>
+  <text x="270" y="20" text-anchor="middle" fill="#adb5bd" font-size="13" font-weight="bold">decide() Karar Akışı</text>
+  <!-- TICK pill -->
+  <rect x="185" y="28" width="170" height="28" rx="14" fill="#2c3e50" stroke="#5d6d7e" stroke-width="1.2"/>
+  <text x="270" y="47" text-anchor="middle" fill="#ecf0f1" font-weight="bold">TICK GELDİ</text>
+  <line x1="270" y1="56" x2="270" y2="73" stroke="#6c757d" stroke-width="1.5" marker-end="url(#ah)"/>
+  <!-- D1: to_end < 0 -->
+  <polygon points="270,75 336,102 270,129 204,102" fill="#1a1500" stroke="#f39c12" stroke-width="1.5"/>
+  <text x="270" y="98" text-anchor="middle" fill="#f5cba7" font-weight="bold">to_end &lt; 0?</text>
+  <text x="270" y="113" text-anchor="middle" fill="#aaa" font-size="10">piyasa kapandı</text>
+  <line x1="336" y1="102" x2="390" y2="102" stroke="#6c757d" stroke-width="1.5" marker-end="url(#ah)"/>
+  <rect x="390" y="89" width="90" height="26" rx="4" fill="#3d0000" stroke="#e74c3c" stroke-width="1.2"/>
+  <text x="435" y="106" text-anchor="middle" fill="#e74c3c" font-weight="bold">NoOp</text>
+  <text x="342" y="97" fill="#e74c3c" font-size="10">Evet</text>
+  <text x="275" y="141" fill="#27ae60" font-size="10">Hayır</text>
+  <line x1="270" y1="129" x2="270" y2="146" stroke="#6c757d" stroke-width="1.5" marker-end="url(#ah)"/>
+  <!-- D2: LW aktif -->
+  <polygon points="270,148 345,178 270,208 195,178" fill="#1a0e00" stroke="#e67e22" stroke-width="1.5"/>
+  <text x="270" y="173" text-anchor="middle" fill="#f0b27a" font-weight="bold">LW aktif?</text>
+  <text x="270" y="189" text-anchor="middle" fill="#aaa" font-size="10">to_end≤180 ∧ bid≥0.90</text>
+  <line x1="345" y1="178" x2="390" y2="178" stroke="#6c757d" stroke-width="1.5" marker-end="url(#ah)"/>
+  <rect x="390" y="162" width="130" height="32" rx="4" fill="#003300" stroke="#27ae60" stroke-width="1.2"/>
+  <text x="455" y="180" text-anchor="middle" fill="#2ecc71" font-weight="bold" font-size="11">TAKER BUY</text>
+  <text x="455" y="192" text-anchor="middle" fill="#58d68d" font-size="9">(Late Winner)</text>
+  <text x="351" y="173" fill="#27ae60" font-size="10">Evet</text>
+  <text x="275" y="220" fill="#27ae60" font-size="10">Hayır</text>
+  <line x1="270" y1="208" x2="270" y2="225" stroke="#6c757d" stroke-width="1.5" marker-end="url(#ah)"/>
+  <!-- D3: Cooldown -->
+  <polygon points="270,227 336,252 270,277 204,252" fill="#1a1500" stroke="#f39c12" stroke-width="1.5"/>
+  <text x="270" y="247" text-anchor="middle" fill="#f5cba7" font-weight="bold">Cooldown?</text>
+  <text x="270" y="262" text-anchor="middle" fill="#aaa" font-size="10">son alım &lt; 3000 ms</text>
+  <line x1="336" y1="252" x2="390" y2="252" stroke="#6c757d" stroke-width="1.5" marker-end="url(#ah)"/>
+  <rect x="390" y="239" width="90" height="26" rx="4" fill="#3d0000" stroke="#e74c3c" stroke-width="1.2"/>
+  <text x="435" y="256" text-anchor="middle" fill="#e74c3c" font-weight="bold">NoOp</text>
+  <text x="341" y="247" fill="#e74c3c" font-size="10">Evet</text>
+  <text x="275" y="289" fill="#27ae60" font-size="10">Hayır</text>
+  <line x1="270" y1="277" x2="270" y2="294" stroke="#6c757d" stroke-width="1.5" marker-end="url(#ah)"/>
+  <!-- Yön Seçimi box -->
+  <rect x="155" y="296" width="230" height="44" rx="6" fill="#112244" stroke="#3498db" stroke-width="1.5"/>
+  <text x="270" y="315" text-anchor="middle" fill="#5dade2" font-weight="bold">Yön Seçimi</text>
+  <text x="270" y="332" text-anchor="middle" fill="#85c1e9" font-size="10">BSI primer / OB delta / Rebalans</text>
+  <line x1="270" y1="340" x2="270" y2="357" stroke="#6c757d" stroke-width="1.5" marker-end="url(#ah)"/>
+  <!-- D4: Deep lot -->
+  <polygon points="270,359 336,384 270,409 204,384" fill="#1a1500" stroke="#f39c12" stroke-width="1.5"/>
+  <text x="270" y="379" text-anchor="middle" fill="#f5cba7" font-weight="bold">Deep lot?</text>
+  <text x="270" y="395" text-anchor="middle" fill="#aaa" font-size="10">loser bid çok ucuz</text>
+  <line x1="336" y1="384" x2="390" y2="384" stroke="#6c757d" stroke-width="1.5" marker-end="url(#ah)"/>
+  <rect x="390" y="368" width="130" height="32" rx="4" fill="#003300" stroke="#27ae60" stroke-width="1.2"/>
+  <text x="455" y="386" text-anchor="middle" fill="#2ecc71" font-weight="bold" font-size="11">TAKER BUY</text>
+  <text x="455" y="398" text-anchor="middle" fill="#58d68d" font-size="9">(Loser Scalp)</text>
+  <text x="341" y="379" fill="#27ae60" font-size="10">Evet</text>
+  <text x="275" y="421" fill="#27ae60" font-size="10">Hayır</text>
+  <line x1="270" y1="409" x2="270" y2="426" stroke="#6c757d" stroke-width="1.5" marker-end="url(#ah)"/>
+  <!-- D5: avg_sum cap -->
+  <polygon points="270,428 346,455 270,482 194,455" fill="#1a1500" stroke="#f39c12" stroke-width="1.5"/>
+  <text x="270" y="450" text-anchor="middle" fill="#f5cba7" font-weight="bold">avg_sum &gt; 1.05?</text>
+  <text x="270" y="465" text-anchor="middle" fill="#aaa" font-size="10">pozisyon dengesi kontrolü</text>
+  <line x1="346" y1="455" x2="390" y2="455" stroke="#6c757d" stroke-width="1.5" marker-end="url(#ah)"/>
+  <rect x="390" y="442" width="90" height="26" rx="4" fill="#3d0000" stroke="#e74c3c" stroke-width="1.2"/>
+  <text x="435" y="459" text-anchor="middle" fill="#e74c3c" font-weight="bold">NoOp</text>
+  <text x="351" y="450" fill="#e74c3c" font-size="10">Evet</text>
+  <text x="275" y="494" fill="#27ae60" font-size="10">Hayır</text>
+  <line x1="270" y1="482" x2="270" y2="499" stroke="#6c757d" stroke-width="1.5" marker-end="url(#ah)"/>
+  <!-- MAKER BUY final -->
+  <rect x="155" y="501" width="230" height="44" rx="6" fill="#003300" stroke="#27ae60" stroke-width="1.5"/>
+  <text x="270" y="520" text-anchor="middle" fill="#2ecc71" font-weight="bold">MAKER BUY @ bid</text>
+  <text x="270" y="536" text-anchor="middle" fill="#58d68d" font-size="10">size = usdc / bid (lot sayısı)</text>
+  <!-- Legend -->
+  <rect x="10" y="550" width="11" height="11" rx="2" fill="#1a1500" stroke="#f39c12"/>
+  <text x="25" y="560" fill="#adb5bd" font-size="10">Karar noktası</text>
+  <rect x="120" y="550" width="11" height="11" rx="2" fill="#003300" stroke="#27ae60"/>
+  <text x="135" y="560" fill="#adb5bd" font-size="10">Alım emri</text>
+  <rect x="210" y="550" width="11" height="11" rx="2" fill="#3d0000" stroke="#e74c3c"/>
+  <text x="225" y="560" fill="#adb5bd" font-size="10">NoOp</text>
+  <rect x="270" y="550" width="11" height="11" rx="2" fill="#112244" stroke="#3498db"/>
+  <text x="285" y="560" fill="#adb5bd" font-size="10">İşlem kutusu</text>
+</svg>
 
 ### ASCII Karar Özeti
 
@@ -226,14 +274,54 @@ Eğer UP kazanırsa:
 
 ### Bid Bandına Göre Boyut Seçimi
 
-```mermaid
-flowchart LR
-    bid{bid değeri} -- "≤ 0.30" --> LS["$15 longshot\n(~37–75 lot)"]
-    bid -- "0.30–0.65" --> MD["$23 mid\n(~35–77 lot)"]
-    bid -- "> 0.65" --> HI["$37 high\n(~43–57 lot)"]
-    HI -- "winner & to_end ≤ 150s" --> PY["$37 × factor\n(default 1× = $37)"]
-    loser{loser taraf} -- "bid ≤ 0.30" --> SC["$10 scalp\n(taker @ ask)"]
-```
+<table style="border-collapse:collapse;width:100%;font-family:system-ui,Arial,sans-serif;font-size:13px;background:#0f1117;color:#ecf0f1;border-radius:10px;overflow:hidden;">
+  <thead>
+    <tr style="background:#1a2a4a;">
+      <th style="padding:10px 12px;text-align:left;border-bottom:2px solid #2980b9;color:#5dade2;">Koşul</th>
+      <th style="padding:10px 12px;text-align:center;border-bottom:2px solid #2980b9;color:#5dade2;">Boyut (USDC)</th>
+      <th style="padding:10px 12px;text-align:center;border-bottom:2px solid #2980b9;color:#5dade2;">Emir Tipi</th>
+      <th style="padding:10px 12px;text-align:center;border-bottom:2px solid #2980b9;color:#5dade2;">Yaklaşık Lot</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr style="border-bottom:1px solid #222;">
+      <td style="padding:9px 12px;color:#c0392b;">loser bid ≤ 0.30 (kaybeden taraf)</td>
+      <td style="padding:9px 12px;text-align:center;font-weight:bold;color:#e74c3c;">$10 Scalp</td>
+      <td style="padding:9px 12px;text-align:center;color:#f1948a;font-size:12px;">Taker @ ask</td>
+      <td style="padding:9px 12px;text-align:center;color:#aaa;">33–100+</td>
+    </tr>
+    <tr style="border-bottom:1px solid #222;background:#111;">
+      <td style="padding:9px 12px;color:#aaa;">bid ≤ 0.30</td>
+      <td style="padding:9px 12px;text-align:center;font-weight:bold;color:#2980b9;">$15 Longshot</td>
+      <td style="padding:9px 12px;text-align:center;color:#85c1e9;font-size:12px;">Maker @ bid</td>
+      <td style="padding:9px 12px;text-align:center;color:#aaa;">37–75+</td>
+    </tr>
+    <tr style="border-bottom:1px solid #222;">
+      <td style="padding:9px 12px;color:#aaa;">0.30 &lt; bid ≤ 0.65</td>
+      <td style="padding:9px 12px;text-align:center;font-weight:bold;color:#27ae60;">$23 Mid</td>
+      <td style="padding:9px 12px;text-align:center;color:#58d68d;font-size:12px;">Maker @ bid</td>
+      <td style="padding:9px 12px;text-align:center;color:#aaa;">35–77</td>
+    </tr>
+    <tr style="border-bottom:1px solid #222;background:#111;">
+      <td style="padding:9px 12px;color:#aaa;">bid &gt; 0.65</td>
+      <td style="padding:9px 12px;text-align:center;font-weight:bold;color:#e67e22;">$37 High</td>
+      <td style="padding:9px 12px;text-align:center;color:#f0b27a;font-size:12px;">Maker @ bid</td>
+      <td style="padding:9px 12px;text-align:center;color:#aaa;">43–57</td>
+    </tr>
+    <tr style="border-bottom:1px solid #222;background:#180028;">
+      <td style="padding:9px 12px;color:#d2b4de;">bid &gt; 0.65, winner taraf, T ≤ 150s</td>
+      <td style="padding:9px 12px;text-align:center;font-weight:bold;color:#af7ac5;">$37 × size_factor</td>
+      <td style="padding:9px 12px;text-align:center;color:#d2b4de;font-size:12px;">Maker @ bid</td>
+      <td style="padding:9px 12px;text-align:center;color:#d2b4de;">43–570 (factor 1–10)</td>
+    </tr>
+    <tr style="background:#003300;border-top:2px solid #27ae60;">
+      <td style="padding:9px 12px;color:#2ecc71;font-weight:bold;">LW: to_end≤180, bid≥0.90</td>
+      <td style="padding:9px 12px;text-align:center;font-weight:bold;color:#2ecc71;">$100 × arb_mult</td>
+      <td style="padding:9px 12px;text-align:center;color:#58d68d;font-size:12px;">Taker @ ask</td>
+      <td style="padding:9px 12px;text-align:center;color:#2ecc71;">109–506</td>
+    </tr>
+  </tbody>
+</table>
 
 ### ASCII Özet
 
@@ -407,29 +495,169 @@ T=0s    UP kazandı → REDEEM
 
 ## 7. Piyasa Görselleştirmesi
 
-### Mermaid XY Chart — Kazançlı Market (Örnek 3: 1777638600)
+### Chart 1 — Kazançlı Market (1777638600, UP +$412.58)
 
-> X ekseni: kapanmaya kalan saniye (300→0) · Y ekseni: bid fiyatı
+> X ekseni: kapanmaya kalan saniye (300→0) · Y ekseni: bid fiyatı · Turuncu noktalar = alım
 
-```mermaid
-xychart-beta
-    title "1777638600 — UP Kazandı (+$412.58)"
-    x-axis "Kalan Süre (sn)" [300, 240, 180, 150, 120, 90, 60, 30, 10, 0]
-    y-axis "Bid Fiyatı ($)" 0.0 --> 1.0
-    line "UP bid"   [0.48, 0.52, 0.58, 0.70, 0.78, 0.91, 0.95, 0.98, 0.99, 1.00]
-    line "DOWN bid" [0.52, 0.48, 0.42, 0.30, 0.22, 0.09, 0.05, 0.02, 0.01, 0.00]
-```
+<svg xmlns="http://www.w3.org/2000/svg" width="660" height="320" viewBox="0 0 660 320" style="background:#0f1117;border-radius:10px;font-family:system-ui,Arial,sans-serif;font-size:11px;">
+  <!-- Title -->
+  <text x="330" y="20" text-anchor="middle" fill="#ecf0f1" font-size="13" font-weight="bold">1777638600 — UP Kazandı (+$412.58)</text>
+  <!-- Y axis label -->
+  <text transform="translate(13,170) rotate(-90)" text-anchor="middle" fill="#adb5bd" font-size="11">Bid Fiyatı ($)</text>
+  <!-- Chart area: x 55–640, y 30–265. chartW=585, chartH=235 -->
+  <!-- Y grid lines: 1.0→y30, 0.8→y77, 0.6→y124, 0.4→y171, 0.2→y218, 0.0→y265 -->
+  <line x1="55" y1="30"  x2="640" y2="30"  stroke="#1e2836" stroke-width="1"/>
+  <line x1="55" y1="77"  x2="640" y2="77"  stroke="#1e2836" stroke-width="1" stroke-dasharray="3,4"/>
+  <line x1="55" y1="124" x2="640" y2="124" stroke="#1e2836" stroke-width="1" stroke-dasharray="3,4"/>
+  <line x1="55" y1="171" x2="640" y2="171" stroke="#1e2836" stroke-width="1" stroke-dasharray="3,4"/>
+  <line x1="55" y1="218" x2="640" y2="218" stroke="#1e2836" stroke-width="1" stroke-dasharray="3,4"/>
+  <line x1="55" y1="265" x2="640" y2="265" stroke="#1e2836" stroke-width="1"/>
+  <!-- Y axis labels -->
+  <text x="50" y="34"  text-anchor="end" fill="#4a5568">1.00</text>
+  <text x="50" y="81"  text-anchor="end" fill="#4a5568">0.80</text>
+  <text x="50" y="128" text-anchor="end" fill="#4a5568">0.60</text>
+  <text x="50" y="175" text-anchor="end" fill="#4a5568">0.40</text>
+  <text x="50" y="222" text-anchor="end" fill="#4a5568">0.20</text>
+  <text x="50" y="269" text-anchor="end" fill="#4a5568">0.00</text>
+  <!-- X grid lines at key times -->
+  <!-- x(t) = 55 + (300-t)/300*585 -->
+  <!-- T=300→55, T=240→172, T=180→289, T=150→348, T=90→465, T=60→523, T=30→582, T=0→640 -->
+  <line x1="55"  y1="30" x2="55"  y2="265" stroke="#2d3748" stroke-width="1"/>
+  <line x1="172" y1="30" x2="172" y2="265" stroke="#1e2836" stroke-width="1" stroke-dasharray="3,4"/>
+  <line x1="523" y1="30" x2="523" y2="265" stroke="#1e2836" stroke-width="1" stroke-dasharray="3,4"/>
+  <line x1="640" y1="30" x2="640" y2="265" stroke="#2d3748" stroke-width="1"/>
+  <!-- LW trigger: T=180, x=289 -->
+  <line x1="289" y1="30" x2="289" y2="265" stroke="#e67e22" stroke-width="1.5" stroke-dasharray="5,3" opacity="0.8"/>
+  <text x="291" y="26" fill="#e67e22" font-size="9" font-weight="bold">▶ LW T=180s</text>
+  <!-- Pyramid: T=150, x=348 -->
+  <line x1="348" y1="30" x2="348" y2="265" stroke="#9b59b6" stroke-width="1" stroke-dasharray="3,3" opacity="0.7"/>
+  <text x="350" y="44" fill="#9b59b6" font-size="9">Pyramid T=150s</text>
+  <!-- X axis tick labels -->
+  <text x="55"  y="280" text-anchor="middle" fill="#4a5568">300s</text>
+  <text x="172" y="280" text-anchor="middle" fill="#4a5568">240s</text>
+  <text x="289" y="280" text-anchor="middle" fill="#e67e22" font-weight="bold">180s</text>
+  <text x="348" y="280" text-anchor="middle" fill="#9b59b6">150s</text>
+  <text x="406" y="280" text-anchor="middle" fill="#4a5568">120s</text>
+  <text x="465" y="280" text-anchor="middle" fill="#4a5568">90s</text>
+  <text x="523" y="280" text-anchor="middle" fill="#4a5568">60s</text>
+  <text x="582" y="280" text-anchor="middle" fill="#4a5568">30s</text>
+  <text x="640" y="280" text-anchor="middle" fill="#4a5568">0s</text>
+  <text x="347" y="297" text-anchor="middle" fill="#718096" font-size="11">Kapanmaya Kalan Süre</text>
+  <!-- UP bid line (mavi) — y(b)=30+(1-b)*235 -->
+  <!-- T:[300,240,180,150,120,90,60,30,10,0] x:[55,172,289,348,406,465,523,582,621,640] -->
+  <!-- b:[0.48,0.52,0.58,0.70,0.78,0.91,0.95,0.98,0.99,1.00] y:[152,143,129,101,82,51,42,35,32,30] -->
+  <polyline points="55,152 172,143 289,129 348,101 406,82 465,51 523,42 582,35 621,32 640,30"
+            fill="none" stroke="#3498db" stroke-width="2.5" stroke-linejoin="round"/>
+  <!-- DOWN bid line (kırmızı) -->
+  <!-- b:[0.52,0.48,0.42,0.30,0.22,0.09,0.05,0.02,0.01,0.00] y:[143,152,166,195,213,244,253,260,263,265] -->
+  <polyline points="55,143 172,152 289,166 348,195 406,213 465,244 523,253 582,260 621,263 640,265"
+            fill="none" stroke="#e74c3c" stroke-width="2.5" stroke-linejoin="round"/>
+  <!-- Alım noktaları (mavi = normal, turuncu = LW) -->
+  <circle cx="55"  cy="152" r="4" fill="#3498db" stroke="#ecf0f1" stroke-width="1.2"/>
+  <circle cx="172" cy="143" r="4" fill="#3498db" stroke="#ecf0f1" stroke-width="1.2"/>
+  <circle cx="289" cy="129" r="5" fill="#f39c12" stroke="#ecf0f1" stroke-width="1.5"/>
+  <circle cx="348" cy="101" r="5" fill="#f39c12" stroke="#ecf0f1" stroke-width="1.5"/>
+  <circle cx="465" cy="51"  r="5" fill="#f39c12" stroke="#ecf0f1" stroke-width="1.5"/>
+  <circle cx="523" cy="42"  r="5" fill="#f39c12" stroke="#ecf0f1" stroke-width="1.5"/>
+  <circle cx="582" cy="35"  r="5" fill="#f39c12" stroke="#ecf0f1" stroke-width="1.5"/>
+  <circle cx="621" cy="32"  r="5" fill="#f39c12" stroke="#ecf0f1" stroke-width="1.5"/>
+  <circle cx="640" cy="30"  r="5" fill="#f39c12" stroke="#ecf0f1" stroke-width="1.5"/>
+  <!-- Legend -->
+  <line x1="55" y1="310" x2="75" y2="310" stroke="#3498db" stroke-width="2.5"/>
+  <circle cx="65" cy="310" r="3.5" fill="#3498db" stroke="#ecf0f1" stroke-width="1"/>
+  <text x="79" y="314" fill="#3498db" font-size="11" font-weight="bold">UP bid</text>
+  <line x1="140" y1="310" x2="160" y2="310" stroke="#e74c3c" stroke-width="2.5"/>
+  <text x="164" y="314" fill="#e74c3c" font-size="11" font-weight="bold">DOWN bid</text>
+  <circle cx="240" cy="310" r="4" fill="#3498db" stroke="#ecf0f1" stroke-width="1"/>
+  <text x="248" y="314" fill="#adb5bd" font-size="11">Normal alım</text>
+  <circle cx="330" cy="310" r="4" fill="#f39c12" stroke="#ecf0f1" stroke-width="1"/>
+  <text x="338" y="314" fill="#adb5bd" font-size="11">LW alım</text>
+  <line x1="398" y1="308" x2="414" y2="308" stroke="#e67e22" stroke-width="1.5" stroke-dasharray="4,2"/>
+  <text x="418" y="314" fill="#e67e22" font-size="11">LW başlangıcı</text>
+  <!-- Axes -->
+  <line x1="55" y1="30"  x2="55"  y2="265" stroke="#4a5568" stroke-width="1.5"/>
+  <line x1="55" y1="265" x2="640" y2="265" stroke="#4a5568" stroke-width="1.5"/>
+</svg>
 
-### Mermaid XY Chart — Kayıplı Market (Örnek 2: 1777624200)
+### Chart 2 — Kayıplı Market (1777624200, DOWN −$357.98)
 
-```mermaid
-xychart-beta
-    title "1777624200 — DOWN Kazandı (−$357.98) · Yanlış Yön"
-    x-axis "Kalan Süre (sn)" [300, 260, 220, 180, 140, 100, 60, 30, 10, 0]
-    y-axis "Bid Fiyatı ($)" 0.0 --> 1.0
-    line "UP bid"   [0.60, 0.62, 0.65, 0.55, 0.50, 0.40, 0.30, 0.20, 0.10, 0.00]
-    line "DOWN bid" [0.40, 0.38, 0.35, 0.45, 0.50, 0.60, 0.70, 0.80, 0.90, 1.00]
-```
+> Yanlış yön: BSI UP sinyali verdi, piyasa döndü — LW eşiğine T=30s'de ulaşıldı
+
+<svg xmlns="http://www.w3.org/2000/svg" width="660" height="320" viewBox="0 0 660 320" style="background:#0f1117;border-radius:10px;font-family:system-ui,Arial,sans-serif;font-size:11px;">
+  <text x="330" y="20" text-anchor="middle" fill="#ecf0f1" font-size="13" font-weight="bold">1777624200 — DOWN Kazandı (−$357.98) · Yanlış Yön</text>
+  <text transform="translate(13,170) rotate(-90)" text-anchor="middle" fill="#adb5bd" font-size="11">Bid Fiyatı ($)</text>
+  <!-- Y grid -->
+  <line x1="55" y1="30"  x2="640" y2="30"  stroke="#1e2836" stroke-width="1"/>
+  <line x1="55" y1="77"  x2="640" y2="77"  stroke="#1e2836" stroke-width="1" stroke-dasharray="3,4"/>
+  <line x1="55" y1="124" x2="640" y2="124" stroke="#1e2836" stroke-width="1" stroke-dasharray="3,4"/>
+  <line x1="55" y1="171" x2="640" y2="171" stroke="#1e2836" stroke-width="1" stroke-dasharray="3,4"/>
+  <line x1="55" y1="218" x2="640" y2="218" stroke="#1e2836" stroke-width="1" stroke-dasharray="3,4"/>
+  <line x1="55" y1="265" x2="640" y2="265" stroke="#1e2836" stroke-width="1"/>
+  <!-- Y labels -->
+  <text x="50" y="34"  text-anchor="end" fill="#4a5568">1.00</text>
+  <text x="50" y="81"  text-anchor="end" fill="#4a5568">0.80</text>
+  <text x="50" y="128" text-anchor="end" fill="#4a5568">0.60</text>
+  <text x="50" y="175" text-anchor="end" fill="#4a5568">0.40</text>
+  <text x="50" y="222" text-anchor="end" fill="#4a5568">0.20</text>
+  <text x="50" y="269" text-anchor="end" fill="#4a5568">0.00</text>
+  <!-- X grid -->
+  <!-- T:[300,260,220,180,140,100,60,30,10,0] x:[55,133,211,289,367,445,523,582,621,640] -->
+  <line x1="55"  y1="30" x2="55"  y2="265" stroke="#2d3748" stroke-width="1"/>
+  <line x1="289" y1="30" x2="289" y2="265" stroke="#1e2836" stroke-width="1" stroke-dasharray="3,4"/>
+  <line x1="640" y1="30" x2="640" y2="265" stroke="#2d3748" stroke-width="1"/>
+  <!-- LW başlangıç referans: T=180, x=289 -->
+  <line x1="289" y1="30" x2="289" y2="265" stroke="#e67e22" stroke-width="1.5" stroke-dasharray="5,3" opacity="0.5"/>
+  <text x="291" y="26" fill="#e67e22" font-size="9" opacity="0.8">LW ref T=180s</text>
+  <!-- Gerçek LW: T=30, x=582 -->
+  <line x1="582" y1="30" x2="582" y2="265" stroke="#e74c3c" stroke-width="1.5" stroke-dasharray="5,3" opacity="0.9"/>
+  <text x="544" y="26" fill="#e74c3c" font-size="9" font-weight="bold">LW T=30s !</text>
+  <!-- X labels -->
+  <text x="55"  y="280" text-anchor="middle" fill="#4a5568">300s</text>
+  <text x="133" y="280" text-anchor="middle" fill="#4a5568">260s</text>
+  <text x="211" y="280" text-anchor="middle" fill="#4a5568">220s</text>
+  <text x="289" y="280" text-anchor="middle" fill="#e67e22">180s</text>
+  <text x="367" y="280" text-anchor="middle" fill="#4a5568">140s</text>
+  <text x="445" y="280" text-anchor="middle" fill="#4a5568">100s</text>
+  <text x="523" y="280" text-anchor="middle" fill="#4a5568">60s</text>
+  <text x="582" y="280" text-anchor="middle" fill="#e74c3c" font-weight="bold">30s</text>
+  <text x="640" y="280" text-anchor="middle" fill="#4a5568">0s</text>
+  <text x="347" y="297" text-anchor="middle" fill="#718096" font-size="11">Kapanmaya Kalan Süre</text>
+  <!-- UP bid (mavi) — YANLIŞ YÖN, düşüyor -->
+  <!-- b:[0.60,0.62,0.65,0.55,0.50,0.40,0.30,0.20,0.10,0.00] y:[124,119,112,136,148,171,195,218,242,265] -->
+  <polyline points="55,124 133,119 211,112 289,136 367,148 445,171 523,195 582,218 621,242 640,265"
+            fill="none" stroke="#3498db" stroke-width="2.5" stroke-linejoin="round"/>
+  <!-- DOWN bid (kırmızı) — kazanan, yükseliyor -->
+  <!-- b:[0.40,0.38,0.35,0.45,0.50,0.60,0.70,0.80,0.90,1.00] y:[171,176,183,159,148,124,101,77,54,30] -->
+  <polyline points="55,171 133,176 211,183 289,159 367,148 445,124 523,101 582,77 621,54 640,30"
+            fill="none" stroke="#e74c3c" stroke-width="2.5" stroke-linejoin="round"/>
+  <!-- Alım noktaları -->
+  <!-- UP alımlar (yanlış yön, mavi dolu = para battı) -->
+  <circle cx="55"  cy="124" r="4" fill="#3498db" stroke="#ecf0f1" stroke-width="1.2"/>
+  <circle cx="133" cy="119" r="4" fill="#3498db" stroke="#ecf0f1" stroke-width="1.2"/>
+  <circle cx="211" cy="112" r="4" fill="#3498db" stroke="#ecf0f1" stroke-width="1.2"/>
+  <circle cx="289" cy="136" r="4" fill="#3498db" stroke="#ecf0f1" stroke-width="1.2"/>
+  <!-- DOWN scalp (loser scalp, gri) -->
+  <circle cx="367" cy="148" r="4" fill="#95a5a6" stroke="#ecf0f1" stroke-width="1.2"/>
+  <!-- LW DOWN T=30 (turuncu, geç geldi) -->
+  <circle cx="582" cy="77" r="5" fill="#f39c12" stroke="#ecf0f1" stroke-width="1.5"/>
+  <!-- Kayıp bölgesi highlight (kırmızı yarı saydam kutu UP alımları etrafında) -->
+  <rect x="55" y="100" width="240" height="160" fill="#e74c3c" opacity="0.05" rx="4"/>
+  <text x="165" y="172" text-anchor="middle" fill="#e74c3c" font-size="10" opacity="0.8">Yanlış yön birikimi</text>
+  <!-- Legend -->
+  <line x1="55" y1="310" x2="75" y2="310" stroke="#3498db" stroke-width="2.5"/>
+  <text x="79" y="314" fill="#3498db" font-size="11" font-weight="bold">UP bid (yanlış)</text>
+  <line x1="178" y1="310" x2="198" y2="310" stroke="#e74c3c" stroke-width="2.5"/>
+  <text x="202" y="314" fill="#e74c3c" font-size="11" font-weight="bold">DOWN bid (kazanan)</text>
+  <circle cx="315" cy="310" r="4" fill="#3498db" stroke="#ecf0f1" stroke-width="1"/>
+  <text x="323" y="314" fill="#adb5bd" font-size="11">UP alım</text>
+  <circle cx="385" cy="310" r="4" fill="#f39c12" stroke="#ecf0f1" stroke-width="1"/>
+  <text x="393" y="314" fill="#adb5bd" font-size="11">LW alım (geç)</text>
+  <circle cx="470" cy="310" r="4" fill="#95a5a6" stroke="#ecf0f1" stroke-width="1"/>
+  <text x="478" y="314" fill="#adb5bd" font-size="11">Scalp</text>
+  <!-- Axes -->
+  <line x1="55" y1="30"  x2="55"  y2="265" stroke="#4a5568" stroke-width="1.5"/>
+  <line x1="55" y1="265" x2="640" y2="265" stroke="#4a5568" stroke-width="1.5"/>
+</svg>
 
 ### ASCII Timeline — Karar Anları
 
@@ -455,17 +683,68 @@ Tetiklemeler:
 
 ### arb\_mult Isı Haritası
 
-```
-winner ask  │  arb_mult  │  $100 USDC  │  $37 high × 1.0  │
-────────────┼────────────┼─────────────┼──────────────────┤
-$0.99+      │   5.0 ████ │  506 lot    │  —               │
-$0.98       │   4.0 ███░ │  409 lot    │  —               │
-$0.97       │   3.0 ██░░ │  310 lot    │  —               │
-$0.96       │   2.5 █░░░ │  261 lot    │  —               │
-$0.95       │   2.0 ▒░░░ │  211 lot    │  —               │
-$0.90–0.95  │   1.0 ░░░░ │  109–111 lot│  —               │
-< $0.90     │   —  (LW yok, bid_thr=0.90 altında)         │
-```
+<table style="border-collapse:collapse;font-family:system-ui,Arial,sans-serif;font-size:13px;background:#0f1117;color:#ecf0f1;border-radius:10px;overflow:hidden;width:100%;">
+  <thead>
+    <tr style="background:#1a2a1a;">
+      <th style="padding:10px 14px;text-align:left;border-bottom:2px solid #27ae60;color:#2ecc71;">Winner Ask (w_ask)</th>
+      <th style="padding:10px 14px;text-align:center;border-bottom:2px solid #27ae60;color:#2ecc71;">arb_mult</th>
+      <th style="padding:10px 14px;text-align:center;border-bottom:2px solid #27ae60;color:#2ecc71;">Görsel</th>
+      <th style="padding:10px 14px;text-align:center;border-bottom:2px solid #27ae60;color:#2ecc71;">$100 USDC → Lot</th>
+      <th style="padding:10px 14px;text-align:center;border-bottom:2px solid #27ae60;color:#2ecc71;">Yaklaşık Maliyet</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr style="background:#1a0a00;border-bottom:1px solid #222;">
+      <td style="padding:9px 14px;font-weight:bold;color:#e74c3c;">≥ 0.99</td>
+      <td style="padding:9px 14px;text-align:center;font-size:17px;font-weight:bold;color:#e74c3c;">5.0×</td>
+      <td style="padding:9px 14px;text-align:center;"><span style="color:#e74c3c;font-size:18px;letter-spacing:-1px;">█████</span></td>
+      <td style="padding:9px 14px;text-align:center;font-weight:bold;color:#e74c3c;">506 lot</td>
+      <td style="padding:9px 14px;text-align:center;color:#e74c3c;">≈ $501</td>
+    </tr>
+    <tr style="background:#1a0d00;border-bottom:1px solid #222;">
+      <td style="padding:9px 14px;font-weight:bold;color:#e67e22;">≥ 0.98</td>
+      <td style="padding:9px 14px;text-align:center;font-size:17px;font-weight:bold;color:#e67e22;">4.0×</td>
+      <td style="padding:9px 14px;text-align:center;"><span style="color:#e67e22;font-size:18px;letter-spacing:-1px;">████</span><span style="color:#333;font-size:18px;">█</span></td>
+      <td style="padding:9px 14px;text-align:center;font-weight:bold;color:#e67e22;">409 lot</td>
+      <td style="padding:9px 14px;text-align:center;color:#e67e22;">≈ $401</td>
+    </tr>
+    <tr style="background:#14140a;border-bottom:1px solid #222;">
+      <td style="padding:9px 14px;font-weight:bold;color:#f1c40f;">≥ 0.97</td>
+      <td style="padding:9px 14px;text-align:center;font-size:17px;font-weight:bold;color:#f1c40f;">3.0×</td>
+      <td style="padding:9px 14px;text-align:center;"><span style="color:#f1c40f;font-size:18px;letter-spacing:-1px;">███</span><span style="color:#333;font-size:18px;">██</span></td>
+      <td style="padding:9px 14px;text-align:center;font-weight:bold;color:#f1c40f;">310 lot</td>
+      <td style="padding:9px 14px;text-align:center;color:#f1c40f;">≈ $301</td>
+    </tr>
+    <tr style="background:#0d1a0d;border-bottom:1px solid #222;">
+      <td style="padding:9px 14px;font-weight:bold;color:#2ecc71;">≥ 0.96</td>
+      <td style="padding:9px 14px;text-align:center;font-size:17px;font-weight:bold;color:#2ecc71;">2.5×</td>
+      <td style="padding:9px 14px;text-align:center;"><span style="color:#2ecc71;font-size:18px;letter-spacing:-1px;">██▌</span><span style="color:#333;font-size:18px;">██</span></td>
+      <td style="padding:9px 14px;text-align:center;font-weight:bold;color:#2ecc71;">261 lot</td>
+      <td style="padding:9px 14px;text-align:center;color:#2ecc71;">≈ $251</td>
+    </tr>
+    <tr style="background:#0a170a;border-bottom:1px solid #222;">
+      <td style="padding:9px 14px;font-weight:bold;color:#27ae60;">≥ 0.95</td>
+      <td style="padding:9px 14px;text-align:center;font-size:17px;font-weight:bold;color:#27ae60;">2.0×</td>
+      <td style="padding:9px 14px;text-align:center;"><span style="color:#27ae60;font-size:18px;letter-spacing:-1px;">██</span><span style="color:#333;font-size:18px;">███</span></td>
+      <td style="padding:9px 14px;text-align:center;font-weight:bold;color:#27ae60;">211 lot</td>
+      <td style="padding:9px 14px;text-align:center;color:#27ae60;">≈ $200</td>
+    </tr>
+    <tr style="background:#111;border-bottom:1px solid #222;">
+      <td style="padding:9px 14px;color:#3498db;">0.90–0.95</td>
+      <td style="padding:9px 14px;text-align:center;font-size:17px;font-weight:bold;color:#3498db;">1.0×</td>
+      <td style="padding:9px 14px;text-align:center;"><span style="color:#3498db;font-size:18px;letter-spacing:-1px;">█</span><span style="color:#333;font-size:18px;">████</span></td>
+      <td style="padding:9px 14px;text-align:center;color:#3498db;">109–111 lot</td>
+      <td style="padding:9px 14px;text-align:center;color:#3498db;">≈ $100</td>
+    </tr>
+    <tr style="background:#0f0f0f;">
+      <td style="padding:9px 14px;color:#4a5568;">&lt; 0.90</td>
+      <td style="padding:9px 14px;text-align:center;color:#4a5568;">—</td>
+      <td style="padding:9px 14px;text-align:center;"><span style="color:#333;font-size:18px;letter-spacing:-1px;">░░░░░</span></td>
+      <td style="padding:9px 14px;text-align:center;color:#4a5568;">LW yok</td>
+      <td style="padding:9px 14px;text-align:center;color:#4a5568;">bid_thr=0.90 altında</td>
+    </tr>
+  </tbody>
+</table>
 
 ---
 
