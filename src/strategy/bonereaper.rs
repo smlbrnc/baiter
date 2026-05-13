@@ -273,9 +273,14 @@ impl BonereaperEngine {
                             } else {
                                 (m.down_filled, m.up_filled)
                             };
+                            // ratio_scale: dominant tarafta büyük LW, azınlıkta küçük.
+                            // 407 oturum: ratio 2-5x → avg $175, >5x → avg $397
+                            // Ama LW öncesinde birikmiş loser fill'leri ratio'yu
+                            // yapay şişirebilir (ör: 1778683500'de DOWN loser iken
+                            // birikip sonra winner olunca ratio=9x → $600/shot).
+                            // Clamp 2.0 ile sınırla: arb_mult (max 20x) yeterli scaling.
                             let ratio_scale = if opp_filled > 0.0 {
-                                // dominant tarafta büyük, azınlıkta küçük LW
-                                (w_filled / opp_filled).clamp(0.3, 6.0)
+                                (w_filled / opp_filled).clamp(0.3, 2.0)
                             } else {
                                 1.0 // solo: karşı taraf yok, base size
                             };
@@ -347,7 +352,18 @@ impl BonereaperEngine {
                 } else {
                     let m = ctx.metrics;
                     let imb = m.up_filled - m.down_filled;
-                    let imb_thr = p.bonereaper_imbalance_thr();
+                    // Dinamik imbalance eşiği: zamanla büyüyen eşik.
+                    // 407 oturum: erken faz P50=80sh, geç faz P50=405sh
+                    // Erken fazda küçük imbalance'ta rebalance → loser birikimi sağlanır.
+                    // Formül: 50 + (300 - to_end) × 1.2, clamp 50..400
+                    let dynamic_imb = if to_end < f64::MAX {
+                        (50.0_f64 + (300.0 - to_end).max(0.0) * 1.2).clamp(50.0, 400.0)
+                    } else {
+                        200.0
+                    };
+                    // Parametre override: null (→1000) = dinamik kullan
+                    let param_imb = p.bonereaper_imbalance_thr();
+                    let imb_thr = if param_imb < 500.0 { param_imb } else { dynamic_imb };
                     if imb.abs() > imb_thr {
                         // Weaker side rebalance
                         if imb > 0.0 { Outcome::Down } else { Outcome::Up }
@@ -417,9 +433,19 @@ impl BonereaperEngine {
 
                 // Dinamik size hesabı
                 let scalp_usdc = p.bonereaper_loser_scalp_usdc();
-                let scalp_max_price = p.bonereaper_loser_scalp_max_price();
+                // Dinamik loser scalp tavan: 1.0 - winner_bid + 0.10
+                // 407 oturum analizi: korelasyon r=-0.858
+                //   winner=0.80 → loser P90=0.30 ≈ 1-0.80+0.10=0.30 ✓
+                //   winner=0.90 → loser P90=0.14 ≈ 1-0.90+0.10=0.20 (yakın)
+                //   winner=0.50 → loser P90=0.56 ≈ 1-0.50+0.10=0.60 (yakın)
+                // Yani: loser'ı sadece piyasa fiyatı mantıklı olduğunda al.
+                let winner_bid = ctx.up_best_bid.max(ctx.down_best_bid);
+                let dynamic_scalp_max = (1.0 - winner_bid + 0.10).clamp(0.10, 0.60);
+                let param_scalp_max = p.bonereaper_loser_scalp_max_price();
+                // Dinamik değer ile parametre max'ını al (kullanıcı override için)
+                let scalp_max_price = dynamic_scalp_max.max(param_scalp_max);
                 // Loser side scalp koşulu: bid scalp_max_price altında olduğunda
-                // scalp boyutu kullan (1¢-30¢ bandı, real bot'a uygun).
+                // scalp boyutu kullan (dinamik band, real bot'a uygun).
                 let is_scalp_band = is_loser_dir && bid <= scalp_max_price && scalp_usdc > 0.0;
                 let usdc = if scalp_only && scalp_usdc > 0.0 {
                     // Pahalı martingale-down → sadece $1 bilet
