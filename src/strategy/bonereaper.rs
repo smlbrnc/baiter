@@ -465,6 +465,36 @@ impl BonereaperEngine {
                 let scalp_max_price = dynamic_scalp_max.max(param_scalp_max);
                 // Loser side scalp koşulu: bid scalp_max_price altında olduğunda
                 // scalp boyutu kullan (dinamik band, real bot'a uygun).
+                //
+                // DEEP LOT: karşı taraf ucuz iken direction'dan bağımsız al.
+                // 4479 high-winner loser alımı analizi (winner >= 0.70):
+                //   Loser P50 ≈ 1 - winner_bid (güçlü korelasyon r=-0.67)
+                //   winner=0.80 → P50=0.18, winner=0.90 → P50=0.08
+                //   Dinamik eşik: 1 - winner_bid + 0.05 (P90'ı yakalar)
+                //   Sabit 0.20: %62 kapsam | Dinamik: %82 kapsam
+                // Gerçek bot winner dominant iken loser'ı bu fiyatlarda alıyor.
+                let loser_dir_deep = if dir == Outcome::Up { Outcome::Down } else { Outcome::Up };
+                let loser_bid_deep = if dir == Outcome::Up { ctx.down_best_bid } else { ctx.up_best_bid };
+                let loser_ask_deep = if dir == Outcome::Up { ctx.down_best_ask } else { ctx.up_best_ask };
+                // Dinamik eşik: 1 - winner_bid + 0.05, min 0.10, max 0.35
+                let deep_lot_thr = (1.0 - bid + 0.05).clamp(0.10, 0.35);
+                if !is_loser_dir
+                    && loser_bid_deep > 0.0
+                    && loser_bid_deep < deep_lot_thr
+                    && loser_ask_deep > 0.0
+                    && scalp_usdc > 0.0
+                {
+                    let deep_size = (scalp_usdc / loser_ask_deep).ceil();
+                    let deep_reason = match loser_dir_deep {
+                        Outcome::Up   => "bonereaper:scalp:up",
+                        Outcome::Down => "bonereaper:scalp:down",
+                    };
+                    if let Some(o) = make_buy(ctx, loser_dir_deep, loser_ask_deep, deep_size, deep_reason) {
+                        st.last_buy_ms = ctx.now_ms;
+                        st.first_done = true;
+                        return (BonereaperState::Active(st), Decision::PlaceOrders(vec![o]));
+                    }
+                }
                 let is_scalp_band = is_loser_dir && bid <= scalp_max_price && scalp_usdc > 0.0;
                 let usdc = if scalp_only && scalp_usdc > 0.0 {
                     // Pahalı martingale-down → sadece $1 bilet
