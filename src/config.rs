@@ -467,10 +467,12 @@ impl StrategyParams {
     /// = 1.05 → ikinci tarafı $0.15 üstü normal emirle alamaz, sadece loser
     /// scalp (exempt) ile ucuza toplar. LW ve loser scalp bu captan muaf.
     pub fn bonereaper_max_avg_sum(&self) -> f64 {
-        // Default 2.0 = efektif KAPALI (gerçek bot analizi: cap YOK, max 1.47 gözlemlendi)
-        // Önceki 1.05 default LW sonrası normal emirleri yanlışlıkla blokluyordu.
+        // Default 1.05: belirsiz (50/50) piyasada her iki tarafı mid-range'den
+        // almanın önüne geçer (avg_up≈0.63 + avg_dn≈0.53 = 1.16 → bloke).
+        // Gerçek bot: winner avg≈0.90 + loser avg≈0.10 = 1.00 → cap etkilemiyor.
+        // 2.0 default denenince her iki taraf serbest doldu → her iki pnl negatif.
         self.bonereaper_max_avg_sum
-            .unwrap_or(2.00)
+            .unwrap_or(1.05)
             .clamp(0.50, 2.00)
     }
     /// İlk emir spread eşiği; 0.00–0.20 sınırlı; default 0.02.
