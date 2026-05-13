@@ -1,46 +1,31 @@
 //! Bonereaper stratejisi — Polymarket "Bonereaper" wallet
 //! (`0xeebde7a0e019a63e6b476eb425505b7b3e6eba30`) davranış kopyası.
 //!
-//! Strateji **signal-driven değildir**; pure order-book reactive martingale +
-//! price-triggered winner injection. `data/realbot.log` (3472 trade, 3h window)
-//! analizi: real bot winner_bid ≥ $0.98 olduğunda HEMEN $0.99 injection yapıyor
-//! — zaman kısıtı yok! T-161s'de de T-15s'de de tetiklenebiliyor. Her injection
-//! ~$100-$200, 20-40 kez tekrarlanıyor (toplam $4000-$5000/market). Loser taraf
-//! $0.10-$0.20 bandında $40-$450 arası küçük scalp topluyor (lottery aspect).
-//!
-//! ## Karar zinciri (v3 — realbot.log doğrulamalı)
+//! ## Karar zinciri (v4 — 411 oturum / 19k+ trade analizi)
 //!
 //! 1. **Window**: `now ∈ [start, end]`; OB ready.
-//! 2. **LATE WINNER (ana)** (`max(bid) ≥ bid_thr [0.98]` — fiyat bazlı, ZAMAN BAĞIMSIZ):
-//!    winner tarafa `late_winner_usdc` notional taker BUY @ ask. Cooldown bypass.
-//!    `lw_secs=300` default → tüm market boyunca aktif; quota ile toplam cap.
-//! 3. **LATE WINNER (burst)** — default KAPALI (`lw_burst_secs=0`); gerçek bot
-//!    ayrı burst wave kullanmıyor, tüm injection tek mekanizmadan geliyor.
-//! 4. **Cooldown** (`now − last_buy < buy_cooldown_ms`): NoOp.
-//! 5. **İlk emir kapısı** (`!first_done`): `|up_bid − down_bid| < first_spread_min`
-//!    ise NoOp; aşılınca yön = yüksek bid tarafı (winner momentum).
-//! 6. **Yön seçimi (sonraki emirler)**:
-//!    - `|up_filled − down_filled| > imbalance_thr` → weaker side rebalance
-//!    - aksi: `|Δup_bid|` vs `|Δdn_bid|` → büyük delta tarafı (`ob_driven`)
-//! 7. **Yön bazlı min_price filter**: winner side `ctx.min_price`,
-//!    loser side `loser_min_price` (1¢ scalp).
-//! 8. **Martingale-down guard**: loser side avg fiyatı `avg_loser_max` aşarsa
-//!    o yöne `loser_scalp_usdc` minimal scalp ile sınırlı.
-//! 9. **Dinamik size**:
-//!    - Loser side scalp: `loser_scalp_usdc`
-//!    - Bid bucket'a göre: longshot / mid / high
-//!    - **Winner pyramid scaling**: `to_end < late_pyramid_secs && dir == winner`
-//!      ise size × `winner_size_factor`.
-//! 10. **avg_sum soft cap** (`new_avg + opp_avg > max_avg_sum`): NoOp (loser
-//!     scalp HARİÇ — scalp her zaman serbest).
-//! 11. **Place taker BUY @ ask** (GTC limit, anında fill).
+//! 2. **LATE WINNER** (`max(bid) ≥ bid_thr [0.75]`, cooldown'a tabi):
+//!    - winner tarafa taker BUY @ ask. Quota (`lw_max_per_session`) ile cap.
+//!    - Boyut: `lw_usdc × arb_mult(fiyat)` — saf fiyat bazlı, zaman YOK
+//!    - `arb_mult`: <0.95→1x, 0.95-0.97→2x, 0.97-0.99→3x, 0.99+→5x
+//!    - 27 slug / 11 dalga: r(zaman)=-0.10, r(fiyat)=+0.80 → zaman gürültü
+//! 3. **COOLDOWN** (`now − last_buy < buy_cooldown_ms`): NoOp.
+//! 4. **YÖN SEÇİMİ** (first_done=false → spread gate + BSI/OB fallback):
+//!    - `|imb| > N×est_size` (trade büyüklüğüne orantılı dinamik eşik) → weaker side
+//!    - aksi: `|Δup_bid|` vs `|Δdn_bid|` → büyük delta tarafı
+//! 5. **DEEP LOT** (direction=winner iken loser bid < 1-winner_bid+0.05):
+//!    - Direction'dan bağımsız loser scalp. Gerçek bot %91 oturumda yapıyor.
+//!    - Eşik dinamik: winner=0.80 → thr=0.25; winner=0.90 → thr=0.15
+//! 6. **LOSER SCALP** (is_loser_dir && bid ≤ dynamic_scalp_max):
+//!    - `dynamic_scalp_max = 1 - winner_bid + 0.10`
+//! 7. **NORMAl BUY** taker @ ask: longshot/mid/high bucket bazlı size.
+//! 8. **avg_sum cap** (default=2.0 = efektif KAPALI — gerçek bot cap YOK).
 //!
 //! ## Reason etiketleri
 //!
-//! `bonereaper:buy:{up,down}` — normal BUY (winner pyramid dahil).
-//! `bonereaper:scalp:{up,down}` — loser side 1¢ long-shot scalp.
-//! `bonereaper:lw:{up,down}` — late winner ana dalga.
-//! `bonereaper:lwb:{up,down}` — late winner burst (2. dalga).
+//! `bonereaper:buy:{up,down}` — normal BUY.
+//! `bonereaper:scalp:{up,down}` — loser scalp (deep lot dahil).
+//! `bonereaper:lw:{up,down}` — late winner.
 
 use serde::{Deserialize, Serialize};
 
@@ -210,80 +195,40 @@ impl BonereaperEngine {
                             (Outcome::Down, ctx.down_best_bid, ctx.down_best_ask)
                         };
                         if w_bid >= lw_thr && w_ask > 0.0 {
-                            // MIMIC v2: 104-market analizi (1619 LW shot, 832 arb,
-                            // 697 $0.99+ shot, newlog dahil) — backtest %95.7 hacim
-                            // uyumu (gerçek bot AVG shot büyüklüğü taklidi).
+                            // Saf fiyat-bazlı ölçekleme (27 slug / 11 dalga analizi):
+                            //   r(zaman→notional) = -0.10  → anlamsız, tablo satırları gürültü
+                            //   r(fiyat→notional) = +0.80  → ana sürücü
                             //
-                            // 2D AVG-bazlı katsayı (lw_usdc=$100 base):
-                            //                T>120  T-120..60 T-60..30 T-30..10 T-10..0
-                            //   $0.95-0.97   2.0x     2.0x      4.0x     4.0x      -
-                            //   $0.97-0.99   9.0x     4.4x      6.1x     3.7x     1.0x
-                            //   $0.99+      20.0x    11.5x      5.5x     5.7x     1.7x
-                            //   $0.85-0.95   1.0x     1.0x      1.0x     1.0x     1.0x
+                            // Gerçek bot dalga başına toplam harcama (medyan):
+                            //   0.99+:     ~$5000  → 5x × lw_usdc=$100 × quota=50 ≈ $5000 hedef
+                            //   0.97-0.99: ~$1000  → 3x
+                            //   0.95-0.97: ~$580   → 2x
+                            //   0.85-0.95: küçük   → 1x
                             //
-                            // BTC delta hipotezi çürütüldü (r=0.136 zayıf): shot
-                            // büyüklüğü Polymarket fiyatı + zaman ile belirlenir.
-                            // Canlı izleme (1778615100): real bot 6 LW emir = $5003
-                            // = $833/emir → mult ~17x → 13x cap yetersiz.
-                            // Risk: max 20x cap ($100 × 20 / $0.99 = 2020 sh).
+                            // Bot sweep modeliyle uyum: her cooldown periyodunda 1 shot,
+                            // quota (lw_max_per_session) toplam harcamayı sınırlar.
                             let arb_mult = if w_ask >= 0.99 {
-                                if to_end <= 10.0 {
-                                    1.7
-                                } else if to_end <= 30.0 {
-                                    5.7
-                                } else if to_end <= 60.0 {
-                                    5.5
-                                } else if to_end <= 120.0 {
-                                    11.5
-                                } else {
-                                    20.0  // 13x → 20x (1778615100 doğrulamasıyla)
-                                }
+                                5.0
+                            } else if w_ask >= 0.98 {
+                                4.0
                             } else if w_ask >= 0.97 {
-                                if to_end <= 10.0 {
-                                    1.0
-                                } else if to_end <= 30.0 {
-                                    3.7
-                                } else if to_end <= 60.0 {
-                                    6.1
-                                } else if to_end <= 120.0 {
-                                    4.4
-                                } else {
-                                    9.0
-                                }
+                                3.0
+                            } else if w_ask >= 0.96 {
+                                2.5
                             } else if w_ask >= 0.95 {
-                                if to_end <= 60.0 {
-                                    4.0
-                                } else {
-                                    2.0
-                                }
+                                2.0
                             } else {
                                 1.0
                             };
-                            // ── Dinamik LW boyutu: pozisyon oranıyla ölçekle ──────
-                            // 405 oturum / 19.290 trade analizi:
-                            //   ratio 0.0-0.5x → avg $39  (azınlık LW, küçük)
-                            //   ratio 0.5-1.0x → avg $50  (rebalance LW)
-                            //   ratio 1.0-2.0x → avg $81  (hafif dominant)
-                            //   ratio 2.0-5.0x → avg $175 (güçlü momentum)
-                            //   ratio >5.0x    → avg $397 (çok güçlü, devasa)
-                            // Gerçek bot: dominant tarafa orantılı büyük LW atıyor.
+                            // ratio_scale kaldırıldı (r=+0.47, gürültülü ve arb_mult ile örtüşüyor).
+                            // Sade model: size = lw_usdc × arb_mult / w_ask
                             let m = ctx.metrics;
-                            let (w_filled, opp_filled) = if winner == Outcome::Up {
+                            let (_w_filled, _opp_filled) = if winner == Outcome::Up {
                                 (m.up_filled, m.down_filled)
                             } else {
                                 (m.down_filled, m.up_filled)
                             };
-                            // ratio_scale: dominant tarafta büyük LW, azınlıkta küçük.
-                            // 407 oturum: ratio 2-5x → avg $175, >5x → avg $397
-                            // Ama LW öncesinde birikmiş loser fill'leri ratio'yu
-                            // yapay şişirebilir (ör: 1778683500'de DOWN loser iken
-                            // birikip sonra winner olunca ratio=9x → $600/shot).
-                            // Clamp 2.0 ile sınırla: arb_mult (max 20x) yeterli scaling.
-                            let ratio_scale = if opp_filled > 0.0 {
-                                (w_filled / opp_filled).clamp(0.3, 2.0)
-                            } else {
-                                1.0 // solo: karşı taraf yok, base size
-                            };
+                            let ratio_scale = 1.0_f64;
                             let size = (usdc * arb_mult * ratio_scale / w_ask).ceil();
 
                             // 174-oturum / 10.114-trade gerçek bot analizi:
@@ -477,6 +422,7 @@ impl BonereaperEngine {
                 let loser_bid_deep = if dir == Outcome::Up { ctx.down_best_bid } else { ctx.up_best_bid };
                 let loser_ask_deep = if dir == Outcome::Up { ctx.down_best_ask } else { ctx.up_best_ask };
                 // Dinamik eşik: 1 - winner_bid + 0.05, min 0.10, max 0.35
+                // NOT: `bid` burada direction=winner nedeniyle WINNER bid'i taşıyor.
                 let deep_lot_thr = (1.0 - bid + 0.05).clamp(0.10, 0.35);
                 if !is_loser_dir
                     && loser_bid_deep > 0.0
@@ -543,8 +489,6 @@ impl BonereaperEngine {
                 // taraftır → is_loser_dir=false → guard asla yanlış bloklama yapmaz.
                 // Loser yönüne ob_driven gönderme çok nadirdir; olursa scalp serbest.
                 if is_loser_dir && !is_any_scalp && bid > scalp_max_price {
-                    st.last_up_bid = ctx.up_best_bid;
-                    st.last_dn_bid = ctx.down_best_bid;
                     return (BonereaperState::Active(st), Decision::NoOp);
                 }
 
