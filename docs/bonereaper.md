@@ -1,17 +1,38 @@
-# Bonereaper Bot — Implementasyon Kural Dosyası
+# Bonereaper Bot — Implementasyon ve arşiv notları
 
 **Wallet:** `0xeebde7a0e019a63e6b476eb425505b7b3e6eba30`  
-**Veri tabanı:** 15 × btc-updown-5m (699 trade, x/y/z/w klasörleri) + 2 × obtest WebSocket OB stream  
-**Güncelleme:** 1 Mayıs 2026  
-**Doğrulama durumu:** Her kural iki bağımsız market üzerinde verify edildi
+**Veri tabanı (arşiv analizi):** 15 × btc-updown-5m (699 trade, x/y/z/w klasörleri) + 2 × obtest WebSocket OB stream  
+**Güncelleme:** 13 Mayıs 2026  
+**Kanonik teknik spesifikasyon:** `docs/bonereaper-strategy.md` (`src/strategy/bonereaper.rs` + `src/config.rs`)  
+**Simülasyon / kalibrasyon özeti:** `docs/bonereaper-backtest-report.md`  
+**Doğrulama durumu:** Aşağıdaki Bölüm 1–17, Mayıs 2026 öncesinde trade loglarından türetilmiş **gözlemsel hipotezlerdir**; tick aralığı, SCOOP/LOTTERY eşikleri ve lot formülleri güncel Rust motoruyla **birebir aynı olmayabilir**. Üretim davranışı için her zaman Rust kaynağı esas alınmalıdır.
 
 > **Sinyal uyarısı:** CSV'deki `bsi`/`cvd`/`ofi` sütunları Binance kaynaklıdır, Polymarket'ten değil.  
-> Bot bu değerleri kendi Binance bağlantısıyla alıyor olabilir ya da hiç kullanmıyor olabilir.  
-> Sinyal referansları bu belgede "olası" olarak işaretlenmiştir.
+> Güncel motor ilk emirde `bsi` kullanır (`|bsi| ≥ 0.30`); `signal_score` motor içinde okunmaz.  
+> Sinyal referansları bu belgenin eski bölümlerinde "olası" olarak işaretlenmiştir.
 
 ---
 
-## Bölüm 0 — Sabit Parametreler
+## Bölüm 0 — Kanonik motor özeti (Mayıs 2026)
+
+Aşağıdaki maddeler `bonereaper.rs` ile uyumludur; tekrarın tamamı `bonereaper-strategy.md` içindedir.
+
+1. **Karar sırası:** Önce Late Winner (LW) + burst (varsayılan kapalı), sonra cooldown, sonra yön ve boyut, sonra `avg_sum` cap (scalp/LW muaf), `POST_LW_WINNER_MAX_BID`, loser guard.
+2. **LW:** `to_end ≤ late_winner_secs` (default **180** sn), `max(up_bid,dn_bid) ≥ bid_thr` (default **0.90**), kota `lw_max_per_session` (default **20**), taban notional **100** USDC × **`arb_mult`(`w_ask`, `to_end`)** ÷ `w_ask` share; taker @ ask; cooldown bypass.
+3. **`arb_mult`:** İki boyutlu tablo — `w_ask` bantları (≥0.99, ≥0.97, ≥0.95, else) × `to_end` bantları; `$0.99+` ve `T>120` için üst çarpan **20.0** (canlı logda ~17× gözlemiyle 13’ten yükseltildi). BTC delta ile korelasyon log analizinde zayıf bulundu.
+4. **İlk emir:** `|up_bid - down_bid| ≥ first_spread_min` (default **0.02**) değilse bekle. **Yüksek spread eşiği (ör. 0.10)** A/B’de gerçek botla **ters yön**e yol açtı — “tight first” değil, erken momentum önemli.
+5. **BSI:** İlk emirde `|bsi| ≥ 0.30` ise yön BSI; değilse yüksek bid tarafı.
+6. **Sonraki yön:** `|imbalance| > imbalance_thr` (default **1000** share) → zayıf taraf; değilse bid delta (`ob_driven`).
+7. **Loser tarafı:** `loser_side` yalnız `|up_bid - dn_bid| ≥ 0.20` iken tanımlı; düşük farkta guard yok (belirsiz piyasa).
+8. **Emir fiyatı:** Normal birikim **bid** (maker); loser scalp bandında **ask** (taker).
+9. **Parametre defaultları:** longshot **15** / mid **23** / high **37** USDC; `loser_scalp_usdc` **10**; `max_avg_sum` **1.05**; `buy_cooldown_ms` **3000**.
+10. **İzleme:** `scripts/monitor/full_compare.py` — gerçek bot JSON ile DB karşılaştırması, TAKER `arb_mult` doğrulaması, maker partial fill’lerin tek “shot”ta birleştirilmesi (yanlış cooldown alarmını önler).
+
+---
+
+## Bölüm A (Arşiv) — Sabit Parametreler (Mayıs öncesi hipotez)
+
+> **Not:** Bu Python bloğu eski reverse-engineering varsayımlarını listeler; güncel sayılar üstteki “Kanonik motor özeti” ve `config.rs` ile **farklıdır**.
 
 ```python
 MARKET_DURATION   = 300        # saniye (5 dakikalık market)
@@ -570,6 +591,6 @@ obtest verilerinde OB snapshot t=10-11s'de başlıyor. Bot açılış anında (t
 
 ---
 
-*Implementasyon Kılavuzu: 1 Mayıs 2026*  
-*Kaynak: x/, y/, z/, w/ (699 trade, 15 market) + obtest/obtest2 OB WebSocket analizi (204 trade, 2 market)*  
-*Tüm kurallar bağımsız iki veri kümesinde doğrulandı.*
+*Arşiv gözlem notları (Bölüm 1–17): Mayıs 2026 üstbilgisiyle güncellendi; kanonik motor `bonereaper-strategy.md`.*  
+*Kaynak: x/, y/, z/, w/ (699 trade, 15 market) + obtest/obtest2 OB WebSocket analizi (204 trade, 2 market).*  
+*Bu bölümlerdeki kurallar tarihî veri kümesinde doğrulanmıştır; güncel üretim davranışı için Rust kaynağına bakın.*

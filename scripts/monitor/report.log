@@ -1,0 +1,49 @@
+[22:13:08] ======================================================================
+[22:13:08] CANLI İZLEME BAŞLADI — bug bulana kadar devam edecek
+[22:13:08] ======================================================================
+[22:13:08] İzlenen botlar: [131, 132, 133, 134] ({131: 'Konservatif', 132: 'Agresif', 133: 'TIGHT', 134: 'LOW_IMB'})
+[22:13:08] Bug kriterleri: LW MISS, WRONG DIR, AVG_SUM>1.20, MEGA_SHOT>$5k
+[22:13:08] 
+[22:13:08] İterasyon #1: market kontrol ediliyor...
+[22:13:10]   Yeni biten: 12 market
+[22:13:11] 
+  ─── btc-updown-5m-1778612700 ───
+[22:13:11] 
+  REAL: 71 trade, $2315, LW: 30 ($1972), max_price: 0.97
+[22:13:11]   Bot 131 (Konservatif): 52 trd, $1004, avg_sum=1.108, max_shot=$50, max_p=0.93, UP/DN=1.57x
+[22:13:11]   Bot 132 (Agresif): 87 trd, $8132, avg_sum=1.114, max_shot=$201, max_p=0.94, UP/DN=2.17x
+[22:13:11]   Bot 133 (TIGHT): 59 trd, $2878, avg_sum=1.109, max_shot=$101, max_p=0.94, UP/DN=2.14x
+[22:13:11]   Bot 134 (LOW_IMB): 86 trd, $3388, avg_sum=1.080, max_shot=$101, max_p=0.94, UP/DN=1.34x
+[22:13:12]   btc-updown-5m-1778612400: veri eksik (real=0, bot=True)
+[22:13:14]   btc-updown-5m-1778612100: veri eksik (real=0, bot=True)
+[22:13:15]   btc-updown-5m-1778611800: veri eksik (real=0, bot=True)
+[22:13:16]   btc-updown-5m-1778611500: veri eksik (real=0, bot=True)
+[22:13:18]   btc-updown-5m-1778611200: veri eksik (real=0, bot=True)
+[22:13:19]   btc-updown-5m-1778610900: veri eksik (real=0, bot=True)
+[22:13:20]   btc-updown-5m-1778610600: veri eksik (real=0, bot=True)
+[22:13:22]   btc-updown-5m-1778610300: veri eksik (real=0, bot=True)
+[22:13:23]   btc-updown-5m-1778610000: veri eksik (real=0, bot=True)
+[22:13:24]   btc-updown-5m-1778609700: veri eksik (real=0, bot=True)
+[22:13:25]   btc-updown-5m-1778609400: veri eksik (real=0, bot=True)
+[22:13:55] İterasyon #2: market kontrol ediliyor...
+[22:13:57]   Yeni biten market yok (12 izlenmiş)
+[22:14:27] İterasyon #3: market kontrol ediliyor...
+[22:14:28]   Yeni biten market yok (12 izlenmiş)
+[22:14:58] İterasyon #4: market kontrol ediliyor...
+[22:15:00]   Yeni biten market yok (12 izlenmiş)
+[22:15:30] İterasyon #5: market kontrol ediliyor...
+[22:15:31]   Yeni biten: 1 market
+[22:15:32] 
+  ─── btc-updown-5m-1778613000 ───
+[22:15:32] 
+  REAL: 81 trade, $844, LW: 3 ($72), max_price: 0.90
+[22:15:32]   Bot 131 (Konservatif): 45 trd, $834, avg_sum=1.053, max_shot=$51, max_p=0.94, UP/DN=0.82x
+[22:15:32]   Bot 132 (Agresif): 72 trd, $7566, avg_sum=1.069, max_shot=$401, max_p=0.95, UP/DN=1.66x
+[22:15:32]   Bot 133 (TIGHT): 72 trd, $3535, avg_sum=0.929, max_shot=$200, max_p=0.95, UP/DN=2.86x
+[22:15:32]   ⚠️  BUG#2 (Bot 133 WRONG DIR): Real DOWN-ağırlıklı, Bot 133 UP-ağırlıklı (UP/DN=2.86)
+[22:15:32] 
+======================================================================
+[22:15:32] KRITIK BUG TESPİT EDİLDİ — İZLEME DURDURULDU
+[22:15:32] ======================================================================
+[22:15:33] 
+İzleme sona erdi. Rapor: /Users/dorukbirinci/Desktop/baiter-pro/scripts/monitor/report.log
