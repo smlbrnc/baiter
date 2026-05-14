@@ -3,8 +3,6 @@
 use std::sync::Arc;
 
 use crate::config::BotConfig;
-use crate::strategy::arbitrage::ArbitrageEngine;
-use crate::strategy::binance_latency::BinanceLatencyEngine;
 use crate::strategy::bonereaper::BonereaperEngine;
 use crate::strategy::gravie::GravieEngine;
 use crate::strategy::metrics::{MarketPnL, StrategyMetrics};
@@ -109,8 +107,6 @@ impl MarketSession {
     }
 
     /// Tek tick — aktif stratejiye karar ver. `effective_score`: composite skor (5.0 = nötr).
-    /// `btc_spot_price`: Binance Latency stratejisi için canlı BTC mid; diğer
-    /// stratejilerde yoksayılır.
     #[allow(clippy::too_many_arguments)]
     pub fn tick(
         &mut self,
@@ -121,7 +117,6 @@ impl MarketSession {
         bsi: Option<f64>,
         ofi: Option<f64>,
         cvd: Option<f64>,
-        btc_spot_price: Option<f64>,
     ) -> Decision {
         let zone = self.current_zone(now_ms_v / 1000);
         let ctx = StrategyContext {
@@ -159,14 +154,6 @@ impl MarketSession {
             StrategyState::Gravie(s) => {
                 let (ns, d) = GravieEngine::decide(s, &ctx);
                 (StrategyState::Gravie(ns), d)
-            }
-            StrategyState::Arbitrage(s) => {
-                let (ns, d) = ArbitrageEngine::decide(s, &ctx);
-                (StrategyState::Arbitrage(ns), d)
-            }
-            StrategyState::BinanceLatency(s) => {
-                let (ns, d) = BinanceLatencyEngine::decide(s, &ctx, btc_spot_price);
-                (StrategyState::BinanceLatency(ns), d)
             }
         };
         self.state = next_state;

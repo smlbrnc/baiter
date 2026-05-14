@@ -32,7 +32,6 @@ pub async fn tick(ctx: &Ctx, sess: &mut MarketSession) {
     let server_ts = sess.last_book_server_ts_ms;
     // imbalance_opt → bsi slot; ofi/cvd artık None (eski alanlar kaldırıldı)
     let (composite, signal_ready, imbalance_opt, _, _) = decision_composite(ctx).await;
-    let btc_spot = crate::binance_price::try_read_mid(&ctx.binance_price_state);
     let decision = sess.tick(
         &ctx.cfg,
         now_ms(),
@@ -41,7 +40,6 @@ pub async fn tick(ctx: &Ctx, sess: &mut MarketSession) {
         imbalance_opt,
         None,
         None,
-        btc_spot,
     );
     let bot_id = ctx.bot_id;
     let label = ctx.bot_label.as_ref();

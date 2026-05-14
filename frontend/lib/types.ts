@@ -5,7 +5,7 @@ export type Outcome = "UP" | "DOWN"
 export type Side = "BUY" | "SELL"
 
 export type RunMode = "live" | "dryrun"
-export type Strategy = "bonereaper" | "gravie" | "arbitrage" | "binance_latency"
+export type Strategy = "bonereaper" | "gravie"
 
 /**
  * `bots.strategy_params` JSON sütunu — backend `config::StrategyParams`.
@@ -113,48 +113,6 @@ export interface StrategyParams {
    * Pahalı down-pyramid birikimini engeller. Default 0.50.
    */
   bonereaper_avg_loser_max?: number | null
-
-  // ── Arbitrage (pure cross-leg FAK BID, avg_sum<1 garantili) ─────────────
-  /** Tick check interval (ms). Default 1000. */
-  arbitrage_tick_interval_ms?: number | null
-  /** Maks bid_winner+bid_loser. Default 0.95 (%5 marj). 0.99 = fee yiyor. */
-  arbitrage_cost_max?: number | null
-  /** Order USDC per leg. Default 20. */
-  arbitrage_order_usdc?: number | null
-  /** Session başına max trade. Default 5. */
-  arbitrage_max_trades_per_session?: number | null
-  /** Trade'ler arası bekleme (ms). Default 5000. */
-  arbitrage_cooldown_ms?: number | null
-  /** Entry penceresi (T-X..T-0 arası ara). Default 300 (tüm pencere). */
-  arbitrage_entry_window_secs?: number | null
-
-  // ── Binance Latency Arbitrage ───────────────────────────────────────────
-  // Polymarket BTC 5dk markete karşı Binance Spot BTC/USDT lag'ini sömürür.
-  // Bot 91 backtest (665 session, 64h):
-  //   - sig=$50 mt=10 cd=3s → WR %89, NET +$8323, ROI +%4.80, yıllık ~$1.14M
-  //   - sig=$80 mt=3 cd=3s → WR %93, ROI +%9.11 (max ROI)
-  //   - sig=$50 mt=50 cd=3s → WR %91, NET +$12808 (max NET)
-  /** Sinyal eşiği (USD). |delta| ≥ X ise BUY. Default 50. */
-  binance_latency_sig_thr_usd?: number | null
-  /** Trade'ler arası min bekleme (ms). Default 3000. */
-  binance_latency_cooldown_ms?: number | null
-  /** Session başına max trade. Default 10. */
-  binance_latency_max_trades_per_session?: number | null
-  /** Order USDC notional. Default 100. */
-  binance_latency_order_usdc?: number | null
-  /** Entry penceresi (T-X..T-0). Default 300 (tüm pencere). */
-  binance_latency_entry_window_secs?: number | null
-  /**
-   * Hedge leg notional (USDC). 0 = hedge KAPALI (default; backtest: hedge=$1
-   * → NET −$375, hedge=$5 → NET −$2 628). Sadece tek-yön risk azaltmak
-   * isteyenler için opt-in.
-   */
-  binance_latency_hedge_usdc?: number | null
-  /**
-   * Hedge için karşı taraf bid üst sınırı. Bid bu eşiğin altındaysa FAK BID
-   * hedge alınır. Default 0.30.
-   */
-  binance_latency_hedge_max_bid?: number | null
 
   // ── Gravie (Bot 66 davranış kopyası) ─────────────────────────────────────
   /**
@@ -518,48 +476,32 @@ export interface GlobalCredentials {
   updated_at_ms: number | null
 }
 
-/** `StrategyParams` default'ları (`config::StrategyParams::*_or_default`). */
+/** `StrategyParams` default'ları — Bot 209 OPT100 ayarları baz alındı. */
 export const STRATEGY_PARAMS_DEFAULTS = {
-  // Bonereaper (realbot.log 3472-trade analizi: fiyat-bazlı LW, T-161s'de bile
-  // winner ask $0.99'a gelince atla; küçük lot × 20 = $4000 cap/market)
+  // Bonereaper (58 market, 28k trade analizi: oran-normalize optimum değerler)
   bonereaper_buy_cooldown_ms: 2000,
   bonereaper_late_winner_secs: 300,   // penceresiz — fiyat bazlı tetikleyici
-  bonereaper_late_winner_bid_thr: 0.90, // winner bid $0.90+ → loser ~$0.09 // winner bid $0.88+ = loser ~$0.11
-  bonereaper_late_winner_usdc: 200,   // küçük lot × 20 = $4000 cap
-  bonereaper_lw_max_per_session: 10, // 10 × $200 = $2000 max LW cap
-  bonereaper_imbalance_thr: 1000, // salınım önleme: 0 osc vs thr=200'de 14 osc
+  bonereaper_late_winner_bid_thr: 0.90,
+  bonereaper_late_winner_usdc: 120,   // gerçek bot oranı %41.5 → ölçekli 120$
+  bonereaper_lw_max_per_session: 15,  // 15 × $120 = $1800 max LW cap
+  bonereaper_imbalance_thr: 300,      // gerçek bot p25=442 share; ölçekli 300
   bonereaper_max_avg_sum: 1.0,
-  bonereaper_first_spread_min: 0.02,
-  bonereaper_size_longshot_usdc: 8,   // bid ≤ 0.30, real avg $7.18
-  bonereaper_size_mid_usdc: 10,       // yarı lot → yanlış yön hasarı azaltır
-  bonereaper_size_high_usdc: 20,      // pyramid=1.0 ile 27sh@$0.75
-  // Loser long-shot scalp ($0.10–$0.20 bant, realbot $40–$450/market)
+  bonereaper_first_spread_min: 0,     // devre dışı
+  bonereaper_size_longshot_usdc: 6,   // bid ≤ 0.30
+  bonereaper_size_mid_usdc: 10,       // 0.30 < bid ≤ 0.65
+  bonereaper_size_high_usdc: 15,      // 0.65 < bid < 0.90
+  // Loser long-shot scalp
   bonereaper_loser_min_price: 0.01,
-  bonereaper_loser_scalp_usdc: 5,
-  bonereaper_loser_scalp_max_price: 0.20,
-  // Winner pyramid (T-150s'den erken accumulation)
-  bonereaper_late_pyramid_secs: 150,
-  bonereaper_winner_size_factor: 1.0,  // pyramid KAPALI — yanlış yön amplifikasyonu önler
-  // LW burst — KAPALI (realbot ayrı burst wave kullanmıyor)
+  bonereaper_loser_scalp_usdc: 3,
+  bonereaper_loser_scalp_max_price: 0.25,
+  // Winner pyramid — KAPALI (yanlış yön amplifikasyonu önler)
+  bonereaper_late_pyramid_secs: 0,
+  bonereaper_winner_size_factor: 1.0,
+  // LW burst — KAPALI
   bonereaper_lw_burst_secs: 0,
   bonereaper_lw_burst_usdc: 0,
   // Martingale-down guard
   bonereaper_avg_loser_max: 0.5,
-  // Arbitrage (Bot 108 backtest optimum: cost<0.95, mt=5, $100 → WR %100)
-  arbitrage_tick_interval_ms: 1000,
-  arbitrage_cost_max: 0.95,
-  arbitrage_order_usdc: 20,
-  arbitrage_max_trades_per_session: 5,
-  arbitrage_cooldown_ms: 5000,
-  arbitrage_entry_window_secs: 300,
-  // Binance Latency (Bot 91 backtest profil B: WR %89, NET +$8323, yıllık ~$1.14M)
-  binance_latency_sig_thr_usd: 50,
-  binance_latency_cooldown_ms: 3000,
-  binance_latency_max_trades_per_session: 10,
-  binance_latency_order_usdc: 100,
-  binance_latency_entry_window_secs: 300,
-  binance_latency_hedge_usdc: 0,
-  binance_latency_hedge_max_bid: 0.30,
   // Gravie (Bot 66 davranış kopyası — optimum kalibre)
   gravie_tick_interval_secs: 5,
   gravie_buy_cooldown_ms: 4000,

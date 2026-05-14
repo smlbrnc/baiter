@@ -1,5 +1,5 @@
 import type { Dispatch, SetStateAction } from "react"
-import { Activity, Sliders, Target, Zap } from "lucide-react"
+import { Activity, Target } from "lucide-react"
 import { Input } from "@/components/ui/input"
 import type { CreateBotReq, StrategyParams } from "@/lib/types"
 import { STRATEGY_PARAMS_DEFAULTS } from "@/lib/types"
@@ -22,8 +22,6 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const params: StrategyParams = form.strategy_params ?? {}
   const isBonereaper = form.strategy === "bonereaper"
   const isGravie = form.strategy === "gravie"
-  const isArbitrage = form.strategy === "arbitrage"
-  const isBinanceLatency = form.strategy === "binance_latency"
 
   const patch = (next: Partial<StrategyParams>) => {
     setForm({
@@ -125,46 +123,6 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
     params.bonereaper_avg_loser_max ??
     STRATEGY_PARAMS_DEFAULTS.bonereaper_avg_loser_max
 
-  // ── Arbitrage (pure cross-leg FAK BID, avg_sum<1 garantili) ──
-  const arbitrageTickIntervalMs =
-    params.arbitrage_tick_interval_ms ??
-    STRATEGY_PARAMS_DEFAULTS.arbitrage_tick_interval_ms
-  const arbitrageCostMax =
-    params.arbitrage_cost_max ?? STRATEGY_PARAMS_DEFAULTS.arbitrage_cost_max
-  const arbitrageOrderUsdc =
-    params.arbitrage_order_usdc ?? STRATEGY_PARAMS_DEFAULTS.arbitrage_order_usdc
-  const arbitrageMaxTradesPerSession =
-    params.arbitrage_max_trades_per_session ??
-    STRATEGY_PARAMS_DEFAULTS.arbitrage_max_trades_per_session
-  const arbitrageCooldownMs =
-    params.arbitrage_cooldown_ms ?? STRATEGY_PARAMS_DEFAULTS.arbitrage_cooldown_ms
-  const arbitrageEntryWindowSecs =
-    params.arbitrage_entry_window_secs ??
-    STRATEGY_PARAMS_DEFAULTS.arbitrage_entry_window_secs
-
-  // ── Binance Latency Arbitrage ──────────────────────────────────────────
-  const binanceLatencySigThrUsd =
-    params.binance_latency_sig_thr_usd ??
-    STRATEGY_PARAMS_DEFAULTS.binance_latency_sig_thr_usd
-  const binanceLatencyCooldownMs =
-    params.binance_latency_cooldown_ms ??
-    STRATEGY_PARAMS_DEFAULTS.binance_latency_cooldown_ms
-  const binanceLatencyMaxTrades =
-    params.binance_latency_max_trades_per_session ??
-    STRATEGY_PARAMS_DEFAULTS.binance_latency_max_trades_per_session
-  const binanceLatencyOrderUsdc =
-    params.binance_latency_order_usdc ??
-    STRATEGY_PARAMS_DEFAULTS.binance_latency_order_usdc
-  const binanceLatencyEntryWindow =
-    params.binance_latency_entry_window_secs ??
-    STRATEGY_PARAMS_DEFAULTS.binance_latency_entry_window_secs
-  const binanceLatencyHedgeUsdc =
-    params.binance_latency_hedge_usdc ??
-    STRATEGY_PARAMS_DEFAULTS.binance_latency_hedge_usdc
-  const binanceLatencyHedgeMaxBid =
-    params.binance_latency_hedge_max_bid ??
-    STRATEGY_PARAMS_DEFAULTS.binance_latency_hedge_max_bid
-
   return (
     <div className="space-y-3">
       {/* ── Bonereaper parametreleri ────────────────────────────────────── */}
@@ -183,7 +141,7 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Field
                 label="LW USDC / shot"
-                tooltip="Winner ask $0.99'a geldiğinde her injection'ın notional büyüklüğü. Toplam risk = LW USDC × LW max. 0 = kapalı."
+                tooltip="Winner bid ≥ 0.90 olduğunda her LW alımının notional büyüklüğü. Toplam risk = LW USDC × LW max. Gerçek bot oranı: toplam maliyetin %41. 0 = kapalı."
                 hint={`0 – 10000 USDC (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_usdc}).`}
               >
                 <Input
@@ -368,12 +326,12 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                 </Field>
               </div>
 
-              {/* Loser scalp + winner pyramid + martingale-down guard */}
+              {/* Loser scalp + martingale-down guard */}
               <div className="mt-4 border-t border-border/40 pt-3">
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <Field
                     label="Loser scalp USDC"
-                    tooltip="Kaybeden tarafa $0.10–$0.20 bandında kuruşluk bilet boyutu. Gerçek bot market başına $40–$450 harcıyor. 0 = scalp KAPALI."
+                    tooltip="Kaybeden tarafa ≤ scalp_max_price bandında kuruşluk bilet boyutu. Gerçek bot toplam maliyetin %3.9'u. 0 = scalp KAPALI."
                     hint={`0 – 50 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_loser_scalp_usdc}).`}
                   >
                     <Input
@@ -389,7 +347,7 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                   </Field>
                   <Field
                     label="Loser scalp üst bid"
-                    tooltip="Loser bid bu eşiğin altındaysa scalp boyutu uygulanır. Gerçek bot $0.10–$0.17 bandında bilet topluyor."
+                    tooltip="Loser bid bu eşiğin altındaysa scalp boyutu uygulanır. 0.25 = gerçek bot dağılımına uygun."
                     hint={`0.05 – 0.50 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_loser_scalp_max_price}).`}
                   >
                     <Input
@@ -400,38 +358,6 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                       value={bonereaperLoserScalpMaxPrice}
                       onChange={(e) =>
                         patch({ bonereaper_loser_scalp_max_price: Number(e.target.value) })
-                      }
-                    />
-                  </Field>
-                  <Field
-                    label="Winner pyramid (sn)"
-                    tooltip="T-X sn'den itibaren winner tarafa size × factor uygula. Gerçek bot T-150s civarında erken accumulation yapıyor. 0 = KAPALI."
-                    hint={`0 – 300 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_late_pyramid_secs}).`}
-                  >
-                    <Input
-                      type="number"
-                      step="10"
-                      min="0"
-                      max="300"
-                      value={bonereaperLatePyramidSecs}
-                      onChange={(e) =>
-                        patch({ bonereaper_late_pyramid_secs: Number(e.target.value) })
-                      }
-                    />
-                  </Field>
-                  <Field
-                    label="Winner size factor"
-                    tooltip="Pyramid penceresinde winner tarafa uygulanacak size çarpanı."
-                    hint={`1.0 – 10.0 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_winner_size_factor}).`}
-                  >
-                    <Input
-                      type="number"
-                      step="0.5"
-                      min="1"
-                      max="10"
-                      value={bonereaperWinnerSizeFactor}
-                      onChange={(e) =>
-                        patch({ bonereaper_winner_size_factor: Number(e.target.value) })
                       }
                     />
                   </Field>
@@ -458,322 +384,28 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
 
           <ul className="list-disc space-y-1 rounded-md border border-border/40 bg-muted/10 px-4 py-2.5 pl-7 text-xs text-muted-foreground">
             <li>
-              <strong>$0.99 injection (fiyat bazlı):</strong> Winner ask{" "}
-              <code>$0.99</code>'a geldiği anda — zaman bağımsız —{" "}
-              <code>{STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_usdc} USDC</code> lot atlar.
+              <strong>LW injection (fiyat bazlı):</strong> Winner bid ≥{" "}
+              <code>{STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_bid_thr}</code> olduğunda —
+              zaman bağımsız — <code>{STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_usdc}$</code> lot atlar.
               Maks <code>{STRATEGY_PARAMS_DEFAULTS.bonereaper_lw_max_per_session}</code> shot ×{" "}
               <code>{STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_usdc}$</code> ={" "}
               <code>{STRATEGY_PARAMS_DEFAULTS.bonereaper_lw_max_per_session * STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_usdc}$</code> cap/market.
-            </li>
-            <li>
-              <strong>Winner pyramid:</strong> T-
-              {STRATEGY_PARAMS_DEFAULTS.bonereaper_late_pyramid_secs}s'den itibaren
-              winner tarafa size ×{STRATEGY_PARAMS_DEFAULTS.bonereaper_winner_size_factor}{" "}
-              (erken accumulation fazı).
+              Gerçek bot toplam maliyetin <strong>%41.5'ini</strong> LW'ye harcıyor.
             </li>
             <li>
               <strong>Loser scalp:</strong> Kaybeden tarafa{" "}
-              <code>≤${STRATEGY_PARAMS_DEFAULTS.bonereaper_loser_scalp_max_price}</code>{" "}
+              <code>≤{STRATEGY_PARAMS_DEFAULTS.bonereaper_loser_scalp_max_price}</code>{" "}
               bandında <code>{STRATEGY_PARAMS_DEFAULTS.bonereaper_loser_scalp_usdc}$</code>{" "}
               bilet topla (lottery aspect). <code>|imbalance| ≥ {STRATEGY_PARAMS_DEFAULTS.bonereaper_imbalance_thr}</code> aşarsa weaker side rebalance.
             </li>
             <li>
               <strong>Güvenlik:</strong> <code>avg_loser_max</code> pahalı
-              martingale-down'u, <code>max_avg_sum</code> pyramid'i,{" "}
+              martingale-down'u, <code>max_avg_sum=1.0</code> simetrik pozisyonu,{" "}
               <code>cooldown</code> spam'i engeller.
             </li>
-          </ul>
-        </div>
-      )}
-
-      {/* ── Arbitrage parametreleri (pure cross-leg FAK BID) ──────────── */}
-      {isArbitrage && (
-        <div className="space-y-3">
-          <SectionLabel icon={Target} title="Arbitrage parametreleri" />
-          <p className="text-sm text-muted-foreground">
-            Pure cross-leg sentetik dolar: <code>bid_winner + bid_loser &lt; cost_max</code>{" "}
-            (avg_sum&lt;1) iken winner ve loser tarafa eşzamanlı FAK BID. Yön
-            tahmini yok — matematiksel garanti.
-            <br />
-            <strong>Backtest (bot 108):</strong> WR <strong>%100</strong>, ROI{" "}
-            <strong>+%4.35</strong>, NET +$994/12.4h ($100 order, mt=5).
-          </p>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <Field
-              label="Cost max (avg_sum cap)"
-              tooltip="bid_winner + bid_loser bu eşiğin altındaysa fırsat. 0.95 = sıkı %5 marj. 0.99 fee yiyor."
-              hint={`0.50 – 0.999 (default ${STRATEGY_PARAMS_DEFAULTS.arbitrage_cost_max}).`}
-            >
-              <Input
-                type="number"
-                step="0.005"
-                min="0.5"
-                max="0.999"
-                value={arbitrageCostMax}
-                onChange={(e) =>
-                  patch({ arbitrage_cost_max: Number(e.target.value) })
-                }
-              />
-            </Field>
-            <Field
-              label="Order USDC (per leg)"
-              tooltip="Winner ve loser leg ayrı ayrı bu büyüklükte. Sermaye = 2× bu değer."
-              hint={`0 – 10000 (default ${STRATEGY_PARAMS_DEFAULTS.arbitrage_order_usdc}).`}
-            >
-              <Input
-                type="number"
-                step="5"
-                min="0"
-                max="10000"
-                value={arbitrageOrderUsdc}
-                onChange={(e) =>
-                  patch({ arbitrage_order_usdc: Number(e.target.value) })
-                }
-              />
-            </Field>
-            <Field
-              label="Max trades / session"
-              tooltip="Pencere başına maksimum arbitrage trade. 0=sınırsız, 5=güvenli üst."
-              hint={`0 – 20 (default ${STRATEGY_PARAMS_DEFAULTS.arbitrage_max_trades_per_session}).`}
-            >
-              <Input
-                type="number"
-                step="1"
-                min="0"
-                max="20"
-                value={arbitrageMaxTradesPerSession}
-                onChange={(e) =>
-                  patch({ arbitrage_max_trades_per_session: Number(e.target.value) })
-                }
-              />
-            </Field>
-            <Field
-              label="Cooldown (ms)"
-              tooltip="Trade'ler arası minimum bekleme. Hızlı re-entry için 5000."
-              hint={`1000 – 60000 (default ${STRATEGY_PARAMS_DEFAULTS.arbitrage_cooldown_ms}).`}
-            >
-              <Input
-                type="number"
-                step="500"
-                min="1000"
-                max="60000"
-                value={arbitrageCooldownMs}
-                onChange={(e) =>
-                  patch({ arbitrage_cooldown_ms: Number(e.target.value) })
-                }
-              />
-            </Field>
-            <Field
-              label="Tick interval (ms)"
-              tooltip="Her N ms'de bir kontrol et. 1000=saniyede 1, 200=hızlı."
-              hint={`100 – 10000 (default ${STRATEGY_PARAMS_DEFAULTS.arbitrage_tick_interval_ms}).`}
-            >
-              <Input
-                type="number"
-                step="100"
-                min="100"
-                max="10000"
-                value={arbitrageTickIntervalMs}
-                onChange={(e) =>
-                  patch({ arbitrage_tick_interval_ms: Number(e.target.value) })
-                }
-              />
-            </Field>
-            <Field
-              label="Entry window (sn)"
-              tooltip="Pencere kapanmasına bu kadar sn kala kadar arbitrage ara. 300=tüm pencere, 60=son 1dk."
-              hint={`30 – 600 (default ${STRATEGY_PARAMS_DEFAULTS.arbitrage_entry_window_secs}).`}
-            >
-              <Input
-                type="number"
-                step="10"
-                min="30"
-                max="600"
-                value={arbitrageEntryWindowSecs}
-                onChange={(e) =>
-                  patch({ arbitrage_entry_window_secs: Number(e.target.value) })
-                }
-              />
-            </Field>
-          </div>
-          <ul className="list-disc space-y-1 rounded-md border border-border/40 bg-muted/10 px-4 py-2.5 pl-7 text-xs text-muted-foreground">
             <li>
-              <strong>Mantık:</strong> Winner side (bid&gt;0.5) ve loser side
-              (bid&lt;0.5) için eşzamanlı GTC limit BUY @ bid (FAK davranışı).
-            </li>
-            <li>
-              <strong>Garanti payoff:</strong> Kim kazanırsa $1.00. Net = $1.00 −
-              cost − fee = pozitif (cost &lt; cost_max).
-            </li>
-            <li>
-              <strong>Risk:</strong> Tek leg fill (winner_bid fill, loser_bid fill
-              olmaz) → directional pozisyon. Sermaye 2× order büyüklüğü.
-            </li>
-          </ul>
-        </div>
-      )}
-
-      {/* ── Binance Latency Arbitrage parametreleri ─────────────────────── */}
-      {isBinanceLatency && (
-        <div className="space-y-3">
-          <SectionLabel icon={Zap} title="Binance Latency parametreleri" />
-          <p className="text-sm text-muted-foreground">
-            Binance Spot BTC/USDT mid fiyat lag arbitrajı. Session başında
-            BTC mid snapshot, her tick <code>delta = current − open</code>;{" "}
-            <code>|delta| ≥ sig_thr</code> (USD) ise BUY yönü:{" "}
-            <code>delta&gt;0 → UP</code>, <code>&lt;0 → DOWN</code>.
-            <br />
-            <strong>Backtest (bot 91, 665 session, 64h):</strong>{" "}
-            <code>sig=$50 mt=10 cd=3s</code> → WR <strong>%89</strong>, NET{" "}
-            <strong>+$8 323</strong>, ROI <strong>+%4.80</strong>, yıllık
-            ~<strong>$1.14M</strong>.
-          </p>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <Field
-              label="Sinyal eşiği (USD)"
-              tooltip="|delta| ≥ X ise trade. $50 = sweet spot (WR %89). $80 → WR %93 ama düşük frekans. $30 → WR %83."
-              hint={`1 – 500 USD (default ${STRATEGY_PARAMS_DEFAULTS.binance_latency_sig_thr_usd}).`}
-            >
-              <Input
-                type="number"
-                step="1"
-                min="1"
-                max="500"
-                value={binanceLatencySigThrUsd}
-                onChange={(e) =>
-                  patch({
-                    binance_latency_sig_thr_usd: Number(e.target.value),
-                  })
-                }
-              />
-            </Field>
-            <Field
-              label="Order USDC"
-              tooltip="Trade başına notional. $100 default; backtest tüm sonuçlar bu değerle."
-              hint={`5 – 10000 (default ${STRATEGY_PARAMS_DEFAULTS.binance_latency_order_usdc}).`}
-            >
-              <Input
-                type="number"
-                step="1"
-                min="5"
-                max="10000"
-                value={binanceLatencyOrderUsdc}
-                onChange={(e) =>
-                  patch({
-                    binance_latency_order_usdc: Number(e.target.value),
-                  })
-                }
-              />
-            </Field>
-            <Field
-              label="Max trades / session"
-              tooltip="Pencere başına max trade. 10=denge, 50=max NET (+$12808 ama düşük ROI), 3=max ROI (+%9)."
-              hint={`1 – 100 (default ${STRATEGY_PARAMS_DEFAULTS.binance_latency_max_trades_per_session}).`}
-            >
-              <Input
-                type="number"
-                step="1"
-                min="1"
-                max="100"
-                value={binanceLatencyMaxTrades}
-                onChange={(e) =>
-                  patch({
-                    binance_latency_max_trades_per_session: Number(
-                      e.target.value
-                    ),
-                  })
-                }
-              />
-            </Field>
-            <Field
-              label="Cooldown (ms)"
-              tooltip="Trade'ler arası min bekleme. 3000=optimum (frekans + sinyal kalitesi dengesi)."
-              hint={`1000 – 60000 (default ${STRATEGY_PARAMS_DEFAULTS.binance_latency_cooldown_ms}).`}
-            >
-              <Input
-                type="number"
-                step="500"
-                min="1000"
-                max="60000"
-                value={binanceLatencyCooldownMs}
-                onChange={(e) =>
-                  patch({
-                    binance_latency_cooldown_ms: Number(e.target.value),
-                  })
-                }
-              />
-            </Field>
-            <Field
-              label="Entry window (sn)"
-              tooltip="Pencere kapanmasına bu kadar sn kala kadar trade ara. 300=tüm 5dk pencere, 60=son 1dk."
-              hint={`15 – 600 (default ${STRATEGY_PARAMS_DEFAULTS.binance_latency_entry_window_secs}).`}
-            >
-              <Input
-                type="number"
-                step="15"
-                min="15"
-                max="600"
-                value={binanceLatencyEntryWindow}
-                onChange={(e) =>
-                  patch({
-                    binance_latency_entry_window_secs: Number(e.target.value),
-                  })
-                }
-              />
-            </Field>
-            <Field
-              label="Hedge USDC (opsiyonel sigorta)"
-              tooltip="Karşı tarafa küçük FAK BID hedge. 0=KAPALI (önerilen). Backtest: hedge=$1 → NET −$375, $5 → NET −$2628. Sadece tek-yön korkusu için opt-in."
-              hint={`0 – 100 USDC (default 0 = kapalı).`}
-            >
-              <Input
-                type="number"
-                step="1"
-                min="0"
-                max="100"
-                value={binanceLatencyHedgeUsdc}
-                onChange={(e) =>
-                  patch({
-                    binance_latency_hedge_usdc: Number(e.target.value),
-                  })
-                }
-              />
-            </Field>
-            <Field
-              label="Hedge max bid"
-              tooltip="Karşı taraf bid bu eşiğin altındaysa hedge alınır. Düşük=sıkı (az hedge), yüksek=gevşek."
-              hint={`0.05 – 0.50 (default ${STRATEGY_PARAMS_DEFAULTS.binance_latency_hedge_max_bid}).`}
-            >
-              <Input
-                type="number"
-                step="0.05"
-                min="0.05"
-                max="0.50"
-                value={binanceLatencyHedgeMaxBid}
-                onChange={(e) =>
-                  patch({
-                    binance_latency_hedge_max_bid: Number(e.target.value),
-                  })
-                }
-              />
-            </Field>
-          </div>
-          <ul className="list-disc space-y-1 rounded-md border border-border/40 bg-muted/10 px-4 py-2.5 pl-7 text-xs text-muted-foreground">
-            <li>
-              <strong>Mantık:</strong> Polymarket bid/ask Binance&apos;den birkaç
-              saniye geride. Binance fiyatı sıçrarsa Polymarket henüz tepki
-              vermeden BUY yapılır.
-            </li>
-            <li>
-              <strong>3 profil:</strong>{" "}
-              <code>sig=$80 mt=3</code> (max ROI %9.11) /{" "}
-              <code>sig=$50 mt=10</code> (denge) /{" "}
-              <code>sig=$50 mt=50</code> (max NET +$12 808).
-            </li>
-            <li>
-              <strong>Risk:</strong> Tek-yön directional (yön yanlışsa tam
-              kayıp). Sinyal kalitesi sigortadır — düşük sig_thr (&lt;$10)
-              kayıp riskini büyütür.
+              <strong>min/max price:</strong> <code>0.01 – 0.99</code> önerilen
+              (max=0.95 LW'nin %31'ini bloklar).
             </li>
           </ul>
         </div>

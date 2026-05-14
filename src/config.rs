@@ -102,7 +102,7 @@ pub struct BotConfig {
 }
 
 /// Strateji-spesifik parametreler; `bots.strategy_params` JSON sütunundan
-/// parse edilir, tüm stratejiler (Bonereaper / Gravie / Arbitrage) buradan okur.
+/// parse edilir, tüm stratejiler (Bonereaper / Gravie) buradan okur.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StrategyParams {
     #[serde(default)]
@@ -213,66 +213,6 @@ pub struct StrategyParams {
     /// her yeni alım üst paritede pahalı kayıp.
     #[serde(default)]
     pub bonereaper_avg_loser_max: Option<f64>,
-
-    // === Arbitrage (Pure cross-leg FAK BID arbitrage) ===
-    // Strateji: avg_sum<1 garantili sentetik dolar minting.
-    // Bot 108 backtest (16 200 kombinasyon): cost<0.95 + mt=5 + $100 → WR %100,
-    // ROI %4.35, NET +$994/12.4h.
-    /// Tick check interval (ms). Sub-second için 1000 ideal. Default 1000.
-    #[serde(default)]
-    pub arbitrage_tick_interval_ms: Option<u64>,
-    /// Maks `winner_bid + loser_bid` (= avg_sum). Bu değerin altındaysa fırsat.
-    /// Default 0.95 (sıkı: yalnızca 5¢+ marj). 0.97 = orta, 0.99 = gevşek (fee yiyor).
-    #[serde(default)]
-    pub arbitrage_cost_max: Option<f64>,
-    /// Her trade USDC notional (winner ve loser leg ayrı ayrı bu büyüklükte).
-    /// Default $20. Linear scaling — $100 ile +$994/12.4h.
-    #[serde(default)]
-    pub arbitrage_order_usdc: Option<f64>,
-    /// Session başına maksimum trade sayısı. Default 5.
-    #[serde(default)]
-    pub arbitrage_max_trades_per_session: Option<u32>,
-    /// Trade'ler arası minimum bekleme (ms). Default 5000.
-    #[serde(default)]
-    pub arbitrage_cooldown_ms: Option<u64>,
-    /// Pencere kapanmasına bu kadar saniye kala kadar fırsat ara (T-X..T-0).
-    /// Default 300 (tüm pencere). 60 = sadece son 1dk.
-    #[serde(default)]
-    pub arbitrage_entry_window_secs: Option<u32>,
-
-    // === Binance Latency Arbitrage parametreleri =============================
-    // Strateji: Polymarket BTC 5dk markete karşı Binance Spot BTC/USDT lag'ini
-    // sömürür. Session start_ts'de BTC mid snapshot, her tick delta hesabı;
-    // |delta| ≥ sig_thr → BUY (delta>0 UP, <0 DOWN).
-    // Bot 91 backtest (665 session, 64h):
-    //   - sig=$50 mt=10 cd=3s → WR %89, NET +$8323, ROI +%4.80, yıllık ~$1.14M
-    //   - sig=$80 mt=3 cd=3s → WR %93, NET +$2222, ROI +%9.11 (max ROI)
-    //   - sig=$50 mt=50 cd=3s → WR %91, NET +$12808, ROI +%3.16 (max NET)
-    /// Sinyal eşiği (USD). Default 50.
-    #[serde(default)]
-    pub binance_latency_sig_thr_usd: Option<f64>,
-    /// Trade'ler arası min bekleme (ms). Default 3000.
-    #[serde(default)]
-    pub binance_latency_cooldown_ms: Option<u64>,
-    /// Session başına max trade. Default 10.
-    #[serde(default)]
-    pub binance_latency_max_trades_per_session: Option<u32>,
-    /// Order USDC notional. Default 100.
-    #[serde(default)]
-    pub binance_latency_order_usdc: Option<f64>,
-    /// Entry penceresi (T-X..T-0 arası ara). Default 300 (tüm pencere).
-    #[serde(default)]
-    pub binance_latency_entry_window_secs: Option<u32>,
-    /// Hedge leg notional (USDC). 0 = hedge KAPALI (default; backtest
-    /// matematik aleyhine: hedge=$1 → NET -$375, hedge=$5 → NET -$2628).
-    /// Sadece tek-yön risk azaltmak isteyenler için opt-in.
-    #[serde(default)]
-    pub binance_latency_hedge_usdc: Option<f64>,
-    /// Hedge için karşı tarafın bid üst sınırı. Bid bu eşiğin altındaysa
-    /// FAK BID hedge alınır. Default 0.30. Düşük = sıkı (daha az hedge),
-    /// yüksek = gevşek (daha çok hedge → daha çok kayıp).
-    #[serde(default)]
-    pub binance_latency_hedge_max_bid: Option<f64>,
 
     // === Gravie (Bot 66 davranış kopyası) ===
     /// Karar tick aralığı (sn). Bot 66 ortalama inter-arrival 4-5 sn.
@@ -566,90 +506,6 @@ impl StrategyParams {
             .clamp(0.10, 0.95)
     }
 
-    // === Arbitrage accessors (cost<0.95 + mt=5 + $100 backtest optimum) ===
-    /// Tick interval (ms); 100–10000 sınırlı; default 1000 (saniyede 1 check).
-    pub fn arbitrage_tick_interval_ms(&self) -> u64 {
-        self.arbitrage_tick_interval_ms
-            .unwrap_or(1_000)
-            .clamp(100, 10_000)
-    }
-    /// avg_sum cap (winner_bid + loser_bid); 0.50–0.999 sınırlı; default 0.95.
-    pub fn arbitrage_cost_max(&self) -> f64 {
-        self.arbitrage_cost_max
-            .unwrap_or(0.95)
-            .clamp(0.50, 0.999)
-    }
-    /// Order USDC notional; 0–10000 sınırlı; default 20.
-    pub fn arbitrage_order_usdc(&self) -> f64 {
-        self.arbitrage_order_usdc
-            .unwrap_or(20.0)
-            .clamp(0.0, 10_000.0)
-    }
-    /// Max trades per session; 0=sınırsız, 1–20 sınırlı; default 5.
-    pub fn arbitrage_max_trades_per_session(&self) -> u32 {
-        self.arbitrage_max_trades_per_session.unwrap_or(5).min(20)
-    }
-    /// Cooldown ms; 1000–60000 sınırlı; default 5000.
-    pub fn arbitrage_cooldown_ms(&self) -> u64 {
-        self.arbitrage_cooldown_ms
-            .unwrap_or(5_000)
-            .clamp(1_000, 60_000)
-    }
-    /// Entry window sn (T-X..T-0 arası ara); 30–600 sınırlı; default 300.
-    pub fn arbitrage_entry_window_secs(&self) -> u32 {
-        self.arbitrage_entry_window_secs
-            .unwrap_or(300)
-            .clamp(30, 600)
-    }
-
-    // === Binance Latency accessors ============================================
-    /// Sinyal eşiği (USD); BTC delta `|now − open|` bunu aşmazsa NoOp.
-    /// 1–500 sınırlı; default 50 (Bot 91 backtest sweet spot: WR %89, ROI %4.80).
-    /// $80+ → WR %93 ama düşük frekans; $30 → WR %83 yüksek frekans.
-    pub fn binance_latency_sig_thr_usd(&self) -> f64 {
-        self.binance_latency_sig_thr_usd
-            .unwrap_or(50.0)
-            .clamp(1.0, 500.0)
-    }
-    /// Trade'ler arası min bekleme (ms); 1000–60000 sınırlı; default 3000.
-    pub fn binance_latency_cooldown_ms(&self) -> u64 {
-        self.binance_latency_cooldown_ms
-            .unwrap_or(3_000)
-            .clamp(1_000, 60_000)
-    }
-    /// Session başına max trade; 1–100 sınırlı; default 10.
-    /// Backtest: mt=10 → NET +$8323, mt=50 → NET +$12808 (max NET ama düşük ROI).
-    pub fn binance_latency_max_trades_per_session(&self) -> u32 {
-        self.binance_latency_max_trades_per_session
-            .unwrap_or(10)
-            .clamp(1, 100)
-    }
-    /// Order USDC notional; 5–10000 sınırlı; default 100.
-    pub fn binance_latency_order_usdc(&self) -> f64 {
-        self.binance_latency_order_usdc
-            .unwrap_or(100.0)
-            .clamp(5.0, 10_000.0)
-    }
-    /// Entry window sn (T-X..T-0 arası ara); 15–600 sınırlı; default 300
-    /// (tüm 5dk pencere).
-    pub fn binance_latency_entry_window_secs(&self) -> u32 {
-        self.binance_latency_entry_window_secs
-            .unwrap_or(300)
-            .clamp(15, 600)
-    }
-    /// Hedge leg notional (USDC); 0–100 sınırlı; default 0 (kapalı).
-    /// Pure directional optimum; hedge ekleme NET'i azaltır (backtest).
-    pub fn binance_latency_hedge_usdc(&self) -> f64 {
-        self.binance_latency_hedge_usdc
-            .unwrap_or(0.0)
-            .clamp(0.0, 100.0)
-    }
-    /// Hedge için karşı taraf bid üst sınırı; 0.05–0.50 sınırlı; default 0.30.
-    pub fn binance_latency_hedge_max_bid(&self) -> f64 {
-        self.binance_latency_hedge_max_bid
-            .unwrap_or(0.30)
-            .clamp(0.05, 0.50)
-    }
 }
 
 /// Gravie V3 (ASYM) strateji parametreleri — `StrategyParams`'tan resolve edilir.

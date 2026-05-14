@@ -49,11 +49,11 @@ export function BotFormSettingsSection({ form, setForm }: Props) {
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <Field
             label="Min price"
-            tooltip="Executor: emirlerin kabul edildiği minimum fiyat eşiği. Strateji bu değerin altında bir fiyat önerirse otomatik reddedilir. LIVE_safe default 0.10 — extreme long-shot riskini eler."
+            tooltip="Executor: emirlerin kabul edildiği minimum fiyat eşiği. Bonereaper için 0.01 önerilir — loser scalp 0.01-0.05 bandını kapsar."
             hint={
               isBonereaper
-                ? "0.01 – 0.50; LIVE_safe default 0.10."
-                : "0.01 – 0.50; default 0.10."
+                ? "0.01 – 0.50; Bonereaper default 0.01."
+                : "0.01 – 0.50; default 0.01."
             }
           >
             <Input
@@ -69,8 +69,8 @@ export function BotFormSettingsSection({ form, setForm }: Props) {
           </Field>
           <Field
             label="Max price"
-            tooltip="Executor: emirlerin kabul edildiği maksimum fiyat eşiği. LIVE_safe default 0.95 — yanlış 0.99 inject riskini eler. Late winner injection bu filtreden bağımsız (kendi bid eşiği var)."
-            hint="0.50 – 0.99; LIVE_safe default 0.95."
+            tooltip="Executor: emirlerin kabul edildiği maksimum fiyat eşiği. Bonereaper için 0.99 önerilir — 0.95 LW alımlarının %31'ini bloklar (gerçek bot 0.96-0.99 arasında LW yapıyor)."
+            hint="0.50 – 0.99; Bonereaper default 0.99."
           >
             <Input
               type="number"

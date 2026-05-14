@@ -930,8 +930,12 @@ def main():
         "--max-avg-sum",
         type=float,
         default=None,
-        help="bonereaper_max_avg_sum geçersiz kıl (simülasyon için; DB'deki bot ayarının üstüne yazar)",
+        help="bonereaper_max_avg_sum geçersiz kıl",
     )
+    ap.add_argument("--lw-usdc", type=float, default=None, help="bonereaper_late_winner_usdc geçersiz kıl")
+    ap.add_argument("--lw-max", type=int, default=None, help="bonereaper_lw_max_per_session geçersiz kıl")
+    ap.add_argument("--imbalance-thr", type=float, default=None, help="bonereaper_imbalance_thr geçersiz kıl")
+    ap.add_argument("--lw-secs", type=int, default=None, help="bonereaper_late_winner_secs geçersiz kıl")
     args = ap.parse_args()
 
     # DB yolu
@@ -966,9 +970,18 @@ def main():
             sys.exit(1)
         if args.max_avg_sum is not None:
             p.max_avg_sum = float(args.max_avg_sum)
+        if args.lw_usdc is not None:
+            p.late_winner_usdc = float(args.lw_usdc)
+        if args.lw_max is not None:
+            p.lw_max_per_session = int(args.lw_max)
+        if args.imbalance_thr is not None:
+            p.imbalance_thr = float(args.imbalance_thr)
+        if args.lw_secs is not None:
+            p.late_winner_secs = int(args.lw_secs)
         print(f"Bot {args.bot} yüklendi: {p.size_mid_usdc}$ mid / "
               f"lw={p.late_winner_usdc}$@{p.late_winner_bid_thr} / "
-              f"cd={p.buy_cooldown_ms}ms / max_avg={p.max_avg_sum}")
+              f"cd={p.buy_cooldown_ms}ms / max_avg={p.max_avg_sum} / "
+              f"lw_max={p.lw_max_per_session} / imb_thr={p.imbalance_thr}")
 
         # Oturum listesi
         if args.slug:
