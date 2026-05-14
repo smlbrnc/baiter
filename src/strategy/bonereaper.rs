@@ -208,17 +208,23 @@ impl BonereaperEngine {
                                 st.first_done = true;
                                 // LW sweep: loser ucuzsa (winner≥0.90 → loser≈0.07-0.10)
                                 // taker (ask) → DryRun cross garantili, anlık fill.
+                                // api_min_order_size kontrolü yok: scalp küçük, bonereaper'a özgü.
                                 let loser = if winner == Outcome::Up { Outcome::Down } else { Outcome::Up };
                                 let loser_ask  = ctx.best_ask(loser);
                                 let scalp_usdc = p.bonereaper_loser_scalp_usdc();
                                 let mut orders = vec![o];
                                 if loser_ask > 0.0 && scalp_usdc > 0.0 {
                                     let loser_size = (scalp_usdc / loser_ask).ceil();
-                                    if let Some(lo) = make_buy(
-                                        ctx, loser, loser_ask, loser_size,
-                                        reason_scalp(loser),
-                                    ) {
-                                        orders.push(lo);
+                                    if loser_size > 0.0 {
+                                        orders.push(PlannedOrder {
+                                            outcome: loser,
+                                            token_id: ctx.token_id(loser).to_string(),
+                                            side: Side::Buy,
+                                            price: loser_ask,
+                                            size: loser_size,
+                                            order_type: OrderType::Gtc,
+                                            reason: reason_scalp(loser).to_string(),
+                                        });
                                     }
                                 }
                                 return (
