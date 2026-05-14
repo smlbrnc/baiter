@@ -484,7 +484,7 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   bonereaper_late_winner_bid_thr: 0.90,
   bonereaper_late_winner_usdc: 30,    // otomatik: 3 × order_usdc (frontend hidden)
   bonereaper_lw_max_per_session: 0,   // 0 = sınırsız (gerçek bot davranışı)
-  bonereaper_imbalance_thr: 300,      // gerçek bot p25=442 share; ölçekli 300
+  bonereaper_imbalance_thr: 100,      // otomatik: 10 × order_usdc (frontend hidden)
   bonereaper_max_avg_sum: 1.0,
   bonereaper_first_spread_min: 0,     // devre dışı
   bonereaper_size_longshot_usdc: 6,   // bid ≤ 0.30

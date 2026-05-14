@@ -283,7 +283,7 @@ impl BonereaperEngine {
                         3.0 + (120.0 - to_end.min(120.0)) / 120.0 * 7.0
                     };
                     let dynamic_imb = (n_trades * est_trade_size).clamp(15.0, 400.0);
-                    let param_imb = p.bonereaper_imbalance_thr();
+                    let param_imb = p.bonereaper_imbalance_thr(ctx.order_usdc);
                     let imb_thr = if param_imb < 500.0 { param_imb } else { dynamic_imb };
                     if imb.abs() > imb_thr {
                         if imb > 0.0 { Outcome::Down } else { Outcome::Up }

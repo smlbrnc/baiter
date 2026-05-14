@@ -387,15 +387,14 @@ impl StrategyParams {
     pub fn bonereaper_lw_max_per_session(&self) -> u32 {
         self.bonereaper_lw_max_per_session.unwrap_or(20).min(50)
     }
-    /// Imbalance threshold (share); 0–10000 sınırlı; default 1000.
-    /// 4-market analizi (bot 117): imbalance_thr=200 ile T=0-60s arası
-    /// 14 yön değişimi (salınım) → her iki taraf $0.50 avg → avg_sum=1.00
-    /// → HER TARAF KAZANSA KAYBEDER. Simülasyon: thr=1000 → 0 salınım.
-    /// Doğal OB switch (bid değişimi) yön geçişini yönetir; imbalance
-    /// sadece aşırı birikim (1000sh fark) için tetiklenir.
-    pub fn bonereaper_imbalance_thr(&self) -> f64 {
+    /// Imbalance threshold (share); 0–10000 sınırlı.
+    /// Default: `10 × order_usdc` — bu eşik aşılınca weaker side rebalance.
+    /// Analiz: thr=100 (10×$10) ile ~5 directional trade sonra rebalance başlar,
+    /// DOWN kazanırsa mid-phase net ≈ +$11 vs thr=300'de -$85 (session analizi).
+    /// DB'de override varsa kullanılır.
+    pub fn bonereaper_imbalance_thr(&self, order_usdc: f64) -> f64 {
         self.bonereaper_imbalance_thr
-            .unwrap_or(1000.0)
+            .unwrap_or(10.0 * order_usdc)
             .clamp(0.0, 10_000.0)
     }
     /// avg_sum yumuşak cap; 0.50–2.00 sınırlı; default 1.00.

@@ -77,9 +77,6 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const bonereaperLwMaxPerSession =
     params.bonereaper_lw_max_per_session ??
     STRATEGY_PARAMS_DEFAULTS.bonereaper_lw_max_per_session
-  const bonereaperImbalanceThr =
-    params.bonereaper_imbalance_thr ??
-    STRATEGY_PARAMS_DEFAULTS.bonereaper_imbalance_thr
   const bonereaperMaxAvgSum =
     params.bonereaper_max_avg_sum ??
     STRATEGY_PARAMS_DEFAULTS.bonereaper_max_avg_sum
@@ -201,22 +198,6 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                     value={bonereaperLateWinnerSecs}
                     onChange={(e) =>
                       patch({ bonereaper_late_winner_secs: Number(e.target.value) })
-                    }
-                  />
-                </Field>
-                <Field
-                  label="Imbalance eşik (share)"
-                  tooltip="|UP-DN| bu eşiği aşarsa weaker side rebalance."
-                  hint={`0 – 10000 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_imbalance_thr}).`}
-                >
-                  <Input
-                    type="number"
-                    step="10"
-                    min="0"
-                    max="10000"
-                    value={bonereaperImbalanceThr}
-                    onChange={(e) =>
-                      patch({ bonereaper_imbalance_thr: Number(e.target.value) })
                     }
                   />
                 </Field>
@@ -357,7 +338,7 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
               <strong>Loser scalp:</strong> Kaybeden tarafa{" "}
               <code>≤{STRATEGY_PARAMS_DEFAULTS.bonereaper_loser_scalp_max_price}</code>{" "}
               bandında <strong>order_usdc / 10</strong> büyüklüğünde bilet topla (lottery aspect).{" "}
-              <code>|imbalance| ≥ {STRATEGY_PARAMS_DEFAULTS.bonereaper_imbalance_thr}</code> aşarsa weaker side rebalance.
+              <code>|imbalance| ≥ 10 × order_usdc</code> aşarsa weaker side rebalance (otomatik).
             </li>
             <li>
               <strong>Güvenlik:</strong> <code>avg_loser_max</code> pahalı
