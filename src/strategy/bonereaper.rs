@@ -207,15 +207,15 @@ impl BonereaperEngine {
                                 st.last_dn_bid = ctx.down_best_bid;
                                 st.first_done = true;
                                 // LW sweep: loser ucuzsa (winner≥0.90 → loser≈0.07-0.10)
-                                // aynı tick'te GTC maker at bid ekle. Gerçek bot %80 bid fill.
+                                // taker (ask) → DryRun cross garantili, anlık fill.
                                 let loser = if winner == Outcome::Up { Outcome::Down } else { Outcome::Up };
-                                let loser_bid  = ctx.best_bid(loser);
+                                let loser_ask  = ctx.best_ask(loser);
                                 let scalp_usdc = p.bonereaper_loser_scalp_usdc();
                                 let mut orders = vec![o];
-                                if loser_bid > 0.0 && scalp_usdc > 0.0 {
-                                    let loser_size = (scalp_usdc / loser_bid).ceil();
+                                if loser_ask > 0.0 && scalp_usdc > 0.0 {
+                                    let loser_size = (scalp_usdc / loser_ask).ceil();
                                     if let Some(lo) = make_buy(
-                                        ctx, loser, loser_bid, loser_size,
+                                        ctx, loser, loser_ask, loser_size,
                                         reason_scalp(loser),
                                     ) {
                                         orders.push(lo);
