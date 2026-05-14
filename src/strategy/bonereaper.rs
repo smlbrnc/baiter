@@ -256,8 +256,9 @@ impl BonereaperEngine {
                                 let loser_ask  = ctx.best_ask(loser);
                                 let scalp_usdc = p.bonereaper_loser_scalp_usdc();
                                 let mut orders = vec![o];
+                                // loser_bid ≤ 0.10 filtresi kaldırıldı:
+                                // winner ≥ 0.90 → loser ≈ 1-0.90-spread = 0.07-0.09 (zaten ucuz)
                                 if loser_bid > 0.0
-                                    && loser_bid <= 0.10
                                     && loser_ask > 0.0
                                     && scalp_usdc > 0.0
                                 {
