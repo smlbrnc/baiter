@@ -1,30 +1,28 @@
 //! Bonereaper stratejisi — Polymarket "Bonereaper" wallet
 //! (`0xeebde7a0e019a63e6b476eb425505b7b3e6eba30`) davranış kopyası.
 //!
-//! ## Karar zinciri (v4 — 411 oturum / 19k+ trade analizi)
+//! ## Karar zinciri
 //!
 //! 1. **Window**: `now ∈ [start, end]`; OB ready.
-//! 2. **LATE WINNER** (`max(bid) ≥ bid_thr [0.75]`, cooldown'a tabi):
+//! 2. **LATE WINNER** (`max(bid) ≥ bid_thr [0.90]`, cooldown'a tabi):
 //!    - winner tarafa taker BUY @ ask. Quota (`lw_max_per_session`) ile cap.
-//!    - Boyut: `lw_usdc × arb_mult(fiyat)` — saf fiyat bazlı, zaman YOK
-//!    - `arb_mult`: <0.95→1x, 0.95-0.97→2x, 0.97-0.99→3x, 0.99+→5x
-//!    - 27 slug / 11 dalga: r(zaman)=-0.10, r(fiyat)=+0.80 → zaman gürültü
+//!    - Boyut: `lw_usdc × arb_mult(fiyat)` — saf fiyat bazlı.
+//!    - `arb_mult`: <0.95→1x, 0.95→2x, 0.96→2.5x, 0.97→3x, 0.98→4x, 0.99+→5x
+//!    - LW ile birlikte loser cheap scalp (GTC at bid, maker).
 //! 3. **COOLDOWN** (`now − last_buy < buy_cooldown_ms`): NoOp.
 //! 4. **YÖN SEÇİMİ** (first_done=false → spread gate + BSI/OB fallback):
-//!    - `|imb| > N×est_size` (trade büyüklüğüne orantılı dinamik eşik) → weaker side
+//!    - `|imb| > N×est_size` (dinamik eşik) → weaker side rebalance
 //!    - aksi: `|Δup_bid|` vs `|Δdn_bid|` → büyük delta tarafı
 //! 5. **LOSER SCALP** (direction=loser seçildiğinde, is_scalp_band):
-//!    - Sadece direction loser'a döndüğünde scalp_usdc ile ucuz alım.
-//!    - Deep lot (direction=winner iken ek loser alımı) kaldırıldı: gerçek botta yok.
-//! 6. **LOSER SCALP** (is_loser_dir && bid ≤ dynamic_scalp_max):
+//!    - `bid ≤ dynamic_scalp_max` koşulunda `scalp_usdc` ile alım.
 //!    - `dynamic_scalp_max = 1 - winner_bid + 0.10`
-//! 7. **NORMAl BUY** taker @ ask: longshot/mid/high bucket bazlı size.
-//! 8. **avg_sum cap** (default=2.0 = efektif KAPALI — gerçek bot cap YOK).
+//! 6. **NORMAL BUY** taker @ ask: longshot/mid/high bucket bazlı size.
+//! 7. **avg_sum cap** (default=1.05; loser scalp muaf).
 //!
 //! ## Reason etiketleri
 //!
 //! `bonereaper:buy:{up,down}` — normal BUY.
-//! `bonereaper:scalp:{up,down}` — loser scalp (deep lot dahil).
+//! `bonereaper:scalp:{up,down}` — loser scalp.
 //! `bonereaper:lw:{up,down}` — late winner.
 
 use serde::{Deserialize, Serialize};
@@ -64,27 +62,18 @@ const fn reason_scalp(dir: Outcome) -> &'static str {
     }
 }
 
-/// Loser tarafı anlık bid fiyatına göre belirler.
-///
-/// ÖNEMLI: Guard yalnızca bid farkı anlamlı olduğunda etkindir.
-/// $0.40-$0.60 belirsiz bölgede $0.01-$0.05 bid farkı güvenilir sinyal değil
-/// (market henüz karar vermemiş). Loser guard bu bölgede gerekmez/zararlıdır.
-/// Fark büyük olduğunda (≥ 0.20) market net kazananı göstermiştir.
-///
-/// Örnek: UP_bid=$0.80, DOWN_bid=$0.19 → fark=$0.61 → DOWN loser kesin ✓
-///        UP_bid=$0.51, DOWN_bid=$0.48 → fark=$0.03 → belirsiz, None döner
-///
-/// None → loser_guard uygulanmaz (her iki taraf serbestçe alınabilir).
+/// Loser tarafı belirler. Spread < 0.20'de belirsiz bölge → None.
+/// None → loser_guard uygulanmaz.
 #[inline]
 fn loser_side(up_bid: f64, dn_bid: f64) -> Option<Outcome> {
-    const LOSER_SPREAD_MIN: f64 = 0.20; // min fark: piyasa net karar verdi
+    const LOSER_SPREAD_MIN: f64 = 0.20;
     let spread = (up_bid - dn_bid).abs();
     if spread < LOSER_SPREAD_MIN {
-        None // Belirsiz bölge → loser guard yok
+        None
     } else if up_bid >= dn_bid {
-        Some(Outcome::Down) // UP dominant → DOWN loser
+        Some(Outcome::Down)
     } else {
-        Some(Outcome::Up) // DOWN dominant → UP loser
+        Some(Outcome::Up)
     }
 }
 
@@ -108,7 +97,7 @@ pub struct BonereaperActive {
     /// Önceki tick DOWN bid.
     #[serde(default)]
     pub last_dn_bid: f64,
-    /// Late winner injection sayacı (telemetri/log için).
+    /// Late winner injection sayacı.
     #[serde(default)]
     pub lw_injections: u32,
     /// İlk emir verildi mi? Spread-gated start için kullanılır.
@@ -155,9 +144,7 @@ impl BonereaperEngine {
                     return (BonereaperState::Active(st), Decision::NoOp);
                 }
 
-                // ── LATE WINNER (ana + burst) ───────────────────────────
-                // Multi-LW pyramid: quota + cooldown ile sınırlı.
-                // Cooldown LW için de geçerli — her tick'te ateşlenmez.
+                // ── LATE WINNER ─────────────────────────────────────────────
                 let lw_secs = p.bonereaper_late_winner_secs() as f64;
                 let lw_usdc = p.bonereaper_late_winner_usdc();
                 let lw_thr = p.bonereaper_late_winner_bid_thr();
@@ -165,13 +152,11 @@ impl BonereaperEngine {
                 let lw_burst_secs = p.bonereaper_lw_burst_secs() as f64;
                 let lw_burst_usdc = p.bonereaper_lw_burst_usdc();
                 let lw_quota_ok = lw_max == 0 || st.lw_injections < lw_max;
-                // LW cooldown: duplicate fill'i önler (taker modda her tick fill olur)
                 let lw_cd_ms = p.bonereaper_buy_cooldown_ms();
                 let lw_in_cd = st.last_buy_ms > 0
                     && ctx.now_ms.saturating_sub(st.last_buy_ms) < lw_cd_ms;
 
                 if lw_quota_ok && to_end > 0.0 && !lw_in_cd {
-                    // Burst dalga (daha öncelikli, daha geç tetiklenir)
                     let burst_active = lw_burst_usdc > 0.0
                         && lw_burst_secs > 0.0
                         && to_end <= lw_burst_secs;
@@ -195,18 +180,7 @@ impl BonereaperEngine {
                             (Outcome::Down, ctx.down_best_bid, ctx.down_best_ask)
                         };
                         if w_bid >= lw_thr && w_ask > 0.0 {
-                            // Saf fiyat-bazlı ölçekleme (27 slug / 11 dalga analizi):
-                            //   r(zaman→notional) = -0.10  → anlamsız, tablo satırları gürültü
-                            //   r(fiyat→notional) = +0.80  → ana sürücü
-                            //
-                            // Gerçek bot dalga başına toplam harcama (medyan):
-                            //   0.99+:     ~$5000  → 5x × lw_usdc=$100 × quota=50 ≈ $5000 hedef
-                            //   0.97-0.99: ~$1000  → 3x
-                            //   0.95-0.97: ~$580   → 2x
-                            //   0.85-0.95: küçük   → 1x
-                            //
-                            // Bot sweep modeliyle uyum: her cooldown periyodunda 1 shot,
-                            // quota (lw_max_per_session) toplam harcamayı sınırlar.
+                            // Fiyat bazlı ölçekleme (r=+0.80, zaman r=-0.10 anlamsız).
                             let arb_mult = if w_ask >= 0.99 {
                                 5.0
                             } else if w_ask >= 0.98 {
@@ -220,20 +194,7 @@ impl BonereaperEngine {
                             } else {
                                 1.0
                             };
-                            // ratio_scale kaldırıldı (r=+0.47, gürültülü ve arb_mult ile örtüşüyor).
-                            // Sade model: size = lw_usdc × arb_mult / w_ask
-                            let m = ctx.metrics;
-                            let (_w_filled, _opp_filled) = if winner == Outcome::Up {
-                                (m.up_filled, m.down_filled)
-                            } else {
-                                (m.down_filled, m.up_filled)
-                            };
-                            let ratio_scale = 1.0_f64;
-                            let size = (usdc * arb_mult * ratio_scale / w_ask).ceil();
-
-                            // 174-oturum / 10.114-trade gerçek bot analizi:
-                            // opp_avg filtresi YOK — loser avg 0.73'e, loser:winner 10x'e
-                            // kadar LW ateşleniyor. Filtre kaldırıldı.
+                            let size = (usdc * arb_mult / w_ask).ceil();
                             let reason = if is_burst {
                                 reason_lw_burst(winner)
                             } else {
@@ -245,21 +206,12 @@ impl BonereaperEngine {
                                 st.last_up_bid = ctx.up_best_bid;
                                 st.last_dn_bid = ctx.down_best_bid;
                                 st.first_done = true;
-                                // ── LW SWEEP: Loser çok ucuzsa aynı tick'te ekle ──────
-                                // 66 gerçek bot logu: LW anında loser_bid ≤ 0.10 → %78
-                                // Gerçek bot sweep order ile hem winner hem loser fill alıyor.
-                                // Loser_bid ≤ 0.10 koşulu: winner ≥ 0.90 → loser ≈ 0.01-0.10
-                                // Cooldown harcanmaz (aynı vec → tek emir dönemi).
-                                // EV: winner=0.94, loser=0.06 → $53 kâr potansiyeli / $4 risk
+                                // LW sweep: loser ucuzsa (winner≥0.90 → loser≈0.07-0.10)
+                                // aynı tick'te GTC maker at bid ekle. Gerçek bot %80 bid fill.
                                 let loser = if winner == Outcome::Up { Outcome::Down } else { Outcome::Up };
                                 let loser_bid  = ctx.best_bid(loser);
                                 let scalp_usdc = p.bonereaper_loser_scalp_usdc();
                                 let mut orders = vec![o];
-                                // GTC MAKER at bid: loser_ask=0 sorunu yok (bid her zaman var).
-                                // Live: maker order book'ta bekler, taker gelince fill → daha iyi fiyat.
-                                // DryRun: open_orders'a girer, sonraki book tick'inde passive fill.
-                                // Cooldown bir kez tüketiliyor (emir verildiğinde), fill zamanı değil.
-                                // Gerçek bot analizi: LW/cheap fill'lerin %80'i bid fiyatında (maker GTC).
                                 if loser_bid > 0.0 && scalp_usdc > 0.0 {
                                     let loser_size = (scalp_usdc / loser_bid).ceil();
                                     if let Some(lo) = make_buy(
@@ -278,7 +230,7 @@ impl BonereaperEngine {
                     }
                 }
 
-                // ── COOLDOWN ────────────────────────────────────────────
+                // ── COOLDOWN ─────────────────────────────────────────────────
                 let cd_ms = p.bonereaper_buy_cooldown_ms();
                 if st.last_buy_ms > 0 && ctx.now_ms.saturating_sub(st.last_buy_ms) < cd_ms {
                     st.last_up_bid = ctx.up_best_bid;
@@ -286,24 +238,16 @@ impl BonereaperEngine {
                     return (BonereaperState::Active(st), Decision::NoOp);
                 }
 
-                // ── YÖN SEÇİMİ ──────────────────────────────────────────
+                // ── YÖN SEÇİMİ ──────────────────────────────────────────────
                 let dir = if !st.first_done {
-                    // İlk emir: spread-gated. |up_bid - down_bid| eşiği aşılmadan
-                    // emir verme; aşılınca yön karar zinciri:
-                    //   1) BSI (Binance CVD imbalance) primer — |bsi| ≥ 0.30:
-                    //      Gerçek Bonereaper'ın birincil sinyali. DOWN bid yüksek
-                    //      olmasına rağmen BSI>0 ise UP alır (docs/bonereaper.md §4).
-                    //      Canlı analiz: DOWN=$0.52 > UP=$0.46 iken Bonereaper UP aldı.
-                    //   2) OB fallback: yüksek bid tarafı (winner momentum).
+                    // İlk emir: spread gate. BSI primer, OB fallback.
                     let spread_min = p.bonereaper_first_spread_min();
                     let spread = ctx.up_best_bid - ctx.down_best_bid;
                     if spread.abs() < spread_min {
-                        // Sinyal henüz net değil — bid history güncelle, bekle.
                         st.last_up_bid = ctx.up_best_bid;
                         st.last_dn_bid = ctx.down_best_bid;
                         return (BonereaperState::Active(st), Decision::NoOp);
                     }
-                    // BSI primer (docs/bonereaper.md §4): |imbalance| ≥ 0.30
                     const BSI_THRESHOLD: f64 = 0.30;
                     if let Some(bsi) = ctx.bsi {
                         if bsi >= BSI_THRESHOLD {
@@ -311,31 +255,16 @@ impl BonereaperEngine {
                         } else if bsi <= -BSI_THRESHOLD {
                             Outcome::Down
                         } else {
-                            // |BSI| < 0.30 → OB fallback
                             if spread > 0.0 { Outcome::Up } else { Outcome::Down }
                         }
                     } else {
-                        // BSI yok → OB fallback
                         if spread > 0.0 { Outcome::Up } else { Outcome::Down }
                     }
                 } else {
                     let m = ctx.metrics;
                     let imb = m.up_filled - m.down_filled;
-                    // Dinamik imbalance eşiği: trade büyüklüğüne orantılı N-trade modeli.
-                    //
-                    // 410 oturum gerçek bot analizi: yön değişimi imbalance / trade_size:
-                    //   Erken (T>240s): P50 = 2.9 trade
-                    //   Erken (T>120s): P50 = 4.4 trade
-                    //   Orta  (T 120-60s): P50 = 7.0 trade
-                    //   Geç   (T<30s): P50 = 10.5 trade
-                    //
-                    // Formül: thr = N(to_end) × est_trade_size
-                    //   N(T>120s) = 3, N(T<120s) → linear 3..10
-                    //   est_size = size_mid_usdc / dominant_bid
-                    // Bu formül her botun kendi trade boyutuna otomatik uyum sağlar:
-                    //   bot153 (mid=$4, bid=0.72): size≈6sh → early_thr=18sh ✓
-                    //   bot151 (mid=$15, bid=0.68): size≈22sh → early_thr=66sh ✓
-                    //   bot152 (mid=$10, bid=0.68): size≈15sh → early_thr=45sh ✓
+                    // Dinamik imbalance eşiği: N(to_end) × est_trade_size
+                    // N: T>120s=3, T<120s linear 3→10. est_size = mid_usdc / dominant_bid.
                     let dominant_bid = ctx.up_best_bid.max(ctx.down_best_bid);
                     let est_trade_size = if dominant_bid > 0.0 {
                         (p.bonereaper_size_mid_usdc() / dominant_bid).ceil().max(1.0)
@@ -345,22 +274,17 @@ impl BonereaperEngine {
                     let n_trades = if to_end >= 120.0 || to_end >= f64::MAX / 2.0 {
                         3.0_f64
                     } else {
-                        // T-120 → T-0: N=3 → N=10 linear
                         3.0 + (120.0 - to_end.min(120.0)) / 120.0 * 7.0
                     };
                     let dynamic_imb = (n_trades * est_trade_size).clamp(15.0, 400.0);
-                    // Parametre override: null (→1000) = dinamik kullan
                     let param_imb = p.bonereaper_imbalance_thr();
                     let imb_thr = if param_imb < 500.0 { param_imb } else { dynamic_imb };
                     if imb.abs() > imb_thr {
-                        // Weaker side rebalance
                         if imb > 0.0 { Outcome::Down } else { Outcome::Up }
                     } else {
-                        // ob_driven: bid'i daha çok değişen taraf
                         let d_up = (ctx.up_best_bid - st.last_up_bid).abs();
                         let d_dn = (ctx.down_best_bid - st.last_dn_bid).abs();
                         if d_up == 0.0 && d_dn == 0.0 {
-                            // Delta yoksa: bid'i yüksek olan taraf (winner momentum)
                             if ctx.up_best_bid >= ctx.down_best_bid {
                                 Outcome::Up
                             } else {
@@ -374,7 +298,6 @@ impl BonereaperEngine {
                     }
                 };
 
-                // Bid history güncelle (her tick)
                 st.last_up_bid = ctx.up_best_bid;
                 st.last_dn_bid = ctx.down_best_bid;
 
@@ -384,13 +307,10 @@ impl BonereaperEngine {
                     return (BonereaperState::Active(st), Decision::NoOp);
                 }
 
-                // Loser/winner: bid farkı ≥ $0.20 olduğunda aktif (piyasa net karar verdi)
-                // $0.40-$0.60 belirsiz bölgede guard devreye girmez.
                 let metrics = ctx.metrics;
                 let loser_opt = loser_side(ctx.up_best_bid, ctx.down_best_bid);
                 let is_loser_dir = loser_opt.map_or(false, |l| dir == l);
 
-                // Yön bazlı min_price (loser side 1¢ scalp serbest)
                 let effective_min = if is_loser_dir {
                     p.bonereaper_loser_min_price().min(ctx.min_price)
                 } else {
@@ -400,8 +320,7 @@ impl BonereaperEngine {
                     return (BonereaperState::Active(st), Decision::NoOp);
                 }
 
-                // Martingale-down guard: loser tarafta avg fiyatı yüksekse
-                // (pahalı down-pyramid) sadece minimal scalp yap.
+                // Loser tarafta avg fiyatı avg_loser_max'ı aşarsa sadece scalp.
                 let avg_loser_max = p.bonereaper_avg_loser_max();
                 let (cur_filled, cur_avg, opp_filled, opp_avg) = match dir {
                     Outcome::Up => (
@@ -419,41 +338,18 @@ impl BonereaperEngine {
                 };
                 let scalp_only = is_loser_dir && cur_filled > 0.0 && cur_avg > avg_loser_max;
 
-                // Dinamik size hesabı
                 let scalp_usdc = p.bonereaper_loser_scalp_usdc();
-                // Dinamik loser scalp tavan: 1.0 - winner_bid + 0.10
-                // 407 oturum analizi: korelasyon r=-0.858
-                //   winner=0.80 → loser P90=0.30 ≈ 1-0.80+0.10=0.30 ✓
-                //   winner=0.90 → loser P90=0.14 ≈ 1-0.90+0.10=0.20 (yakın)
-                //   winner=0.50 → loser P90=0.56 ≈ 1-0.50+0.10=0.60 (yakın)
-                // Yani: loser'ı sadece piyasa fiyatı mantıklı olduğunda al.
+                // Dinamik loser scalp tavan: r=-0.858 korelasyon (407 oturum).
                 let winner_bid = ctx.up_best_bid.max(ctx.down_best_bid);
                 let dynamic_scalp_max = (1.0 - winner_bid + 0.10).clamp(0.10, 0.60);
                 let param_scalp_max = p.bonereaper_loser_scalp_max_price();
-                // Dinamik değer ile parametre max'ını al (kullanıcı override için)
                 let scalp_max_price = dynamic_scalp_max.max(param_scalp_max);
-                // Loser side scalp koşulu: bid scalp_max_price altında olduğunda
-                // scalp boyutu kullan (dinamik band, real bot'a uygun).
-                //
-                // DEEP LOT KALDIRILDI (65 gerçek bot log analizi, Mayıs 2026):
-                //   Gerçek bot deep lot yapmıyor: direction=WINNER iken AYRI loser alımı yok.
-                //   Gerçek bot loglarında deep lot eventi: 57/5326 = %1.1 (pratikte sıfır).
-                //   Bizim botumuz her cooldown döngüsünde (~$8) loser alıyordu → $400-720/market.
-                //   Bu cooldown paylaşımını bozuyordu: LW + deepLot dönüşümlü ateşleniyor,
-                //   LW kapasitesi 2x düşüyor; CLEAN marketlerde loser birikimi → kayıp.
-                //   Loser alım sadece is_scalp_band ile (direction=LOSER seçildiğinde) devam eder.
                 let is_scalp_band = is_loser_dir && bid <= scalp_max_price && scalp_usdc > 0.0;
                 let usdc = if scalp_only && scalp_usdc > 0.0 {
-                    // Pahalı martingale-down → sadece $1 bilet
                     scalp_usdc
                 } else if is_scalp_band {
-                    // Loser side scalp bandı → kuruşluk bilet
                     scalp_usdc
                 } else {
-                    // 14-market analizi (5 önceki + 9 yeni log):
-                    // $0.30-0.65 band real avg $12-17 → size_mid_usdc ($15)
-                    // $0.65-0.85 band real avg $33    → size_high_usdc ($30) ← threshold değişti
-                    // $0.85+     band real avg $78    → size_high_usdc × winner_factor
                     let base = if bid <= 0.30 {
                         p.bonereaper_size_longshot_usdc()
                     } else if bid <= 0.65 {
@@ -461,8 +357,6 @@ impl BonereaperEngine {
                     } else {
                         p.bonereaper_size_high_usdc()
                     };
-                    // Winner pyramid scaling: T-late_pyramid_secs içinde winner
-                    // tarafa size çarpanı uygula.
                     let lp_secs = p.bonereaper_late_pyramid_secs() as f64;
                     if !is_loser_dir && lp_secs > 0.0 && to_end > 0.0 && to_end <= lp_secs {
                         base * p.bonereaper_winner_size_factor()
@@ -474,37 +368,17 @@ impl BonereaperEngine {
                     return (BonereaperState::Active(st), Decision::NoOp);
                 }
 
-                // Scalp türü tespit (avg_sum cap ve order_price için kullanılır)
                 let is_any_scalp = scalp_only || is_scalp_band;
 
-                // POST-LW WINNER PRICE CAP kaldırıldı.
-                // Gerçek bot analizi: LW sonrası winner'ı 0.82-0.93'te almaya devam ediyor
-                // (174 oturum, 1786 LW eventi). Cap gereksiz blokluyor.
-
-                // ── LOSER GUARD ───────────────────────────────────────────────
-                // Anlık bid fiyatı düşük olan taraf = loser. Loser tarafına
-                // mid-fiyat ($0.20+) alım yapma; sadece scalp bandı ($0.01-$0.20)
-                // veya LW (ayrı kod yolu) ile ucuza topla.
-                //
-                // Yeni bid-tabanlı loser_side ile ob_driven yönü her zaman WINNER
-                // taraftır → is_loser_dir=false → guard asla yanlış bloklama yapmaz.
-                // Loser yönüne ob_driven gönderme çok nadirdir; olursa scalp serbest.
+                // Loser guard: scalp band dışında loser yönüne mid alım yapma.
                 if is_loser_dir && !is_any_scalp && bid > scalp_max_price {
                     return (BonereaperState::Active(st), Decision::NoOp);
                 }
 
-                // Emir fiyatı: HER ZAMAN TAKER (ASK).
-                //
-                // 178 oturum / 10.466 trade analizi (gerçek Bonereaper):
-                //   - Gerçek bot FAK/market sweep kullanıyor → anında fill
-                //   - Maker (BID) kullanımı dryrun'da open_orders biriktirir,
-                //     tüm birikmiş emirler aynı anda fill → yanlış W/L oranı
-                //   - Taker (ASK): her emir anında fill, W/L oranı 30x hedef
-                //   - Backtest: LW×2 + normal taker → ROI %3.9→%4.6, kâr% %65→%79
-                let order_price = ask; // taker: daima ASK fiyatından anında fill
+                let order_price = ask; // taker
                 let size = (usdc / order_price).ceil();
 
-                // avg_sum soft cap — loser scalp HARİÇ (scalp her zaman serbest)
+                // avg_sum soft cap — scalp muaf.
                 if !is_any_scalp && opp_filled > 0.0 {
                     let max_avg_sum = p.bonereaper_max_avg_sum();
                     let new_avg = if cur_filled > 0.0 {
