@@ -253,26 +253,15 @@ impl BonereaperEngine {
                                 // EV: winner=0.94, loser=0.06 → $53 kâr potansiyeli / $4 risk
                                 let loser = if winner == Outcome::Up { Outcome::Down } else { Outcome::Up };
                                 let loser_bid  = ctx.best_bid(loser);
-                                let loser_ask  = ctx.best_ask(loser);
                                 let scalp_usdc = p.bonereaper_loser_scalp_usdc();
                                 let mut orders = vec![o];
-                                // winner ≥ 0.90 → loser ≈ 1-0.90-spread (zaten ucuz, filtre gereksiz).
-                                // loser_ask = 0.0 olabilir (CLOB'da kimse satmıyor).
-                                // Bu durumda bid+0.01 kullan (taker seviyesi tahmini).
-                                let eff_loser_ask = if loser_ask > 0.0 {
-                                    loser_ask
-                                } else if loser_bid > 0.0 {
-                                    loser_bid + 0.01
-                                } else {
-                                    0.0
-                                };
-                                if loser_bid > 0.0
-                                    && eff_loser_ask > 0.0
-                                    && scalp_usdc > 0.0
-                                {
-                                    let loser_size = (scalp_usdc / eff_loser_ask).ceil();
+                                // GTC MAKER at bid: gerçek bot %80 bid fiyatında fill alıyor.
+                                // loser_ask kullanmıyoruz — CLOB'da ask=0 olabilir (kimse satmıyor).
+                                // bid her zaman mevcut ve daha iyi fiyat (ucuz loser alımı).
+                                if loser_bid > 0.0 && scalp_usdc > 0.0 {
+                                    let loser_size = (scalp_usdc / loser_bid).ceil();
                                     if let Some(lo) = make_buy(
-                                        ctx, loser, eff_loser_ask, loser_size,
+                                        ctx, loser, loser_bid, loser_size,
                                         reason_scalp(loser),
                                     ) {
                                         orders.push(lo);
