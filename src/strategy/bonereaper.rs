@@ -253,15 +253,24 @@ impl BonereaperEngine {
                                 // EV: winner=0.94, loser=0.06 → $53 kâr potansiyeli / $4 risk
                                 let loser = if winner == Outcome::Up { Outcome::Down } else { Outcome::Up };
                                 let loser_bid  = ctx.best_bid(loser);
+                                let loser_ask  = ctx.best_ask(loser);
                                 let scalp_usdc = p.bonereaper_loser_scalp_usdc();
                                 let mut orders = vec![o];
-                                // GTC MAKER at bid: gerçek bot %80 bid fiyatında fill alıyor.
-                                // loser_ask kullanmıyoruz — CLOB'da ask=0 olabilir (kimse satmıyor).
-                                // bid her zaman mevcut ve daha iyi fiyat (ucuz loser alımı).
-                                if loser_bid > 0.0 && scalp_usdc > 0.0 {
-                                    let loser_size = (scalp_usdc / loser_bid).ceil();
+                                // DryRun cross koşulu: price >= ask (taker).
+                                // loser_ask = 0 olabilir (CLOB'da kimse satmıyor);
+                                // bu durumda bid+0.01 kullan (taker seviyesi tahmini).
+                                // winner ≥ 0.90 → loser ≈ 0.07-0.10 (ucuz, filtre gereksiz).
+                                let eff_ask = if loser_ask > 0.0 {
+                                    loser_ask
+                                } else if loser_bid > 0.0 {
+                                    loser_bid + 0.01
+                                } else {
+                                    0.0
+                                };
+                                if eff_ask > 0.0 && scalp_usdc > 0.0 {
+                                    let loser_size = (scalp_usdc / eff_ask).ceil();
                                     if let Some(lo) = make_buy(
-                                        ctx, loser, loser_bid, loser_size,
+                                        ctx, loser, eff_ask, loser_size,
                                         reason_scalp(loser),
                                     ) {
                                         orders.push(lo);
