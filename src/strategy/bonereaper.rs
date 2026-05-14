@@ -13,9 +13,9 @@
 //! 4. **YÖN SEÇİMİ** (first_done=false → spread gate + BSI/OB fallback):
 //!    - `|imb| > N×est_size` (trade büyüklüğüne orantılı dinamik eşik) → weaker side
 //!    - aksi: `|Δup_bid|` vs `|Δdn_bid|` → büyük delta tarafı
-//! 5. **DEEP LOT** (direction=winner iken loser bid < 1-winner_bid+0.05):
-//!    - Direction'dan bağımsız loser scalp. Gerçek bot %91 oturumda yapıyor.
-//!    - Eşik dinamik: winner=0.80 → thr=0.25; winner=0.90 → thr=0.15
+//! 5. **LOSER SCALP** (direction=loser seçildiğinde, is_scalp_band):
+//!    - Sadece direction loser'a döndüğünde scalp_usdc ile ucuz alım.
+//!    - Deep lot (direction=winner iken ek loser alımı) kaldırıldı: gerçek botta yok.
 //! 6. **LOSER SCALP** (is_loser_dir && bid ≤ dynamic_scalp_max):
 //!    - `dynamic_scalp_max = 1 - winner_bid + 0.10`
 //! 7. **NORMAl BUY** taker @ ask: longshot/mid/high bucket bazlı size.
@@ -411,36 +411,13 @@ impl BonereaperEngine {
                 // Loser side scalp koşulu: bid scalp_max_price altında olduğunda
                 // scalp boyutu kullan (dinamik band, real bot'a uygun).
                 //
-                // DEEP LOT: karşı taraf ucuz iken direction'dan bağımsız al.
-                // 4479 high-winner loser alımı analizi (winner >= 0.70):
-                //   Loser P50 ≈ 1 - winner_bid (güçlü korelasyon r=-0.67)
-                //   winner=0.80 → P50=0.18, winner=0.90 → P50=0.08
-                //   Dinamik eşik: 1 - winner_bid + 0.05 (P90'ı yakalar)
-                //   Sabit 0.20: %62 kapsam | Dinamik: %82 kapsam
-                // Gerçek bot winner dominant iken loser'ı bu fiyatlarda alıyor.
-                let loser_dir_deep = if dir == Outcome::Up { Outcome::Down } else { Outcome::Up };
-                let loser_bid_deep = if dir == Outcome::Up { ctx.down_best_bid } else { ctx.up_best_bid };
-                let loser_ask_deep = if dir == Outcome::Up { ctx.down_best_ask } else { ctx.up_best_ask };
-                // Dinamik eşik: 1 - winner_bid + 0.05, min 0.10, max 0.35
-                // NOT: `bid` burada direction=winner nedeniyle WINNER bid'i taşıyor.
-                let deep_lot_thr = (1.0 - bid + 0.05).clamp(0.10, 0.35);
-                if !is_loser_dir
-                    && loser_bid_deep > 0.0
-                    && loser_bid_deep < deep_lot_thr
-                    && loser_ask_deep > 0.0
-                    && scalp_usdc > 0.0
-                {
-                    let deep_size = (scalp_usdc / loser_ask_deep).ceil();
-                    let deep_reason = match loser_dir_deep {
-                        Outcome::Up   => "bonereaper:scalp:up",
-                        Outcome::Down => "bonereaper:scalp:down",
-                    };
-                    if let Some(o) = make_buy(ctx, loser_dir_deep, loser_ask_deep, deep_size, deep_reason) {
-                        st.last_buy_ms = ctx.now_ms;
-                        st.first_done = true;
-                        return (BonereaperState::Active(st), Decision::PlaceOrders(vec![o]));
-                    }
-                }
+                // DEEP LOT KALDIRILDI (65 gerçek bot log analizi, Mayıs 2026):
+                //   Gerçek bot deep lot yapmıyor: direction=WINNER iken AYRI loser alımı yok.
+                //   Gerçek bot loglarında deep lot eventi: 57/5326 = %1.1 (pratikte sıfır).
+                //   Bizim botumuz her cooldown döngüsünde (~$8) loser alıyordu → $400-720/market.
+                //   Bu cooldown paylaşımını bozuyordu: LW + deepLot dönüşümlü ateşleniyor,
+                //   LW kapasitesi 2x düşüyor; CLEAN marketlerde loser birikimi → kayıp.
+                //   Loser alım sadece is_scalp_band ile (direction=LOSER seçildiğinde) devam eder.
                 let is_scalp_band = is_loser_dir && bid <= scalp_max_price && scalp_usdc > 0.0;
                 let usdc = if scalp_only && scalp_usdc > 0.0 {
                     // Pahalı martingale-down → sadece $1 bilet
