@@ -74,9 +74,6 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const bonereaperLateWinnerBidThr =
     params.bonereaper_late_winner_bid_thr ??
     STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_bid_thr
-  const bonereaperLateWinnerUsdc =
-    params.bonereaper_late_winner_usdc ??
-    STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_usdc
   const bonereaperLwMaxPerSession =
     params.bonereaper_lw_max_per_session ??
     STRATEGY_PARAMS_DEFAULTS.bonereaper_lw_max_per_session
@@ -101,9 +98,6 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const bonereaperLoserMinPrice =
     params.bonereaper_loser_min_price ??
     STRATEGY_PARAMS_DEFAULTS.bonereaper_loser_min_price
-  const bonereaperLoserScalpUsdc =
-    params.bonereaper_loser_scalp_usdc ??
-    STRATEGY_PARAMS_DEFAULTS.bonereaper_loser_scalp_usdc
   const bonereaperLoserScalpMaxPrice =
     params.bonereaper_loser_scalp_max_price ??
     STRATEGY_PARAMS_DEFAULTS.bonereaper_loser_scalp_max_price
@@ -139,22 +133,6 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
 
           <div className="space-y-3 rounded-md border border-border/40 bg-muted/25 p-3">
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              <Field
-                label="LW USDC / shot"
-                tooltip="Winner bid ≥ 0.90 olduğunda her LW alımının notional büyüklüğü. Toplam risk = LW USDC × LW max. Gerçek bot oranı: toplam maliyetin %41. 0 = kapalı."
-                hint={`0 – 10000 USDC (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_usdc}).`}
-              >
-                <Input
-                  type="number"
-                  step="50"
-                  min="0"
-                  max="10000"
-                  value={bonereaperLateWinnerUsdc}
-                  onChange={(e) =>
-                    patch({ bonereaper_late_winner_usdc: Number(e.target.value) })
-                  }
-                />
-              </Field>
               <Field
                 label="LW bid eşiği"
                 tooltip="Winner bid bu değerin üstünde iken injection tetiklenir. 0.98 = winner ask tam $0.99 — gerçek bot davranışı."
@@ -330,22 +308,6 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
               <div className="mt-4 border-t border-border/40 pt-3">
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
                   <Field
-                    label="Loser scalp USDC"
-                    tooltip="Kaybeden tarafa ≤ scalp_max_price bandında kuruşluk bilet boyutu. Gerçek bot toplam maliyetin %3.9'u. 0 = scalp KAPALI."
-                    hint={`0 – 50 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_loser_scalp_usdc}).`}
-                  >
-                    <Input
-                      type="number"
-                      step="1"
-                      min="0"
-                      max="50"
-                      value={bonereaperLoserScalpUsdc}
-                      onChange={(e) =>
-                        patch({ bonereaper_loser_scalp_usdc: Number(e.target.value) })
-                      }
-                    />
-                  </Field>
-                  <Field
                     label="Loser scalp üst bid"
                     tooltip="Loser bid bu eşiğin altındaysa scalp boyutu uygulanır. 0.25 = gerçek bot dağılımına uygun."
                     hint={`0.05 – 0.50 (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_loser_scalp_max_price}).`}
@@ -385,18 +347,17 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
           <ul className="list-disc space-y-1 rounded-md border border-border/40 bg-muted/10 px-4 py-2.5 pl-7 text-xs text-muted-foreground">
             <li>
               <strong>LW injection (fiyat bazlı):</strong> Winner bid ≥{" "}
-              <code>{STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_bid_thr}</code> olduğunda —
-              zaman bağımsız — <code>{STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_usdc}$</code> lot atlar.
-              Maks <code>{STRATEGY_PARAMS_DEFAULTS.bonereaper_lw_max_per_session}</code> shot ×{" "}
-              <code>{STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_usdc}$</code> ={" "}
-              <code>{STRATEGY_PARAMS_DEFAULTS.bonereaper_lw_max_per_session * STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_usdc}$</code> cap/market.
-              Gerçek bot toplam maliyetin <strong>%41.5'ini</strong> LW'ye harcıyor.
+              <code>{STRATEGY_PARAMS_DEFAULTS.bonereaper_late_winner_bid_thr}</code> olduğunda
+              zaman bağımsız olarak tetiklenir.{" "}
+              <strong>LW USDC = 3 × order_usdc</strong> (otomatik),{" "}
+              fiyata göre 1–5× arb_mult uygulanır.
+              Gerçek bot log analizine göre LW toplam maliyetin <strong>%65'ini</strong> oluşturuyor.
             </li>
             <li>
               <strong>Loser scalp:</strong> Kaybeden tarafa{" "}
               <code>≤{STRATEGY_PARAMS_DEFAULTS.bonereaper_loser_scalp_max_price}</code>{" "}
-              bandında <code>{STRATEGY_PARAMS_DEFAULTS.bonereaper_loser_scalp_usdc}$</code>{" "}
-              bilet topla (lottery aspect). <code>|imbalance| ≥ {STRATEGY_PARAMS_DEFAULTS.bonereaper_imbalance_thr}</code> aşarsa weaker side rebalance.
+              bandında <strong>order_usdc / 10</strong> büyüklüğünde bilet topla (lottery aspect).{" "}
+              <code>|imbalance| ≥ {STRATEGY_PARAMS_DEFAULTS.bonereaper_imbalance_thr}</code> aşarsa weaker side rebalance.
             </li>
             <li>
               <strong>Güvenlik:</strong> <code>avg_loser_max</code> pahalı

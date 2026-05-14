@@ -146,7 +146,7 @@ impl BonereaperEngine {
 
                 // ── LATE WINNER ─────────────────────────────────────────────
                 let lw_secs = p.bonereaper_late_winner_secs() as f64;
-                let lw_usdc = p.bonereaper_late_winner_usdc();
+                let lw_usdc = p.bonereaper_late_winner_usdc(ctx.order_usdc);
                 let lw_thr = p.bonereaper_late_winner_bid_thr();
                 let lw_max = p.bonereaper_lw_max_per_session();
                 let lw_burst_secs = p.bonereaper_lw_burst_secs() as f64;
@@ -211,7 +211,7 @@ impl BonereaperEngine {
                                 // api_min_order_size kontrolü yok: scalp küçük, bonereaper'a özgü.
                                 let loser = if winner == Outcome::Up { Outcome::Down } else { Outcome::Up };
                                 let loser_ask  = ctx.best_ask(loser);
-                                let scalp_usdc = p.bonereaper_loser_scalp_usdc();
+                                let scalp_usdc = p.bonereaper_loser_scalp_usdc(ctx.order_usdc);
                                 let mut orders = vec![o];
                                 if loser_ask > 0.0 && scalp_usdc > 0.0 {
                                     let loser_size = (scalp_usdc / loser_ask).ceil();
@@ -344,8 +344,7 @@ impl BonereaperEngine {
                 };
                 let scalp_only = is_loser_dir && cur_filled > 0.0 && cur_avg > avg_loser_max;
 
-                let scalp_usdc = p.bonereaper_loser_scalp_usdc();
-                // Dinamik loser scalp tavan: r=-0.858 korelasyon (407 oturum).
+                let scalp_usdc = p.bonereaper_loser_scalp_usdc(ctx.order_usdc);
                 let winner_bid = ctx.up_best_bid.max(ctx.down_best_bid);
                 let dynamic_scalp_max = (1.0 - winner_bid + 0.10).clamp(0.10, 0.60);
                 let param_scalp_max = p.bonereaper_loser_scalp_max_price();

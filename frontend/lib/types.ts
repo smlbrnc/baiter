@@ -482,7 +482,7 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   bonereaper_buy_cooldown_ms: 2000,
   bonereaper_late_winner_secs: 300,   // penceresiz — fiyat bazlı tetikleyici
   bonereaper_late_winner_bid_thr: 0.90,
-  bonereaper_late_winner_usdc: 120,   // gerçek bot oranı %41.5 → ölçekli 120$
+  bonereaper_late_winner_usdc: 30,    // otomatik: 3 × order_usdc (frontend hidden)
   bonereaper_lw_max_per_session: 0,   // 0 = sınırsız (gerçek bot davranışı)
   bonereaper_imbalance_thr: 300,      // gerçek bot p25=442 share; ölçekli 300
   bonereaper_max_avg_sum: 1.0,
@@ -492,7 +492,7 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   bonereaper_size_high_usdc: 15,      // 0.65 < bid < 0.90
   // Loser long-shot scalp
   bonereaper_loser_min_price: 0.01,
-  bonereaper_loser_scalp_usdc: 3,
+  bonereaper_loser_scalp_usdc: 1,     // otomatik: order_usdc / 10 (frontend hidden)
   bonereaper_loser_scalp_max_price: 0.10,
   // Winner pyramid — KAPALI (yanlış yön amplifikasyonu önler)
   bonereaper_late_pyramid_secs: 0,

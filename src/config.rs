@@ -373,9 +373,10 @@ impl StrategyParams {
     ///     ($0.95 → 1x, $0.97 → 2x, $0.99 → 4x).
     ///   - Sonuç: $100 × max 4x = $400/shot, max_per_session=20 ile $8k tavan.
     /// 0 = KAPALI.
-    pub fn bonereaper_late_winner_usdc(&self) -> f64 {
+    /// `order_usdc` verilirse formül: `3 × order_usdc`. DB'de override varsa onu kullan.
+    pub fn bonereaper_late_winner_usdc(&self, order_usdc: f64) -> f64 {
         self.bonereaper_late_winner_usdc
-            .unwrap_or(100.0)
+            .unwrap_or(3.0 * order_usdc)
             .clamp(0.0, 10_000.0)
     }
     /// Session başına max LW injection; 0–50 sınırlı; default 20.
@@ -457,9 +458,10 @@ impl StrategyParams {
     ///   medyan $9.90/shot, ort $11.37/shot, dağılım %32 <$5, %18 $5-10,
     ///   %24 $10-15, %8 $15-20, %18 $20+. $10 default medyana oturuyor.
     /// 0 = scalp KAPALI.
-    pub fn bonereaper_loser_scalp_usdc(&self) -> f64 {
+    /// `order_usdc` verilirse formül: `order_usdc / 10`. DB'de override varsa onu kullan.
+    pub fn bonereaper_loser_scalp_usdc(&self, order_usdc: f64) -> f64 {
         self.bonereaper_loser_scalp_usdc
-            .unwrap_or(10.0)
+            .unwrap_or(order_usdc / 10.0)
             .clamp(0.0, 50.0)
     }
     /// Loser scalp üst bid eşiği; 0.05–0.50 sınırlı; default 0.30. Loser side
