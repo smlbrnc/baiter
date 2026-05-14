@@ -144,9 +144,8 @@ pub struct StrategyParams {
     /// tam kayıp. Düşük eşik SAF riskini erken hedge ile keser.
     #[serde(default)]
     pub bonereaper_imbalance_thr: Option<f64>,
-    /// avg_sum yumuşak cap. `new_avg + opp_avg > X` ise yeni alım yok.
-    /// Default 1.30 (bot 107 karşılaştırması: 1.05 cap winner pyramid'i fren'liyor;
-    /// gerçek Bonereaper 1.20'ye kadar trade ediyor).
+    /// avg_sum yumuşak cap. `new_avg + opp_avg > X` ise yeni alım yok (scalp/LW muaf).
+    /// JSON'da null ise `bonereaper_max_avg_sum()` default **1.00**. Daha gevşek için örn. 1.05.
     #[serde(default)]
     pub bonereaper_max_avg_sum: Option<f64>,
     /// İlk emir için minimum |up_bid - down_bid| spread eşiği. Bu eşik
@@ -458,21 +457,19 @@ impl StrategyParams {
             .unwrap_or(1000.0)
             .clamp(0.0, 10_000.0)
     }
-    /// avg_sum yumuşak cap; 0.50–2.00 sınırlı; default 1.05.
+    /// avg_sum yumuşak cap; 0.50–2.00 sınırlı; default 1.00.
     /// avg_sum = avg_up + avg_dn. Bu değer >1.00 olunca hangi taraf kazanırsa
     /// kazansın zarar edilir (eğer share sayıları eşitse). Gerçek bot yüksek
     /// avg_sum'a (1.16-1.42) sahip olsa da winner/loser share oranı 5-40:1
     /// olduğu için zarar etmiyor. Bizim botumuz imbalance'dan dolayı eşit
-    /// share biriktirir → 1.05 hard cap: winner avg=$0.90 + loser avg=$0.15
-    /// = 1.05 → ikinci tarafı $0.15 üstü normal emirle alamaz, sadece loser
-    /// scalp (exempt) ile ucuza toplar. LW ve loser scalp bu captan muaf.
+    /// share biriktirir → default 1.00: ikinci bacak normal alımda
+    /// `new_avg + opp_avg > 1.0` ise bloke; loser scalp (muaf) ve LW ile ucuza
+    /// toplanır.
     pub fn bonereaper_max_avg_sum(&self) -> f64 {
-        // Default 1.05: belirsiz (50/50) piyasada her iki tarafı mid-range'den
-        // almanın önüne geçer (avg_up≈0.63 + avg_dn≈0.53 = 1.16 → bloke).
-        // Gerçek bot: winner avg≈0.90 + loser avg≈0.10 = 1.00 → cap etkilemiyor.
-        // 2.0 default denenince her iki taraf serbest doldu → her iki pnl negatif.
+        // Default 1.00: eşit hacim senaryosunda kırılgan avg_sum bandını keser;
+        // scalp/LW cap dışında. Daha gevşek: strategy_params'ta 1.05+ ver.
         self.bonereaper_max_avg_sum
-            .unwrap_or(1.05)
+            .unwrap_or(1.0)
             .clamp(0.50, 2.00)
     }
     /// İlk emir spread eşiği; 0.00–0.20 sınırlı; default 0.02.

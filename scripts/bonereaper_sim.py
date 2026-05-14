@@ -58,7 +58,7 @@ class BonereaperParams:
     late_winner_usdc: float = 100.0
     lw_max_per_session: int = 20
     imbalance_thr: float = 1000.0
-    max_avg_sum: float = 1.05
+    max_avg_sum: float = 1.0
     first_spread_min: float = 0.02
     size_longshot_usdc: float = 15.0
     size_mid_usdc: float = 23.0
@@ -93,7 +93,7 @@ class BonereaperParams:
         lw_usdc = get("bonereaper_late_winner_usdc", 100.0, 0.0, 10_000.0)
         lw_max = min(get("bonereaper_lw_max_per_session", 20), 50)
         imb_thr = get("bonereaper_imbalance_thr", 1000.0, 0.0, 10_000.0)
-        max_avg_sum = get("bonereaper_max_avg_sum", 1.05, 0.50, 2.00)
+        max_avg_sum = get("bonereaper_max_avg_sum", 1.0, 0.50, 2.00)
         fsm = get("bonereaper_first_spread_min", 0.02, 0.00, 0.20)
         sz_ls = get("bonereaper_size_longshot_usdc", 15.0, 0.0, 10_000.0)
         sz_mid = get("bonereaper_size_mid_usdc", 23.0, 0.0, 10_000.0)
@@ -926,6 +926,12 @@ def main():
     ap.add_argument("--last", type=int, default=10, help="Son N oturum (default: 10)")
     ap.add_argument("--verbose", action="store_true", help="Her kararı yazdır")
     ap.add_argument("--show-divergences", action="store_true", help="Sapmaları göster")
+    ap.add_argument(
+        "--max-avg-sum",
+        type=float,
+        default=None,
+        help="bonereaper_max_avg_sum geçersiz kıl (simülasyon için; DB'deki bot ayarının üstüne yazar)",
+    )
     args = ap.parse_args()
 
     # DB yolu
@@ -958,6 +964,8 @@ def main():
         if p is None:
             print(f"❌ Bot {args.bot} bulunamadı.", file=sys.stderr)
             sys.exit(1)
+        if args.max_avg_sum is not None:
+            p.max_avg_sum = float(args.max_avg_sum)
         print(f"Bot {args.bot} yüklendi: {p.size_mid_usdc}$ mid / "
               f"lw={p.late_winner_usdc}$@{p.late_winner_bid_thr} / "
               f"cd={p.buy_cooldown_ms}ms / max_avg={p.max_avg_sum}")

@@ -17,7 +17,7 @@
 //!    - `bid ≤ dynamic_scalp_max` koşulunda `scalp_usdc` ile alım.
 //!    - `dynamic_scalp_max = 1 - winner_bid + 0.10`
 //! 6. **NORMAL BUY** taker @ ask: longshot/mid/high bucket bazlı size.
-//! 7. **avg_sum cap** (default=1.05; loser scalp muaf).
+//! 7. **avg_sum cap** (default=1.00; loser scalp muaf).
 //!
 //! ## Reason etiketleri
 //!

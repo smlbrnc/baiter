@@ -528,7 +528,7 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   bonereaper_late_winner_usdc: 200,   // küçük lot × 20 = $4000 cap
   bonereaper_lw_max_per_session: 10, // 10 × $200 = $2000 max LW cap
   bonereaper_imbalance_thr: 1000, // salınım önleme: 0 osc vs thr=200'de 14 osc
-  bonereaper_max_avg_sum: 1.05,
+  bonereaper_max_avg_sum: 1.0,
   bonereaper_first_spread_min: 0.02,
   bonereaper_size_longshot_usdc: 8,   // bid ≤ 0.30, real avg $7.18
   bonereaper_size_mid_usdc: 10,       // yarı lot → yanlış yön hasarı azaltır
