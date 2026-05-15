@@ -344,12 +344,13 @@ impl StrategyParams {
     // === Bonereaper accessors (G_lw_only — backtest optimum: ROI +%2.86) ===
     // Felsefe: minimal scalp (normal trade'ler küçük) + tek büyük late winner
     // inject. 3-bot cross-validation (468 session): tüm botlarda pozitif ROI.
-    /// Ardışık BUY arası min bekleme (ms); 1000–60000 sınırlı; default 3000.
-    /// Real bot 3 örnek session'da ~1.5–4 sn aralık yaptı. Eski 15s default
-    /// 14× daha az trade üretiyordu (bot 101: 30 trade vs gerçek ~600).
+    /// Ardışık BUY arası min bekleme (ms); 500–60000 sınırlı; default 10000.
+    /// 36 market log analizi (bonereaper/2/3/4/6): karar aralığı min=6s, median=10s.
+    /// 2s ile her 2s'de alım → 150 karar/market. 10s ile 30 karar/market, avg_sum=1.00
+    /// ile cap sonrası gerçek bot ile aynı 5-15 trade/market profili çıkıyor.
     pub fn bonereaper_buy_cooldown_ms(&self) -> u64 {
         self.bonereaper_buy_cooldown_ms
-            .unwrap_or(2_000)
+            .unwrap_or(10_000)
             .clamp(500, 60_000)
     }
     /// Late winner penceresi (sn); 0–300 sınırlı; default 180.
@@ -408,16 +409,14 @@ impl StrategyParams {
     }
     /// avg_sum yumuşak cap; 0.50–2.00 sınırlı; default 1.00.
     /// avg_sum = avg_up + avg_dn. Bu değer >1.00 olunca hangi taraf kazanırsa
-    /// kazansın zarar edilir (eğer share sayıları eşitse). Gerçek bot yüksek
-    /// avg_sum'a (1.16-1.42) sahip olsa da winner/loser share oranı 5-40:1
-    /// olduğu için zarar etmiyor. Bizim botumuz imbalance'dan dolayı eşit
-    /// share biriktirir → default 1.00: ikinci bacak normal alımda
-    /// `new_avg + opp_avg > max` ise bloke; loser scalp (muaf) ve LW muaf.
-    /// Gerçek bot analizi: peak avg_sum medyanı 1.10 → default 1.10.
-    /// %75 market 1.05 üstüne çıkıyor; 1.10 gerçek botun doğal durma noktası.
+    /// kazansın zarar edilir (eğer share sayıları eşitse).
+    /// 36 market analizi: LW check `order_price + opp_avg > max_avg_sum` ile
+    /// max_avg_sum=1.00 → 444/446 LW fill bloke (%99.6). Gerçek bot (bonereaper8)
+    /// 3 markette 0 LW shot bu mekanizma sayesinde. Normal buy'lar da daha hızlı
+    /// durur → avg_sum=1.00 = gerçek botun doğru parametresi.
     pub fn bonereaper_max_avg_sum(&self) -> f64 {
         self.bonereaper_max_avg_sum
-            .unwrap_or(1.10)
+            .unwrap_or(1.00)
             .clamp(0.50, 2.00)
     }
     /// İlk emir spread eşiği; 0.00–0.20 sınırlı; default 0.02.
