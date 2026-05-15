@@ -287,7 +287,7 @@ impl BonereaperEngine {
                     // est_size = ceil(size_mid_usdc / dominant_bid)
                     let dominant_bid = ctx.up_best_bid.max(ctx.down_best_bid);
                     // Sabit share yaklaşımı: order_usdc × 4 (gerçek bot ~40 sh kullanıyor)
-                    let est_trade_size = (ctx.order_usdc * 4.0).round().max(1.0);
+                    let est_trade_size = (ctx.order_usdc * 3.0).round().max(1.0);
                     let n_trades = if to_end >= 120.0 || to_end >= f64::MAX / 2.0 {
                         3.0_f64
                     } else if to_end >= 60.0 {
@@ -401,7 +401,7 @@ impl BonereaperEngine {
                 let size = if is_any_scalp || bid <= 0.30 {
                     (usdc / order_price).ceil()
                 } else {
-                    (ctx.order_usdc * 4.0).round().max(1.0)
+                        (ctx.order_usdc * 3.0).round().max(1.0)
                 };
 
                 // avg_sum soft cap — scalp muaf.
