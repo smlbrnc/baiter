@@ -51,6 +51,8 @@ export interface StrategyParams {
    * (~0.2-0.33/market). Default 1. 0 = sınırsız (eski spam riski).
    */
   bonereaper_lw_max_per_session?: number | null
+  /** LW shot'ları arası min bekleme (ms). Default 10000. */
+  bonereaper_lw_cooldown_ms?: number | null
   /**
    * |up_filled − down_filled| bu eşiği aşarsa weaker side rebalance. Default 100.
    */
@@ -114,57 +116,44 @@ export interface StrategyParams {
    */
   bonereaper_avg_loser_max?: number | null
 
-  // ── Gravie (Bot 66 davranış kopyası) ─────────────────────────────────────
-  /**
-   * Karar tick aralığı (sn). Bot 66 ortalama inter-arrival 4-5 sn.
-   * Default: 5.
-   */
-  gravie_tick_interval_secs?: number | null
-  /** Ardışık BUY emirleri arası minimum bekleme (ms). Default: 4000. */
+  // ── Gravie (Dual-Balance Accumulator) ────────────────────────────────────
+  // avg_up + avg_down < 1 garantisi + her iki tarafta eşit pay birikimi.
+  // Sinyal kullanmaz; saf order-book reaktif, BUY-only FAK taker.
+  /** Ardışık BUY emirleri arası minimum bekleme (ms). Default: 2000. */
   gravie_buy_cooldown_ms?: number | null
   /**
-   * Yeni leg açma için ask fiyat tavanı. Bot 66 first entry medyan 0.50,
-   * p75 ≈ 0.575 — sıkı kalibrasyon. Default: 0.65.
+   * avg_up + avg_down yumuşak tavanı. Bu değerin üstünde yeni emir yok.
+   * Default: 0.95.
    */
-  gravie_entry_ask_ceiling?: number | null
+  gravie_avg_sum_max?: number | null
   /**
-   * Second-leg guard süresi (ms). İlk leg sonrası karşı tarafa
-   * otomatik geçiş için min bekleme. Bot 66 5m median 38 sn. Default: 38000.
+   * BUY yapılabilecek maksimum ask fiyatı. Default: 0.99.
    */
-  gravie_second_leg_guard_ms?: number | null
+  gravie_max_ask?: number | null
   /**
-   * Second-leg karşı taraf fiyat tetikleyicisi — opp_ask bu eşiğin
-   * altına inerse guard beklenmeden flip. Bot 66 opp_first_px ≈ 0.50.
-   * Default: 0.55.
-   */
-  gravie_second_leg_opp_trigger?: number | null
-  /**
-   * Kapanışa bu kadar sn kala yeni emir verme. Bot 66 5m median T-78,
-   * %58 ≤ T-90. Default: 90.
+   * Kapanışa bu kadar sn kala yeni emir verilmez. Default: 30.
    */
   gravie_t_cutoff_secs?: number | null
   /**
-   * Balance eşiği — `min/max` bunun altındaysa az tarafa zorunlu rebalance.
-   * Default: 0.30 (sim'de 0.45 ile %42 trade rebalance idi; daralt).
-   */
-  gravie_balance_rebalance?: number | null
-  /** Rebalance modunda entry ceiling esneme oranı. Default: 1.20. */
-  gravie_rebalance_ceiling_multiplier?: number | null
-  /**
-   * Sum-avg guard — `avg_up + avg_dn ≥ X` ise yeni emir verme.
-   * Default: 1.05 (sim'de 1.20 çok geç oluyor; sıkı tutarak overpay engellenir).
-   */
-  gravie_sum_avg_ceiling?: number | null
-  /**
-   * PATCH A — Lose-side ASK cap. `max(up_ask, dn_ask) ≥ X` ise tüm yeni
-   * emirler durur. Default 0.85; 1.0 = devre dışı.
-   */
-  gravie_opp_ask_stop_threshold?: number | null
-  /**
-   * PATCH C — FAK emir başına maksimum share. Düşen fiyatlarda
+   * FAK emir başına maksimum share. Düşen fiyatlarda
    * `ceil(usdc/price)` patlamasını önler. 0 = sınırsız. Default: 50.
    */
   gravie_max_fak_size?: number | null
+  /**
+   * |up_filled − down_filled| bu eşiği aşarsa az olan tarafa rebalance.
+   * Default: 5.
+   */
+  gravie_imb_thr?: number | null
+  /**
+   * Winner-momentum ilk giriş eşiği. İlk işlemde kazanan tarafın bid'i
+   * bu değerin üstünde olmalı; yoksa giriş geciktirilir. Default: 0.65.
+   */
+  gravie_first_bid_min?: number | null
+  /**
+   * Loser-scalp bypass eşiği. ask ≤ bu değer ise avg_sum_max gate
+   * atlanır; ucuz taraftan pozisyon dengelenir. Default: 0.50.
+   */
+  gravie_loser_bypass_ask?: number | null
 }
 
 export interface BotRow {
@@ -478,12 +467,13 @@ export interface GlobalCredentials {
 
 /** `StrategyParams` default'ları — Bot 209 OPT100 ayarları baz alındı. */
 export const STRATEGY_PARAMS_DEFAULTS = {
-  // Bonereaper (58 market, 28k trade analizi: oran-normalize optimum değerler)
+  // Bonereaper
   bonereaper_buy_cooldown_ms: 2000,
   bonereaper_late_winner_secs: 300,   // penceresiz — fiyat bazlı tetikleyici
-  bonereaper_late_winner_bid_thr: 0.90,
-  bonereaper_late_winner_usdc: 30,    // otomatik: 3 × order_usdc (frontend hidden)
-  bonereaper_lw_max_per_session: 0,   // 0 = sınırsız (gerçek bot davranışı)
+  bonereaper_late_winner_bid_thr: 0.88,
+  bonereaper_late_winner_usdc: 20,    // otomatik: 2 × order_usdc (frontend hidden)
+  bonereaper_lw_max_per_session: 30,
+  bonereaper_lw_cooldown_ms: 10000,
   bonereaper_imbalance_thr: 100,      // otomatik: 10 × order_usdc (frontend hidden)
   bonereaper_max_avg_sum: 1.0,
   bonereaper_first_spread_min: 0,     // devre dışı
@@ -492,8 +482,8 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   bonereaper_size_high_usdc: 15,      // 0.65 < bid < 0.90
   // Loser long-shot scalp
   bonereaper_loser_min_price: 0.01,
-  bonereaper_loser_scalp_usdc: 1,     // otomatik: order_usdc / 10 (frontend hidden)
-  bonereaper_loser_scalp_max_price: 0.10,
+  bonereaper_loser_scalp_usdc: 5,     // 0.5 × order_usdc
+  bonereaper_loser_scalp_max_price: 0.30,
   // Winner pyramid — KAPALI (yanlış yön amplifikasyonu önler)
   bonereaper_late_pyramid_secs: 0,
   bonereaper_winner_size_factor: 1.0,
@@ -502,18 +492,15 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   bonereaper_lw_burst_usdc: 0,
   // Martingale-down guard
   bonereaper_avg_loser_max: 0.5,
-  // Gravie (Bot 66 davranış kopyası — optimum kalibre)
-  gravie_tick_interval_secs: 5,
-  gravie_buy_cooldown_ms: 4000,
-  gravie_entry_ask_ceiling: 0.65,
-  gravie_second_leg_guard_ms: 38000,
-  gravie_second_leg_opp_trigger: 0.55,
-  gravie_t_cutoff_secs: 90,
-  gravie_balance_rebalance: 0.3,
-  gravie_rebalance_ceiling_multiplier: 1.2,
-  gravie_sum_avg_ceiling: 1.05,
-  gravie_opp_ask_stop_threshold: 0.85,
+  // Gravie (Dual-Balance Accumulator)
+  gravie_buy_cooldown_ms: 2000,
+  gravie_avg_sum_max: 0.95,
+  gravie_max_ask: 0.99,
+  gravie_t_cutoff_secs: 30,
   gravie_max_fak_size: 50,
+  gravie_imb_thr: 5,
+  gravie_first_bid_min: 0.65,
+  gravie_loser_bypass_ask: 0.50,
 } as const
 
 /**
@@ -538,6 +525,8 @@ export function mergeBonereaperStrategyDefaults(
       p.bonereaper_late_winner_usdc ?? d.bonereaper_late_winner_usdc,
     bonereaper_lw_max_per_session:
       p.bonereaper_lw_max_per_session ?? d.bonereaper_lw_max_per_session,
+    bonereaper_lw_cooldown_ms:
+      p.bonereaper_lw_cooldown_ms ?? d.bonereaper_lw_cooldown_ms,
     bonereaper_imbalance_thr:
       p.bonereaper_imbalance_thr ?? d.bonereaper_imbalance_thr,
     bonereaper_max_avg_sum:

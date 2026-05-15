@@ -30,39 +30,25 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
     })
   }
 
-  // ── Gravie (Bot 66 davranış kopyası) ──────────────────────────────────
-  const gravieTickIntervalSecs =
-    params.gravie_tick_interval_secs ??
-    STRATEGY_PARAMS_DEFAULTS.gravie_tick_interval_secs
+  // ── Gravie (Dual-Balance Accumulator) ─────────────────────────────────
   const gravieBuyCooldownMs =
     params.gravie_buy_cooldown_ms ??
     STRATEGY_PARAMS_DEFAULTS.gravie_buy_cooldown_ms
-  const gravieEntryAskCeiling =
-    params.gravie_entry_ask_ceiling ??
-    STRATEGY_PARAMS_DEFAULTS.gravie_entry_ask_ceiling
-  const gravieSecondLegGuardMs =
-    params.gravie_second_leg_guard_ms ??
-    STRATEGY_PARAMS_DEFAULTS.gravie_second_leg_guard_ms
-  const gravieSecondLegOppTrigger =
-    params.gravie_second_leg_opp_trigger ??
-    STRATEGY_PARAMS_DEFAULTS.gravie_second_leg_opp_trigger
+  const gravieAvgSumMax =
+    params.gravie_avg_sum_max ?? STRATEGY_PARAMS_DEFAULTS.gravie_avg_sum_max
+  const gravieMaxAsk =
+    params.gravie_max_ask ?? STRATEGY_PARAMS_DEFAULTS.gravie_max_ask
   const gravieTCutoffSecs =
-    params.gravie_t_cutoff_secs ??
-    STRATEGY_PARAMS_DEFAULTS.gravie_t_cutoff_secs
-  const gravieBalanceRebalance =
-    params.gravie_balance_rebalance ??
-    STRATEGY_PARAMS_DEFAULTS.gravie_balance_rebalance
-  const gravieRebalanceCeilingMultiplier =
-    params.gravie_rebalance_ceiling_multiplier ??
-    STRATEGY_PARAMS_DEFAULTS.gravie_rebalance_ceiling_multiplier
-  const gravieSumAvgCeiling =
-    params.gravie_sum_avg_ceiling ??
-    STRATEGY_PARAMS_DEFAULTS.gravie_sum_avg_ceiling
-  const gravieOppAskStopThreshold =
-    params.gravie_opp_ask_stop_threshold ??
-    STRATEGY_PARAMS_DEFAULTS.gravie_opp_ask_stop_threshold
+    params.gravie_t_cutoff_secs ?? STRATEGY_PARAMS_DEFAULTS.gravie_t_cutoff_secs
   const gravieMaxFakSize =
     params.gravie_max_fak_size ?? STRATEGY_PARAMS_DEFAULTS.gravie_max_fak_size
+  const gravieImbThr =
+    params.gravie_imb_thr ?? STRATEGY_PARAMS_DEFAULTS.gravie_imb_thr
+  const gravieFirstBidMin =
+    params.gravie_first_bid_min ?? STRATEGY_PARAMS_DEFAULTS.gravie_first_bid_min
+  const gravieLoserBypassAsk =
+    params.gravie_loser_bypass_ask ??
+    STRATEGY_PARAMS_DEFAULTS.gravie_loser_bypass_ask
 
   // ── Bonereaper (order-book reactive martingale + late winner) ─────────
   const bonereaperBuyCooldownMs =
@@ -77,6 +63,9 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const bonereaperLwMaxPerSession =
     params.bonereaper_lw_max_per_session ??
     STRATEGY_PARAMS_DEFAULTS.bonereaper_lw_max_per_session
+  const bonereaperLwCooldownMs =
+    params.bonereaper_lw_cooldown_ms ??
+    STRATEGY_PARAMS_DEFAULTS.bonereaper_lw_cooldown_ms
   const bonereaperMaxAvgSum =
     params.bonereaper_max_avg_sum ??
     STRATEGY_PARAMS_DEFAULTS.bonereaper_max_avg_sum
@@ -175,6 +164,22 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                   value={bonereaperLwMaxPerSession}
                   onChange={(e) =>
                     patch({ bonereaper_lw_max_per_session: Number(e.target.value) })
+                  }
+                />
+              </Field>
+              <Field
+                label="LW cooldown (ms)"
+                tooltip="LW shot'ları arası minimum bekleme. LW window içindeki shot sayısını belirler."
+                hint={`0 – 60000 ms (default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_lw_cooldown_ms}).`}
+              >
+                <Input
+                  type="number"
+                  step="1000"
+                  min="0"
+                  max="60000"
+                  value={bonereaperLwCooldownMs}
+                  onChange={(e) =>
+                    patch({ bonereaper_lw_cooldown_ms: Number(e.target.value) })
                   }
                 />
               </Field>
@@ -353,51 +358,25 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
         </div>
       )}
 
-      {/* ── Gravie parametreleri (Bot 66 davranış kopyası) ─────────────── */}
+      {/* ── Gravie parametreleri (Dual-Balance Accumulator) ─────────────── */}
       {isGravie && (
         <div className="space-y-3">
           <div>
             <SectionLabel icon={Activity} title="Gravie parametreleri" />
             <p className="mt-1 text-sm text-muted-foreground">
-              Bot 66 (<code>Lively-Authenticity</code>) davranış kopyası.
-              Sinyal kullanmaz: saf order book reaktif, dual-side BUY-only FAK
-              taker. Default değerler{" "}
-              <a
-                href="https://hudme.com/bots/71"
-                className="underline"
-                target="_blank"
-                rel="noreferrer"
-              >
-                Bot 71 tick verisi
-              </a>{" "}
-              + Bot 66 mikro-davranış sondajından kalibre edilmiştir.
+              Dual-Balance Accumulator: <code>avg_up + avg_down &lt; 1</code>{" "}
+              garantisi + her iki tarafta eşit pay birikimi. Sinyal kullanmaz;
+              saf order-book reaktif, BUY-only FAK taker. Asimetrik lineer size
+              çarpanı: winner 0.70→4x / 1.00→10x, loser 0.30→4x / 0.00→7x.
             </p>
           </div>
 
           <div className="space-y-4 rounded-md border border-border/40 bg-muted/25 p-3">
-            {/* Tick & cooldown */}
+            {/* Cooldown & ask tavanı */}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Field
-                label="Tick aralığı (sn)"
-                tooltip="Karar döngüsü periyodu. Her N saniyede bir BUY denenebilir. Bot 66 ortalama inter-arrival 4-5 sn. Düşük = daha agresif (daha çok trade), yüksek = daha az trade."
-                hint={`1 – 60 sn (default ${STRATEGY_PARAMS_DEFAULTS.gravie_tick_interval_secs}).`}
-              >
-                <Input
-                  type="number"
-                  step="1"
-                  min="1"
-                  max="60"
-                  value={gravieTickIntervalSecs}
-                  onChange={(e) =>
-                    patch({
-                      gravie_tick_interval_secs: Number(e.target.value),
-                    })
-                  }
-                />
-              </Field>
-              <Field
                 label="BUY cooldown (ms)"
-                tooltip="Ardışık BUY emirleri arası minimum bekleme. Bot 66 medyan inter-arrival 4-5 sn. Cooldown çok kısa olursa over-trade, çok uzun olursa fırsat kaçırma."
+                tooltip="Ardışık BUY emirleri arası minimum bekleme. Düşük = daha agresif birikim, yüksek = daha az trade."
                 hint={`500 – 60 000 ms (default ${STRATEGY_PARAMS_DEFAULTS.gravie_buy_cooldown_ms}).`}
               >
                 <Input
@@ -411,166 +390,117 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                   }
                 />
               </Field>
-            </div>
-
-            {/* Entry & second-leg */}
-            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
               <Field
-                label="Entry ask tavanı"
-                tooltip="Yeni leg açma için ask fiyat tavanı. Bu üstündeki fiyatlardan satın alınmaz (rebalance modu hariç). Bot 66 first entry medyan 0.50, p75 ≈ 0.575. Düşük = sıkı/seçici, yüksek = agresif birikim."
-                hint={`0.10 – 0.99 (default ${STRATEGY_PARAMS_DEFAULTS.gravie_entry_ask_ceiling}).`}
+                label="Max ask fiyatı"
+                tooltip="Bu fiyatın üstündeki ask'lardan BUY yapılmaz. 0.99 = neredeyse sınırsız (strateji avg_sum_max ile kendini frenler)."
+                hint={`0.10 – 0.99 (default ${STRATEGY_PARAMS_DEFAULTS.gravie_max_ask}).`}
               >
                 <Input
                   type="number"
-                  step="0.05"
+                  step="0.01"
                   min="0.10"
                   max="0.99"
-                  value={gravieEntryAskCeiling}
+                  value={gravieMaxAsk}
                   onChange={(e) =>
-                    patch({
-                      gravie_entry_ask_ceiling: Number(e.target.value),
-                    })
-                  }
-                />
-              </Field>
-              <Field
-                label="Second-leg guard (ms)"
-                tooltip="İlk leg açıldıktan sonra karşı tarafa otomatik geçiş için minimum bekleme süresi. Bu süre dolduğunda VEYA opp_ask trigger eşiğinin altına düştüğünde flip yapılır. Bot 66 5m median 38 sn."
-                hint={`0 – 600 000 ms (default ${STRATEGY_PARAMS_DEFAULTS.gravie_second_leg_guard_ms}).`}
-              >
-                <Input
-                  type="number"
-                  step="1000"
-                  min="0"
-                  max="600000"
-                  value={gravieSecondLegGuardMs}
-                  onChange={(e) =>
-                    patch({
-                      gravie_second_leg_guard_ms: Number(e.target.value),
-                    })
-                  }
-                />
-              </Field>
-              <Field
-                label="Second-leg opp tetikleyici"
-                tooltip="Karşı taraf ask bu eşiğin altına inerse guard süresi beklenmeden hemen flip. Bot 66 opp_first_px medyan ≈ 0.50."
-                hint={`0.10 – 0.95 (default ${STRATEGY_PARAMS_DEFAULTS.gravie_second_leg_opp_trigger}).`}
-              >
-                <Input
-                  type="number"
-                  step="0.05"
-                  min="0.10"
-                  max="0.95"
-                  value={gravieSecondLegOppTrigger}
-                  onChange={(e) =>
-                    patch({
-                      gravie_second_leg_opp_trigger: Number(e.target.value),
-                    })
+                    patch({ gravie_max_ask: Number(e.target.value) })
                   }
                 />
               </Field>
             </div>
 
-            {/* Cutoff & rebalance */}
+            {/* avg_sum + T-cutoff */}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Field
-                label="T-cutoff (sn)"
-                tooltip="Kapanışa bu kadar sn kala yeni emir verilmez (Stopped). Bot 66 5m median son trade T-78, %58 ≤ T-90. 5m için 90, 15m için 180 önerilir."
-                hint={`0 – 600 sn (default ${STRATEGY_PARAMS_DEFAULTS.gravie_t_cutoff_secs}).`}
+                label="avg_sum tavanı"
+                tooltip="avg_up + avg_down bu değerin üstüne çıkacaksa yeni BUY yapılmaz. Pair fiyatı 1'e yaklaşırsa arbitraj garantisi bozulur; bu guard erken durdurur."
+                hint={`0.50 – 1.00 (default ${STRATEGY_PARAMS_DEFAULTS.gravie_avg_sum_max}).`}
               >
                 <Input
                   type="number"
-                  step="10"
+                  step="0.01"
+                  min="0.50"
+                  max="1.00"
+                  value={gravieAvgSumMax}
+                  onChange={(e) =>
+                    patch({ gravie_avg_sum_max: Number(e.target.value) })
+                  }
+                />
+              </Field>
+              <Field
+                label="T-cutoff (sn)"
+                tooltip="Kapanışa bu kadar sn kala yeni emir verilmez. 5m market için 30 sn önerilir."
+                hint={`0 – 300 sn (default ${STRATEGY_PARAMS_DEFAULTS.gravie_t_cutoff_secs}).`}
+              >
+                <Input
+                  type="number"
+                  step="5"
                   min="0"
-                  max="600"
+                  max="300"
                   value={gravieTCutoffSecs}
                   onChange={(e) =>
                     patch({ gravie_t_cutoff_secs: Number(e.target.value) })
                   }
                 />
               </Field>
-              <Field
-                label="Sum-avg tavanı"
-                tooltip="avg_up + avg_dn ≥ X olduğunda yeni emir verilmez (pair zaten pahalı; daha fazla harcama beklenen değeri kötüleştirir). Sim'de 1.20 çok geç oluyor; 1.05 erken durmayı sağlar."
-                hint={`0.80 – 1.50 (default ${STRATEGY_PARAMS_DEFAULTS.gravie_sum_avg_ceiling}).`}
-              >
-                <Input
-                  type="number"
-                  step="0.01"
-                  min="0.80"
-                  max="1.50"
-                  value={gravieSumAvgCeiling}
-                  onChange={(e) =>
-                    patch({ gravie_sum_avg_ceiling: Number(e.target.value) })
-                  }
-                />
-              </Field>
             </div>
 
+            {/* Rebalance + ilk giriş */}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
               <Field
-                label="Balance rebalance eşiği"
-                tooltip="min(up_filled, dn_filled) / max(...) bu eşiğin altındaysa az olan tarafa zorunlu yönelir (rebalance). Düşük = daha az rebalance. Sim'de 0.45 ile %42 trade rebalance idi; 0.30 ile %20-25'e iner."
-                hint={`0.0 – 1.0 (default ${STRATEGY_PARAMS_DEFAULTS.gravie_balance_rebalance}).`}
+                label="İmbalance eşiği (share)"
+                tooltip="|up_filled − down_filled| bu değeri aşarsa az olan tarafa rebalance BUY yapılır. Küçük değer = daha sık denge hamlesi."
+                hint={`1 – 100 share (default ${STRATEGY_PARAMS_DEFAULTS.gravie_imb_thr}).`}
               >
                 <Input
                   type="number"
-                  step="0.05"
-                  min="0"
-                  max="1"
-                  value={gravieBalanceRebalance}
+                  step="1"
+                  min="1"
+                  max="100"
+                  value={gravieImbThr}
                   onChange={(e) =>
-                    patch({
-                      gravie_balance_rebalance: Number(e.target.value),
-                    })
+                    patch({ gravie_imb_thr: Number(e.target.value) })
                   }
                 />
               </Field>
               <Field
-                label="Rebalance ceiling esneme"
-                tooltip="Rebalance modunda entry ceiling bu oranla esnetilir. Örn 0.65 × 1.20 = 0.78'a kadar al. Az tarafa pozisyon bulmayı kolaylaştırır."
-                hint={`1.0 – 2.0 (default ${STRATEGY_PARAMS_DEFAULTS.gravie_rebalance_ceiling_multiplier}).`}
+                label="İlk giriş min bid"
+                tooltip="Winner-momentum ilk giriş: ilk işlemde kazanan tarafın bid'i bu değerin üstünde olmalı. Güçlü sinyal olmadan market'e girilmez. 0 = devre dışı (her zaman gir)."
+                hint={`0.00 – 0.99 (default ${STRATEGY_PARAMS_DEFAULTS.gravie_first_bid_min}).`}
               >
                 <Input
                   type="number"
                   step="0.05"
-                  min="1.0"
-                  max="2.0"
-                  value={gravieRebalanceCeilingMultiplier}
+                  min="0.00"
+                  max="0.99"
+                  value={gravieFirstBidMin}
                   onChange={(e) =>
-                    patch({
-                      gravie_rebalance_ceiling_multiplier: Number(
-                        e.target.value
-                      ),
-                    })
+                    patch({ gravie_first_bid_min: Number(e.target.value) })
                   }
                 />
               </Field>
             </div>
 
-            {/* Risk guards (Patch A + Patch C) */}
+            {/* Loser bypass + FAK cap */}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 border-t border-border/30 pt-4">
               <Field
-                label="Lose-side ASK cap (Patch A)"
-                tooltip="ASIMETRIK TREND REVERSAL GUARD. max(up_ask, dn_ask) bu eşiğin üstüne çıkarsa tüm yeni emirler durur. Polymarket fiyatı = olasılık; bir taraf 0.95+ ise market o tarafı %95+ olası görüyor. Default 0.95 = YUMUŞAK guard: extreme collapse'ı yakalar, big-win'leri korur. 0.85 = TUTUCU (collapse mükemmel ama big-win'leri tıraşlar). 1.0 = DEVRE DIŞI."
-                hint={`0.50 – 1.00 (default ${STRATEGY_PARAMS_DEFAULTS.gravie_opp_ask_stop_threshold}).`}
+                label="Loser-scalp bypass ask"
+                tooltip="ask ≤ bu değer ise avg_sum_max gate atlanır; ucuz taraftan pozisyon dengelenir. Bonereaper'ın loser-scalp mantığının Gravie karşılığı. 0 = bypass kapalı."
+                hint={`0.00 – 0.99 (default ${STRATEGY_PARAMS_DEFAULTS.gravie_loser_bypass_ask}).`}
               >
                 <Input
                   type="number"
                   step="0.05"
-                  min="0.50"
-                  max="1.00"
-                  value={gravieOppAskStopThreshold}
+                  min="0.00"
+                  max="0.99"
+                  value={gravieLoserBypassAsk}
                   onChange={(e) =>
-                    patch({
-                      gravie_opp_ask_stop_threshold: Number(e.target.value),
-                    })
+                    patch({ gravie_loser_bypass_ask: Number(e.target.value) })
                   }
                 />
               </Field>
               <Field
-                label="Max FAK size (Patch C)"
-                tooltip="FAK emir başına maksimum share. Düşen fiyatlarda ceil(usdc/price) patlamasını önler. Örn order_usdc=10, price=0.05 → 200 share; cap=50 ile 50 share. 0 = sınırsız (devre dışı)."
+                label="Max FAK size (share)"
+                tooltip="FAK emir başına maksimum share. Düşen fiyatlarda ceil(usdc/price) patlamasını önler. Örn order_usdc=10, price=0.05 → 200 share; cap=50 ile sınırlanır. 0 = sınırsız."
                 hint={`0 (sınırsız) veya 1 – 10 000 share (default ${STRATEGY_PARAMS_DEFAULTS.gravie_max_fak_size}).`}
               >
                 <Input
@@ -588,49 +518,39 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
           </div>
 
           <div className="space-y-2 rounded-md border border-border/40 bg-muted/10 px-3 py-2.5 text-xs leading-relaxed text-muted-foreground">
-            <p className="font-medium text-foreground">
-              Gravie — nasıl çalışır?
-            </p>
+            <p className="font-medium text-foreground">Gravie — nasıl çalışır?</p>
             <ul className="list-disc space-y-1 pl-4">
               <li>
-                <strong>BUY-only dual-side:</strong> Hem Up hem Down için BUY,
-                SELL yok. Pozisyon market resolve&apos;a kadar tutulur.
+                <strong>Dual-Balance:</strong> Her iki tarafı (Up + Down)
+                eşit share&apos;de biriktirir;{" "}
+                <code>avg_up + avg_down &lt; 1</code> sağlandığında pair
+                güvenli kâr garantisi verir.
               </li>
               <li>
-                <strong>Reaktif ucuz-taraf:</strong>{" "}
-                <code>argmin(up_ask, dn_ask)</code> tarafına FAK BUY (anında
-                fill, kalan iptal).
+                <strong>Winner-momentum ilk giriş:</strong> İlk işlemde
+                kazanan tarafın bid&apos;i <code>first_bid_min</code>{" "}
+                üstünde olmalı; zayıf market&apos;lere girişi erteler.
               </li>
               <li>
-                <strong>İkinci leg guard:</strong> İlk leg açıldıktan sonra
-                karşı taraf ucuz olunca <em>veya</em> guard süresi geçince flip
-                yapılır.
+                <strong>Asimetrik size çarpanı:</strong> Winner taraf
+                0.50→2x, 0.70→4x (kırılma), 1.00→10x. Loser taraf
+                0.50→2x, 0.30→4x, 0.00→7x (daha ılımlı).
               </li>
               <li>
-                <strong>Sum-avg guard:</strong>{" "}
-                <code>avg_up + avg_dn ≥ ceiling</code> ise yeni emir verilmez —
-                pair pahalandığında dur.
+                <strong>Loser-scalp bypass:</strong>{" "}
+                <code>ask ≤ loser_bypass_ask</code> ise{" "}
+                <code>avg_sum_max</code> gate atlanır; ucuz taraftan
+                denge sağlanır (Bonereaper&apos;ın scalp mantığına benzer).
               </li>
               <li>
-                <strong>Balance rebalance:</strong> Pozisyon bir tarafa çok
-                kayarsa az olan tarafa zorunlu yönel (entry ceiling esnetilir).
+                <strong>Rebalance:</strong>{" "}
+                <code>|up − down| &gt; imb_thr</code> aşıldığında az
+                olan tarafa BUY yapılır.
               </li>
               <li>
-                <strong>T-cutoff:</strong> Kapanıştan X sn önce tüm emirler
-                durur, açık <code>gravie:</code> emirleri iptal edilir.
-              </li>
-              <li>
-                <strong>Sinyal kullanmaz:</strong> Bonereaper&apos;dan farklı
-                olarak Binance/OKX composite skor okumaz; saf orderbook
-                reaktif. Veri kaynağı bağımsızlığı = düşük operasyonel risk.
-              </li>
-              <li>
-                <strong>Risk Guards (Patch A + C):</strong>{" "}
-                <code>max(up_ask, dn_ask) ≥ 0.95</code> → tüm yeni emirler
-                durur (extreme collapse koruması, yumuşak default).{" "}
-                <code>FAK size ≤ 50</code> → düşen fiyatlarda likidite emici
-                patlamayı engeller. Daha sıkı koruma için 0.85; devre dışı için
-                1.0 yapın.
+                <strong>T-cutoff + FAK cap:</strong> Kapanıştan{" "}
+                <code>t_cutoff_secs</code> önce durur; düşen fiyatlarda
+                share patlamasını <code>max_fak_size</code> engeller.
               </li>
             </ul>
           </div>

@@ -19,7 +19,7 @@ export const STRATEGY_OPTIONS: {
     id: "gravie",
     label: "Gravie",
     description:
-      "Bot 66 (Lively-Authenticity) davranış kopyası: 5sn karar tick'i, dual-side BUY-only FAK taker, mid-price civarı ucuz-taraf entry, 38sn second-leg guard, T-90 cutoff, sum_avg ≥ 1.05'te dur, balance < 0.30'da rebalance. Sinyal kullanmaz (saf order book reaktif).",
+      "Dual-Balance Accumulator: avg_up + avg_down < 1 garantisi ile her iki tarafta eşit pay birikimi. Winner-momentum ilk giriş, loser-scalp bypass ile denge, asimetrik lineer size çarpanı (0.50→2x, 0.70→4x, 1.00→10x / 0.00→7x). BUY-only FAK taker, sinyal kullanmaz.",
   },
 ]
 

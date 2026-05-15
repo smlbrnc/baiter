@@ -223,7 +223,7 @@ pub struct StrategyParams {
     // Amaç: her markette UP shares == DOWN shares ve avg_up + avg_down < X.
     // Bu iki koşul sağlandığında hangi sonuç gelirse gelsin garantili kâr:
     //   profit = N × (1 − avg_sum). Yön sinyali GEREKMEZ.
-    /// Ardışık BUY emirleri arası minimum bekleme (ms). Default: 3000.
+    /// Ardışık BUY emirleri arası minimum bekleme (ms). Default: 2000.
     #[serde(default)]
     pub gravie_buy_cooldown_ms: Option<u64>,
     /// `avg_up + avg_down` üst sınırı. Yeni BUY bu eşiği geçerse atlanır.
@@ -245,6 +245,16 @@ pub struct StrategyParams {
     /// tarafa zorunlu BUY (yön seçimi bypass). Default: 5 share.
     #[serde(default)]
     pub gravie_imb_thr: Option<f64>,
+    /// İlk emir için minimum winner bid eşiği. `max(up_bid, dn_bid) >= X`
+    /// koşulu sağlanana kadar BUY yapılmaz. İlk alım o yüksek-bid tarafına
+    /// (winner momentum) yapılır. Default: 0.65.
+    #[serde(default)]
+    pub gravie_first_bid_min: Option<f64>,
+    /// Loser-scalp bypass eşiği. `ask <= X` ise avg_sum gate atlanır.
+    /// Ucuz taraftan share toplarken avg_sum artmaz → Bonereaper loser-scalp
+    /// mantığı. Default: 0.50. 0.0 = bypass kapalı.
+    #[serde(default)]
+    pub gravie_loser_bypass_ask: Option<f64>,
 }
 
 impl StrategyParams {
@@ -300,10 +310,10 @@ impl StrategyParams {
             .unwrap_or(2.0 * order_usdc)
             .clamp(0.0, 10_000.0)
     }
-    /// Session başına max LW injection; 0–50 sınırlı; default 0 (sınırsız).
-    /// 0 = sınırsız (likidite doğal cap oluşturur canlı modda).
+    /// Session başına max LW injection; 0–50 sınırlı; default 30.
+    /// 0 = sınırsız.
     pub fn bonereaper_lw_max_per_session(&self) -> u32 {
-        self.bonereaper_lw_max_per_session.unwrap_or(0).min(50)
+        self.bonereaper_lw_max_per_session.unwrap_or(30).min(50)
     }
     /// LW shot'ları arasındaki minimum bekleme (ms); 0–60000 sınırlı.
     /// Default: 10_000 (10s). 0 = devre dışı (normal buy_cooldown_ms kullanılır).
@@ -377,14 +387,11 @@ impl StrategyParams {
             .clamp(0.001, 0.10)
     }
     /// Loser side scalp USDC; 0–500 sınırlı.
-    /// Default: `order_usdc × 1.0` — 625-emir parçalı fill analizi (tüm klasörler):
-    /// loser ≤0.30 avg_cost=$10.37, implied_order_usdc=10 → oran=1.037× ≈ ×1.0.
-    /// Bant 0.30'a genişletildi; ceil(10/price) doğal kademeleme sağlıyor:
-    ///   0.05→200sh, 0.10→100sh, 0.20→50sh, 0.30→34sh.
+    /// Default: `order_usdc × 0.5` — order_usdc=10 → $5 default (bot 332 optimum).
     /// 0 = scalp KAPALI. DB'de override varsa onu kullan.
     pub fn bonereaper_loser_scalp_usdc(&self, order_usdc: f64) -> f64 {
         self.bonereaper_loser_scalp_usdc
-            .unwrap_or(order_usdc)
+            .unwrap_or(order_usdc * 0.5)
             .clamp(0.0, 500.0)
     }
     /// Loser scalp üst bid eşiği; 0.05–0.50 sınırlı; default 0.30. Loser side
@@ -439,7 +446,7 @@ impl StrategyParams {
 /// ⇒ herhangi bir sonuçta garantili kâr (`N × (1 − avg_sum)`).
 #[derive(Debug, Clone, Copy)]
 pub struct GravieParams {
-    /// Ardışık BUY arası minimum bekleme (ms). Default: 3000.
+    /// Ardışık BUY arası minimum bekleme (ms). Default: 2000.
     pub buy_cooldown_ms: u64,
     /// `avg_up + avg_down` üst sınırı. Default: 0.95.
     pub avg_sum_max: f64,
@@ -451,17 +458,24 @@ pub struct GravieParams {
     pub max_fak_size: f64,
     /// Rebalance tetik eşiği (share farkı). Default: 5.
     pub imb_thr: f64,
+    /// İlk alım için minimum winner bid eşiği. Default: 0.65.
+    pub first_bid_min: f64,
+    /// Loser-scalp bypass: ask bu eşik altındaysa avg_sum gate atlanır.
+    /// Default: 0.50. 0.0 = kapalı.
+    pub loser_bypass_ask: f64,
 }
 
 impl Default for GravieParams {
     fn default() -> Self {
         Self {
-            buy_cooldown_ms: 3_000,
+            buy_cooldown_ms: 2_000,
             avg_sum_max: 0.95,
             max_ask: 0.99,
             t_cutoff_secs: 30.0,
             max_fak_size: 50.0,
             imb_thr: 5.0,
+            first_bid_min: 0.65,
+            loser_bypass_ask: 0.50,
         }
     }
 }
@@ -496,6 +510,14 @@ impl GravieParams {
                 .gravie_imb_thr
                 .unwrap_or(d.imb_thr)
                 .clamp(0.0, 10_000.0),
+            first_bid_min: p
+                .gravie_first_bid_min
+                .unwrap_or(d.first_bid_min)
+                .clamp(0.50, 0.99),
+            loser_bypass_ask: p
+                .gravie_loser_bypass_ask
+                .unwrap_or(d.loser_bypass_ask)
+                .clamp(0.0, 0.99),
         }
     }
 }
