@@ -392,7 +392,7 @@ impl StrategyParams {
     /// LW shot'ları arasındaki minimum bekleme (ms); 0–60000 sınırlı.
     /// Default: 10_000 (10s). 0 = devre dışı (normal buy_cooldown_ms kullanılır).
     pub fn bonereaper_lw_cooldown_ms(&self) -> u64 {
-        self.bonereaper_lw_cooldown_ms.unwrap_or(10_000).min(60_000)
+        self.bonereaper_lw_cooldown_ms.unwrap_or(6_000).min(60_000)
     }
     /// Imbalance threshold (share); 0–10000 sınırlı.
     /// Default: `10 × order_usdc` — bu eşik aşılınca weaker side rebalance.
@@ -418,7 +418,7 @@ impl StrategyParams {
         // Default 1.00: eşit hacim senaryosunda kırılgan avg_sum bandını keser;
         // scalp/LW cap dışında. Daha gevşek: strategy_params'ta 1.05+ ver.
         self.bonereaper_max_avg_sum
-            .unwrap_or(1.0)
+            .unwrap_or(1.05)
             .clamp(0.50, 2.00)
     }
     /// İlk emir spread eşiği; 0.00–0.20 sınırlı; default 0.02.
