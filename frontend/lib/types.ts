@@ -151,9 +151,32 @@ export interface StrategyParams {
   gravie_first_bid_min?: number | null
   /**
    * Loser-scalp bypass eşiği. ask ≤ bu değer ise avg_sum_max gate
-   * atlanır; ucuz taraftan pozisyon dengelenir. Default: 0.50.
+   * atlanır; ucuz taraftan pozisyon dengelenir. Default: 0.30.
    */
   gravie_loser_bypass_ask?: number | null
+  /**
+   * Late Winner injection tetik eşiği (winner bid). `max(up_bid, dn_bid) ≥ X`
+   * olduğunda kazanan tarafa büyük taker BUY. Default: 0.88 (Bonereaper ile aynı).
+   */
+  gravie_lw_bid_thr?: number | null
+  /**
+   * LW emri USDC çarpanı (`order_usdc × X × lw_mult`). Default: 2.0
+   * (Bonereaper `2 × order_usdc` ile aynı).
+   */
+  gravie_lw_usdc_factor?: number | null
+  /** Session başına maksimum LW shot. Default: 30. 0 = sınırsız. */
+  gravie_lw_max_per_session?: number | null
+  /**
+   * Loser tarafta avg fiyat üst sınırı (martingale-down guard). own_avg
+   * bu eşiği aşarsa o yöne yeni alım yapılmaz. Default: 0.50.
+   */
+  gravie_avg_loser_max?: number | null
+  /**
+   * Loser-scalp boyut çarpanı. `ask ≤ loser_bypass_ask` iken
+   * `size = ceil(order_usdc × X / ask)` ile sabit küçük alım. Default: 0.5
+   * (Bonereaper ile aynı). 0 = scalp kapalı, mevcut size_multiplier kullanılır.
+   */
+  gravie_loser_scalp_usdc_factor?: number | null
 }
 
 export interface BotRow {
@@ -470,8 +493,8 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   // Bonereaper
   bonereaper_buy_cooldown_ms: 2000,
   bonereaper_late_winner_secs: 300,   // penceresiz — fiyat bazlı tetikleyici
-  bonereaper_late_winner_bid_thr: 0.88,
-  bonereaper_late_winner_usdc: 20,    // otomatik: 2 × order_usdc (frontend hidden)
+  bonereaper_late_winner_bid_thr: 0.90,
+  bonereaper_late_winner_usdc: 10,    // otomatik: 1 × order_usdc; arb_mult 5×→15× lineer
   bonereaper_lw_max_per_session: 30,
   bonereaper_lw_cooldown_ms: 10000,
   bonereaper_imbalance_thr: 100,      // otomatik: 10 × order_usdc (frontend hidden)
@@ -492,15 +515,20 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   bonereaper_lw_burst_usdc: 0,
   // Martingale-down guard
   bonereaper_avg_loser_max: 0.5,
-  // Gravie (Dual-Balance Accumulator)
+  // Gravie (Dual-Balance Accumulator + Bonereaper-harmonized)
   gravie_buy_cooldown_ms: 2000,
-  gravie_avg_sum_max: 0.95,
+  gravie_avg_sum_max: 1.00,
   gravie_max_ask: 0.99,
   gravie_t_cutoff_secs: 30,
   gravie_max_fak_size: 50,
   gravie_imb_thr: 5,
   gravie_first_bid_min: 0.65,
-  gravie_loser_bypass_ask: 0.50,
+  gravie_loser_bypass_ask: 0.30,
+  gravie_lw_bid_thr: 0.88,
+  gravie_lw_usdc_factor: 2.0,
+  gravie_lw_max_per_session: 30,
+  gravie_avg_loser_max: 0.50,
+  gravie_loser_scalp_usdc_factor: 0.5,
 } as const
 
 /**

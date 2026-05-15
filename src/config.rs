@@ -252,9 +252,33 @@ pub struct StrategyParams {
     pub gravie_first_bid_min: Option<f64>,
     /// Loser-scalp bypass eşiği. `ask <= X` ise avg_sum gate atlanır.
     /// Ucuz taraftan share toplarken avg_sum artmaz → Bonereaper loser-scalp
-    /// mantığı. Default: 0.50. 0.0 = bypass kapalı.
+    /// mantığı. Default: 0.30 (Bonereaper scalp band sınırı). 0.0 = bypass kapalı.
     #[serde(default)]
     pub gravie_loser_bypass_ask: Option<f64>,
+    /// Late Winner injection tetikleme eşiği. `max(up_bid, dn_bid) >= X`
+    /// olduğunda kazanan tarafa büyük taker BUY atılır. Default: 0.88
+    /// (Bonereaper ile aynı).
+    #[serde(default)]
+    pub gravie_lw_bid_thr: Option<f64>,
+    /// Late Winner USDC notional çarpanı (`order_usdc × X × lw_mult`).
+    /// Default: 2.0 (Bonereaper `2× order_usdc` ile aynı).
+    #[serde(default)]
+    pub gravie_lw_usdc_factor: Option<f64>,
+    /// Session başına maksimum Late Winner injection sayısı.
+    /// Default: 30 (Bonereaper ile aynı). 0 = sınırsız.
+    #[serde(default)]
+    pub gravie_lw_max_per_session: Option<u32>,
+    /// Loser tarafın `avg` fiyatı bu eşiği aşarsa o tarafa yeni BUY yapılmaz
+    /// (pahalı martingale-down koruması). Default: 0.50 (Bonereaper ile aynı).
+    #[serde(default)]
+    pub gravie_avg_loser_max: Option<f64>,
+    /// Loser-scalp boyut çarpanı. `ask <= loser_bypass_ask` durumunda
+    /// `size = ceil(order_usdc × X / ask)` ile sabit küçük alım yapılır
+    /// (size_multiplier yerine). Default: 0.5 (Bonereaper ile aynı).
+    /// 0 = scalp KAPALI; bu durumda bypass aktif olsa bile size_multiplier
+    /// kullanılır (eski davranış).
+    #[serde(default)]
+    pub gravie_loser_scalp_usdc_factor: Option<f64>,
 }
 
 impl StrategyParams {
@@ -286,28 +310,21 @@ impl StrategyParams {
     pub fn bonereaper_late_winner_secs(&self) -> u32 {
         self.bonereaper_late_winner_secs.unwrap_or(300).min(300)
     }
-    /// Late winner bid eşiği; 0.50–0.99 sınırlı; default 0.88
-    /// (Canlı Bonereaper analizi [1:50-1:55 ET]: gerçek bot UP $0.92 bid'de
-    /// [T] $115 + [T] $111 = $226 büyük shot attı → LW bid_thr=0.98 ile
-    /// bu tetiklenmiyordu. 0.88 = loser ask ~$0.11, winner ~$0.89 — real bot
-    /// "$0.07-$0.13 arası DOWN loser" gözlemlenince UP'a büyük LW yapıyor).
+    /// Late winner bid eşiği; 0.50–0.99 sınırlı; default 0.90
+    /// High band (0.65–0.90): sabit 50sh accumulation.
+    /// LW bölgesi (≥0.90): lineer 5×→15× arb_mult ile agresif shot.
     pub fn bonereaper_late_winner_bid_thr(&self) -> f64 {
         self.bonereaper_late_winner_bid_thr
-            .unwrap_or(0.88)
+            .unwrap_or(0.90)
             .clamp(0.50, 0.99)
     }
-    /// Late winner USDC notional; 0–10000 sınırlı; default 100.
-    /// 47-market analizi (timestamp grup bazlı LW shot büyüklükleri):
-    ///   - $0.85-0.95 bant medyanı $91/shot (117 shot) → $100 default uygun.
-    ///   - $0.95+ bant medyanı $198/shot, ort $589/shot, max $4953/shot.
-    ///     Bu bantta dinamik arb_mult ölçekleme bonereaper.rs'de uygulanır
-    ///     ($0.95 → 1x, $0.97 → 2x, $0.99 → 4x).
-    ///   - Sonuç: $100 × max 4x = $400/shot, max_per_session=20 ile $8k tavan.
-    /// 0 = KAPALI.
-    /// `order_usdc` verilirse formül: `3 × order_usdc`. DB'de override varsa onu kullan.
+    /// Late winner USDC notional (base, arb_mult öncesi); 0–10000 sınırlı.
+    /// Default: `1 × order_usdc`. arb_mult lineer 5×@lw_thr → 15×@0.99 ile
+    /// order_usdc=10 → ask=0.90'da $50/shot, ask=0.99'da $150/shot.
+    /// 0 = KAPALI. DB'de override varsa onu kullan.
     pub fn bonereaper_late_winner_usdc(&self, order_usdc: f64) -> f64 {
         self.bonereaper_late_winner_usdc
-            .unwrap_or(2.0 * order_usdc)
+            .unwrap_or(order_usdc)
             .clamp(0.0, 10_000.0)
     }
     /// Session başına max LW injection; 0–50 sınırlı; default 30.
@@ -448,7 +465,7 @@ impl StrategyParams {
 pub struct GravieParams {
     /// Ardışık BUY arası minimum bekleme (ms). Default: 2000.
     pub buy_cooldown_ms: u64,
-    /// `avg_up + avg_down` üst sınırı. Default: 0.95.
+    /// `avg_up + avg_down` üst sınırı. Default: 1.00.
     pub avg_sum_max: f64,
     /// Her iki taraf için max alım fiyatı (ask). Default: 0.99.
     pub max_ask: f64,
@@ -461,21 +478,37 @@ pub struct GravieParams {
     /// İlk alım için minimum winner bid eşiği. Default: 0.65.
     pub first_bid_min: f64,
     /// Loser-scalp bypass: ask bu eşik altındaysa avg_sum gate atlanır.
-    /// Default: 0.50. 0.0 = kapalı.
+    /// Default: 0.30. 0.0 = kapalı.
     pub loser_bypass_ask: f64,
+    /// Late Winner tetik eşiği (winner bid). Default: 0.88.
+    pub lw_bid_thr: f64,
+    /// Late Winner USDC çarpanı (`order_usdc × X × lw_mult`). Default: 2.0.
+    pub lw_usdc_factor: f64,
+    /// Session başına max LW shot. Default: 30. 0 = sınırsız.
+    pub lw_max_per_session: u32,
+    /// Loser tarafta avg üst sınırı (pahalı birikim guard). Default: 0.50.
+    pub avg_loser_max: f64,
+    /// Loser-scalp USDC çarpanı. `ask ≤ loser_bypass_ask` iken
+    /// `size = ceil(order_usdc × X / ask)`. Default: 0.5. 0 = scalp KAPALI.
+    pub loser_scalp_usdc_factor: f64,
 }
 
 impl Default for GravieParams {
     fn default() -> Self {
         Self {
             buy_cooldown_ms: 2_000,
-            avg_sum_max: 0.95,
+            avg_sum_max: 1.00,
             max_ask: 0.99,
             t_cutoff_secs: 30.0,
             max_fak_size: 50.0,
             imb_thr: 5.0,
             first_bid_min: 0.65,
-            loser_bypass_ask: 0.50,
+            loser_bypass_ask: 0.30,
+            lw_bid_thr: 0.88,
+            lw_usdc_factor: 2.0,
+            lw_max_per_session: 30,
+            avg_loser_max: 0.50,
+            loser_scalp_usdc_factor: 0.5,
         }
     }
 }
@@ -518,6 +551,26 @@ impl GravieParams {
                 .gravie_loser_bypass_ask
                 .unwrap_or(d.loser_bypass_ask)
                 .clamp(0.0, 0.99),
+            lw_bid_thr: p
+                .gravie_lw_bid_thr
+                .unwrap_or(d.lw_bid_thr)
+                .clamp(0.50, 0.99),
+            lw_usdc_factor: p
+                .gravie_lw_usdc_factor
+                .unwrap_or(d.lw_usdc_factor)
+                .clamp(0.0, 20.0),
+            lw_max_per_session: p
+                .gravie_lw_max_per_session
+                .unwrap_or(d.lw_max_per_session)
+                .min(200),
+            avg_loser_max: p
+                .gravie_avg_loser_max
+                .unwrap_or(d.avg_loser_max)
+                .clamp(0.10, 0.95),
+            loser_scalp_usdc_factor: p
+                .gravie_loser_scalp_usdc_factor
+                .unwrap_or(d.loser_scalp_usdc_factor)
+                .clamp(0.0, 5.0),
         }
     }
 }

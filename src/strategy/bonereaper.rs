@@ -7,7 +7,7 @@
 //! 2. **LATE WINNER** (`max(bid) ≥ bid_thr [0.90]`, cooldown'a tabi):
 //!    - winner tarafa taker BUY @ ask. Quota (`lw_max_per_session`) ile cap.
 //!    - Boyut: `lw_usdc × arb_mult(fiyat)` — saf fiyat bazlı.
-//!    - `arb_mult`: <0.95→1x, 0.95→2x, 0.96→2.5x, 0.97→3x, 0.98→4x, 0.99+→5x
+//!    - `arb_mult`: lineer 5×@lw_thr(0.90) → 10×@0.99
 //!    - LW ile birlikte loser cheap scalp (GTC at bid, maker).
 //! 3. **COOLDOWN** (`now − last_buy < buy_cooldown_ms`): NoOp.
 //! 4. **YÖN SEÇİMİ** (first_done=false → spread gate + BSI/OB fallback):
@@ -192,20 +192,10 @@ impl BonereaperEngine {
                             (Outcome::Down, ctx.down_best_bid, ctx.down_best_ask)
                         };
                         if w_bid >= lw_thr && w_ask > 0.0 {
-                            // Fiyat bazlı ölçekleme (r=+0.80, zaman r=-0.10 anlamsız).
-                            let arb_mult = if w_ask >= 0.99 {
-                                5.0
-                            } else if w_ask >= 0.98 {
-                                4.0
-                            } else if w_ask >= 0.97 {
-                                3.0
-                            } else if w_ask >= 0.96 {
-                                2.5
-                            } else if w_ask >= 0.95 {
-                                2.0
-                            } else {
-                                1.0
-                            };
+                            // Lineer ölçekleme: lw_thr'de 5×, 0.99'da 10×.
+                            // size = ceil(lw_usdc × arb_mult / ask)
+                            let arb_mult = (5.0 + 5.0 * (w_ask - lw_thr) / (0.99 - lw_thr))
+                                .clamp(5.0, 10.0);
                             let size = (usdc * arb_mult / w_ask).ceil();
                             let reason = if is_burst {
                                 reason_lw_burst(winner)

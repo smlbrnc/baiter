@@ -49,6 +49,19 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const gravieLoserBypassAsk =
     params.gravie_loser_bypass_ask ??
     STRATEGY_PARAMS_DEFAULTS.gravie_loser_bypass_ask
+  const gravieLwBidThr =
+    params.gravie_lw_bid_thr ?? STRATEGY_PARAMS_DEFAULTS.gravie_lw_bid_thr
+  const gravieLwUsdcFactor =
+    params.gravie_lw_usdc_factor ??
+    STRATEGY_PARAMS_DEFAULTS.gravie_lw_usdc_factor
+  const gravieLwMaxPerSession =
+    params.gravie_lw_max_per_session ??
+    STRATEGY_PARAMS_DEFAULTS.gravie_lw_max_per_session
+  const gravieAvgLoserMax =
+    params.gravie_avg_loser_max ?? STRATEGY_PARAMS_DEFAULTS.gravie_avg_loser_max
+  const gravieLoserScalpUsdcFactor =
+    params.gravie_loser_scalp_usdc_factor ??
+    STRATEGY_PARAMS_DEFAULTS.gravie_loser_scalp_usdc_factor
 
   // ── Bonereaper (order-book reactive martingale + late winner) ─────────
   const bonereaperBuyCooldownMs =
@@ -480,11 +493,11 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
               </Field>
             </div>
 
-            {/* Loser bypass + FAK cap */}
+            {/* Loser bypass + scalp factor + FAK cap + avg_loser_max */}
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 border-t border-border/30 pt-4">
               <Field
                 label="Loser-scalp bypass ask"
-                tooltip="ask ≤ bu değer ise avg_sum_max gate atlanır; ucuz taraftan pozisyon dengelenir. Bonereaper'ın loser-scalp mantığının Gravie karşılığı. 0 = bypass kapalı."
+                tooltip="ask ≤ bu değer ise avg_sum_max gate atlanır, loser-guard pas geçilir VE size scalp formülüne döner (loser-scalp factor). Bonereaper'ın loser-scalp mantığının Gravie karşılığı. 0 = bypass kapalı."
                 hint={`0.00 – 0.99 (default ${STRATEGY_PARAMS_DEFAULTS.gravie_loser_bypass_ask}).`}
               >
                 <Input
@@ -495,6 +508,40 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                   value={gravieLoserBypassAsk}
                   onChange={(e) =>
                     patch({ gravie_loser_bypass_ask: Number(e.target.value) })
+                  }
+                />
+              </Field>
+              <Field
+                label="Loser-scalp USDC factor"
+                tooltip="Bypass aktifken size = ceil(order_usdc × X / ask). Bonereaper ile birebir; küçük scalp ile loser tarafa aşırı yığılmayı önler. 0.5 × $10 = $5/shot → ask 0.20'da 25 share. 0 = scalp kapalı, size_multiplier kullanılır."
+                hint={`0.00 – 5.00 (default ${STRATEGY_PARAMS_DEFAULTS.gravie_loser_scalp_usdc_factor}).`}
+              >
+                <Input
+                  type="number"
+                  step="0.1"
+                  min="0"
+                  max="5"
+                  value={gravieLoserScalpUsdcFactor}
+                  onChange={(e) =>
+                    patch({
+                      gravie_loser_scalp_usdc_factor: Number(e.target.value),
+                    })
+                  }
+                />
+              </Field>
+              <Field
+                label="Avg loser max"
+                tooltip="Loser tarafta avg fiyat bu eşiği aşarsa o yöne yeni BUY yapılmaz (pahalı martingale-down koruması). Bonereaper avg_loser_max ile aynı."
+                hint={`0.10 – 0.95 (default ${STRATEGY_PARAMS_DEFAULTS.gravie_avg_loser_max}).`}
+              >
+                <Input
+                  type="number"
+                  step="0.05"
+                  min="0.10"
+                  max="0.95"
+                  value={gravieAvgLoserMax}
+                  onChange={(e) =>
+                    patch({ gravie_avg_loser_max: Number(e.target.value) })
                   }
                 />
               </Field>
@@ -515,6 +562,58 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                 />
               </Field>
             </div>
+
+            {/* Late Winner injection */}
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 border-t border-border/30 pt-4">
+              <Field
+                label="LW bid eşiği"
+                tooltip="max(up_bid, dn_bid) ≥ bu değer iken kazanan tarafa büyük taker BUY (Late Winner). Boyut: order_usdc × lw_factor × lw_mult; lw_mult ask ≥ 0.95'te lineer 2x–5x aralığında."
+                hint={`0.50 – 0.99 (default ${STRATEGY_PARAMS_DEFAULTS.gravie_lw_bid_thr}).`}
+              >
+                <Input
+                  type="number"
+                  step="0.01"
+                  min="0.50"
+                  max="0.99"
+                  value={gravieLwBidThr}
+                  onChange={(e) =>
+                    patch({ gravie_lw_bid_thr: Number(e.target.value) })
+                  }
+                />
+              </Field>
+              <Field
+                label="LW USDC çarpanı"
+                tooltip="LW notional = order_usdc × bu çarpan × lw_mult(ask). order_usdc=10 + factor=2 → ask 0.99'da 10×2×5=$100. 0 = LW KAPALI."
+                hint={`0.0 – 20.0 (default ${STRATEGY_PARAMS_DEFAULTS.gravie_lw_usdc_factor}).`}
+              >
+                <Input
+                  type="number"
+                  step="0.5"
+                  min="0"
+                  max="20"
+                  value={gravieLwUsdcFactor}
+                  onChange={(e) =>
+                    patch({ gravie_lw_usdc_factor: Number(e.target.value) })
+                  }
+                />
+              </Field>
+              <Field
+                label="LW max / session"
+                tooltip="Session başına maksimum LW shot. 0 = sınırsız (gerçek bot davranışı)."
+                hint={`0 – 200 (default ${STRATEGY_PARAMS_DEFAULTS.gravie_lw_max_per_session}).`}
+              >
+                <Input
+                  type="number"
+                  step="1"
+                  min="0"
+                  max="200"
+                  value={gravieLwMaxPerSession}
+                  onChange={(e) =>
+                    patch({ gravie_lw_max_per_session: Number(e.target.value) })
+                  }
+                />
+              </Field>
+            </div>
           </div>
 
           <div className="space-y-2 rounded-md border border-border/40 bg-muted/10 px-3 py-2.5 text-xs leading-relaxed text-muted-foreground">
@@ -527,25 +626,37 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                 güvenli kâr garantisi verir.
               </li>
               <li>
+                <strong>Late Winner:</strong>{" "}
+                <code>winner_bid ≥ lw_bid_thr</code> olduğunda kazanan tarafa
+                büyük taker BUY. Boyut{" "}
+                <code>order_usdc × lw_factor × lw_mult</code>; lw_mult lineer
+                (ask 0.95→2x, 0.97→3.5x, 0.99→5x). Bonereaper LW karşılığı.
+              </li>
+              <li>
                 <strong>Winner-momentum ilk giriş:</strong> İlk işlemde
                 kazanan tarafın bid&apos;i <code>first_bid_min</code>{" "}
-                üstünde olmalı; zayıf market&apos;lere girişi erteler.
+                üstünde olmalı.
               </li>
               <li>
                 <strong>Asimetrik size çarpanı:</strong> Winner taraf
                 0.50→2x, 0.70→4x (kırılma), 1.00→10x. Loser taraf
-                0.50→2x, 0.30→4x, 0.00→7x (daha ılımlı).
+                0.50→2x, 0.30→4x, 0.00→7x.
               </li>
               <li>
-                <strong>Loser-scalp bypass:</strong>{" "}
-                <code>ask ≤ loser_bypass_ask</code> ise{" "}
-                <code>avg_sum_max</code> gate atlanır; ucuz taraftan
-                denge sağlanır (Bonereaper&apos;ın scalp mantığına benzer).
+                <strong>Loser guard + bypass:</strong> Seçilen yön zayıf
+                taraftaysa <code>ask &gt; loser_bypass_ask</code> ise alma;
+                <code>ask ≤ loser_bypass_ask</code> ise gate atlanır ve denge
+                için ucuz tarafa BUY yapılır.
+              </li>
+              <li>
+                <strong>Avg loser max:</strong> Loser tarafta avg fiyat
+                <code>avg_loser_max</code> üstündeyse o yöne yeni BUY yok
+                (pahalı martingale-down koruması).
               </li>
               <li>
                 <strong>Rebalance:</strong>{" "}
-                <code>|up − down| &gt; imb_thr</code> aşıldığında az
-                olan tarafa BUY yapılır.
+                <code>|up − down| &gt; imb_thr</code> aşıldığında az olan
+                tarafa BUY (fiyat fark etmez).
               </li>
               <li>
                 <strong>T-cutoff + FAK cap:</strong> Kapanıştan{" "}
