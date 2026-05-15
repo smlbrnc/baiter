@@ -14,8 +14,8 @@
 //!    - `|imb| > N×est_size` (dinamik eşik) → weaker side rebalance
 //!    - aksi: `|Δup_bid|` vs `|Δdn_bid|` → büyük delta tarafı
 //! 5. **LOSER SCALP** (direction=loser seçildiğinde, is_scalp_band):
-//!    - `bid ≤ dynamic_scalp_max` koşulunda `scalp_usdc` ile alım.
-//!    - `dynamic_scalp_max = 1 - winner_bid + 0.10`
+//!    - `bid ≤ 0.30` koşulunda `scalp_usdc` ile alım (tüm longshot+scalp bandı).
+//!    - Gerçek bot 0.12-0.30 arasında da %35 loser alımı yapıyor → bant genişletildi.
 //! 6. **NORMAL BUY** taker @ ask: longshot/mid/high bucket bazlı size.
 //! 7. **avg_sum cap** (default=1.00; loser scalp muaf).
 //!
@@ -360,10 +360,11 @@ impl BonereaperEngine {
                 let scalp_only = is_loser_dir && cur_filled > 0.0 && cur_avg > avg_loser_max;
 
                 let scalp_usdc = p.bonereaper_loser_scalp_usdc(ctx.order_usdc);
-                let winner_bid = ctx.up_best_bid.max(ctx.down_best_bid);
-                let dynamic_scalp_max = (1.0 - winner_bid + 0.10).clamp(0.10, 0.60);
-                let param_scalp_max = p.bonereaper_loser_scalp_max_price();
-                let scalp_max_price = dynamic_scalp_max.max(param_scalp_max);
+                // Loser scalp üst sınırı: sabit 0.30 (longshot bandı alt sınırı).
+                // Gerçek bot analizi: 51 markette loser 0.12-0.30 arasında da
+                // aktif alım yapıyor (870 trade, %35 toplam loser). Sabit USDC
+                // (~$10) kullanıyor → ceil(usdc/price) ile doğal kademeleme.
+                let scalp_max_price = 0.30_f64;
                 let is_scalp_band = is_loser_dir && bid <= scalp_max_price && scalp_usdc > 0.0;
                 let usdc = if scalp_only && scalp_usdc > 0.0 {
                     scalp_usdc
