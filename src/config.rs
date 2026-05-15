@@ -428,21 +428,22 @@ impl StrategyParams {
             .unwrap_or(15.0)
             .clamp(0.0, 10_000.0)
     }
-    /// Mid bucket USDC (0.30 < bid ≤ 0.65); 0–10000 sınırlı; default 23.
-    /// 25-market doğrulaması: $0.40-0.65 bandında medyan $23.12-$23.31/shot.
-    /// Eski $10 default real botun ~%43'üydü → bot büyük accumulation
-    /// kaçırıyordu, $23 birebir uyumlu.
-    pub fn bonereaper_size_mid_usdc(&self) -> f64 {
+    /// Mid bucket USDC (0.30 < bid ≤ 0.65); 0–10000 sınırlı.
+    /// Default: `3 × order_usdc` — 25-market analizi: real bot order≈$8'de
+    /// $23.12-$23.31/shot → 23/8 ≈ 2.9× ≈ 3× ile uyumlu.
+    /// DB'de override varsa kullanılır.
+    pub fn bonereaper_size_mid_usdc(&self, order_usdc: f64) -> f64 {
         self.bonereaper_size_mid_usdc
-            .unwrap_or(23.0)
+            .unwrap_or(3.0 * order_usdc)
             .clamp(0.0, 10_000.0)
     }
-    /// High bucket USDC (bid > 0.65); 0–10000 sınırlı; default 37.
-    /// 25-market doğrulaması: $0.65-0.85 bandında medyan $37.19-$43.12/shot.
-    /// Eski $20 default real botun ~%54'üydü, $37 medyana oturur.
-    pub fn bonereaper_size_high_usdc(&self) -> f64 {
+    /// High bucket USDC (bid > 0.65); 0–10000 sınırlı.
+    /// Default: `4 × order_usdc` — real bot order≈$8'de $37.19-$43.12/shot
+    /// → 37/8 ≈ 4.6× ≈ 4× ile uyumlu.
+    /// DB'de override varsa kullanılır.
+    pub fn bonereaper_size_high_usdc(&self, order_usdc: f64) -> f64 {
         self.bonereaper_size_high_usdc
-            .unwrap_or(37.0)
+            .unwrap_or(4.0 * order_usdc)
             .clamp(0.0, 10_000.0)
     }
     /// Loser side min bid eşiği; 0.001–0.10 sınırlı; default 0.01 (1¢ scalp).
@@ -452,15 +453,15 @@ impl StrategyParams {
             .unwrap_or(0.01)
             .clamp(0.001, 0.10)
     }
-    /// Loser side scalp USDC; 0–50 sınırlı; default $10.
-    /// 47-market analizi (238 scoop shot, timestamp grup bazlı):
-    ///   medyan $9.90/shot, ort $11.37/shot, dağılım %32 <$5, %18 $5-10,
-    ///   %24 $10-15, %8 $15-20, %18 $20+. $10 default medyana oturuyor.
-    /// 0 = scalp KAPALI.
-    /// `order_usdc` verilirse formül: `order_usdc / 10`. DB'de override varsa onu kullan.
+    /// Loser side scalp USDC; 0–50 sınırlı.
+    /// Default: `order_usdc / 5` — loser taraf $0.01-0.10 fiyatından alım,
+    /// kazanırsa 900-4900% ROI (en yüksek asimetrik getiri bandı).
+    /// order/10 → order/5 değişikliği: 2× daha fazla hedge, 2× daha fazla
+    /// sürpriz kâr potansiyeli. Maliyet ise toplam bütçenin sadece %2'si.
+    /// 0 = scalp KAPALI. DB'de override varsa onu kullan.
     pub fn bonereaper_loser_scalp_usdc(&self, order_usdc: f64) -> f64 {
         self.bonereaper_loser_scalp_usdc
-            .unwrap_or(order_usdc / 10.0)
+            .unwrap_or(order_usdc / 5.0)
             .clamp(0.0, 50.0)
     }
     /// Loser scalp üst bid eşiği; 0.05–0.50 sınırlı; default 0.30. Loser side

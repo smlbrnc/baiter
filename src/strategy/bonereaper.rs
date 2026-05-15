@@ -273,7 +273,7 @@ impl BonereaperEngine {
                     // N: T>120s=3, T<120s linear 3→10. est_size = mid_usdc / dominant_bid.
                     let dominant_bid = ctx.up_best_bid.max(ctx.down_best_bid);
                     let est_trade_size = if dominant_bid > 0.0 {
-                        (p.bonereaper_size_mid_usdc() / dominant_bid).ceil().max(1.0)
+                        (p.bonereaper_size_mid_usdc(ctx.order_usdc) / dominant_bid).ceil().max(1.0)
                     } else {
                         10.0_f64
                     };
@@ -358,9 +358,9 @@ impl BonereaperEngine {
                     let base = if bid <= 0.30 {
                         p.bonereaper_size_longshot_usdc()
                     } else if bid <= 0.65 {
-                        p.bonereaper_size_mid_usdc()
+                        p.bonereaper_size_mid_usdc(ctx.order_usdc)
                     } else {
-                        p.bonereaper_size_high_usdc()
+                        p.bonereaper_size_high_usdc(ctx.order_usdc)
                     };
                     let lp_secs = p.bonereaper_late_pyramid_secs() as f64;
                     if !is_loser_dir && lp_secs > 0.0 && to_end > 0.0 && to_end <= lp_secs {
