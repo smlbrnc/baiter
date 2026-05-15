@@ -286,11 +286,8 @@ impl BonereaperEngine {
                     // N: T>=120s→3, T>=60s→6, T>=30s→9, T<30s→12
                     // est_size = ceil(size_mid_usdc / dominant_bid)
                     let dominant_bid = ctx.up_best_bid.max(ctx.down_best_bid);
-                    let est_trade_size = if dominant_bid > 0.0 {
-                        (p.bonereaper_size_mid_usdc(ctx.order_usdc) / dominant_bid).ceil().max(1.0)
-                    } else {
-                        10.0_f64
-                    };
+                    // Sabit share yaklaşımı: order_usdc × 4 (gerçek bot ~40 sh kullanıyor)
+                    let est_trade_size = (ctx.order_usdc * 4.0).round().max(1.0);
                     let n_trades = if to_end >= 120.0 || to_end >= f64::MAX / 2.0 {
                         3.0_f64
                     } else if to_end >= 60.0 {
@@ -399,7 +396,13 @@ impl BonereaperEngine {
                 }
 
                 let order_price = ask; // taker
-                let size = (usdc / order_price).ceil();
+                // Mid/High normal alımlar: sabit share (order_usdc × 4, gerçek bot ~40 sh).
+                // Scalp ve longshot: USDC bazlı (değişmedi).
+                let size = if is_any_scalp || bid <= 0.30 {
+                    (usdc / order_price).ceil()
+                } else {
+                    (ctx.order_usdc * 4.0).round().max(1.0)
+                };
 
                 // avg_sum soft cap — scalp muaf.
                 if !is_any_scalp && opp_filled > 0.0 {
