@@ -133,11 +133,16 @@ pub struct StrategyParams {
     /// 0 = kural KAPALI.
     #[serde(default)]
     pub bonereaper_late_winner_usdc: Option<f64>,
-    /// Session başına maksimum late winner injection sayısı. Real bot 3-5
-    /// market'te 1 big-bet yapıyor (sıklık ~0.2-0.33/market). Default: 1.
-    /// 0 = sınırsız (eski davranış, **spam riski**).
+    /// Session başına maksimum late winner injection sayısı.
+    /// 0 = sınırsız. Default: 0 (sınırsız).
     #[serde(default)]
     pub bonereaper_lw_max_per_session: Option<u32>,
+    /// LW shot'ları arasındaki minimum bekleme (ms). Normal buy cooldown'dan
+    /// bağımsız; sadece LW için geçerli. Gerçek bot analizi: 24 market, medyan
+    /// gap 2s (burst), 90.pct gap 40s. 10s default → max ~18 shot/180s window
+    /// (gerçek bot medyan 14 shot/market). 0 = devre dışı (normal CD kullanır).
+    #[serde(default)]
+    pub bonereaper_lw_cooldown_ms: Option<u64>,
     /// |up_filled − down_filled| bu eşiği aşarsa weaker side rebalance trade'i
     /// yapılır (ob_driven yön seçimi bypass edilir). Default 50 share — bot
     /// 101 örnek 4908'de imbalance 199 oldu, eski 200 eşik tetiklenmedi → SAF
@@ -379,22 +384,26 @@ impl StrategyParams {
             .unwrap_or(4.0 * order_usdc)
             .clamp(0.0, 10_000.0)
     }
-    /// Session başına max LW injection; 0–50 sınırlı; default 20.
-    /// 47-market analizi: gerçek bot bir markette 23'e kadar LW shot atıyor
-    /// (1778010000: 23 shot, 1778027100: 17 shot, 1778586300: 11 shot).
-    /// quota 20 + lw_usdc=$100 + arb_mult max 4x = $8k tavan, gerçek botun
-    /// max $7,147 LW örneğine ($1778568000) yakın. 0 = sınırsız.
+    /// Session başına max LW injection; 0–50 sınırlı; default 0 (sınırsız).
+    /// 0 = sınırsız (likidite doğal cap oluşturur canlı modda).
     pub fn bonereaper_lw_max_per_session(&self) -> u32 {
-        self.bonereaper_lw_max_per_session.unwrap_or(20).min(50)
+        self.bonereaper_lw_max_per_session.unwrap_or(0).min(50)
+    }
+    /// LW shot'ları arasındaki minimum bekleme (ms); 0–60000 sınırlı.
+    /// Default: 10_000 (10s). 0 = devre dışı (normal buy_cooldown_ms kullanılır).
+    pub fn bonereaper_lw_cooldown_ms(&self) -> u64 {
+        self.bonereaper_lw_cooldown_ms.unwrap_or(10_000).min(60_000)
     }
     /// Imbalance threshold (share); 0–10000 sınırlı.
     /// Default: `10 × order_usdc` — bu eşik aşılınca weaker side rebalance.
     /// Analiz: thr=100 (10×$10) ile ~5 directional trade sonra rebalance başlar,
     /// DOWN kazanırsa mid-phase net ≈ +$11 vs thr=300'de -$85 (session analizi).
+    /// 9999 → dynamic mod aktif (N=3/6/9/12 × est_trade_size, zaman bazlı).
     /// DB'de override varsa kullanılır.
     pub fn bonereaper_imbalance_thr(&self, order_usdc: f64) -> f64 {
+        let _ = order_usdc;
         self.bonereaper_imbalance_thr
-            .unwrap_or(10.0 * order_usdc)
+            .unwrap_or(9999.0)
             .clamp(0.0, 10_000.0)
     }
     /// avg_sum yumuşak cap; 0.50–2.00 sınırlı; default 1.00.

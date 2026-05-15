@@ -91,6 +91,9 @@ pub struct BonereaperActive {
     /// Son BUY emrinin ms zamanı; 0 = henüz emir yok.
     #[serde(default)]
     pub last_buy_ms: u64,
+    /// Son LW emrinin ms zamanı; 0 = henüz LW yok. LW'ye özgü cooldown için.
+    #[serde(default)]
+    pub last_lw_buy_ms: u64,
     /// Önceki tick UP bid (delta hesabı).
     #[serde(default)]
     pub last_up_bid: f64,
@@ -128,6 +131,7 @@ impl BonereaperEngine {
                 }
                 let active = BonereaperActive {
                     last_buy_ms: 0,
+                    last_lw_buy_ms: 0,
                     last_up_bid: ctx.up_best_bid,
                     last_dn_bid: ctx.down_best_bid,
                     lw_injections: 0,
@@ -152,9 +156,17 @@ impl BonereaperEngine {
                 let lw_burst_secs = p.bonereaper_lw_burst_secs() as f64;
                 let lw_burst_usdc = p.bonereaper_lw_burst_usdc();
                 let lw_quota_ok = lw_max == 0 || st.lw_injections < lw_max;
-                let lw_cd_ms = p.bonereaper_buy_cooldown_ms();
-                let lw_in_cd = st.last_buy_ms > 0
-                    && ctx.now_ms.saturating_sub(st.last_buy_ms) < lw_cd_ms;
+                // LW'ye özgü cooldown: lw_cooldown_ms > 0 ise kendi zamanlayıcısı,
+                // aksi halde normal buy_cooldown_ms kullanılır.
+                let lw_cd_ms_specific = p.bonereaper_lw_cooldown_ms();
+                let lw_in_cd = if lw_cd_ms_specific > 0 {
+                    st.last_lw_buy_ms > 0
+                        && ctx.now_ms.saturating_sub(st.last_lw_buy_ms) < lw_cd_ms_specific
+                } else {
+                    let lw_cd_ms = p.bonereaper_buy_cooldown_ms();
+                    st.last_buy_ms > 0
+                        && ctx.now_ms.saturating_sub(st.last_buy_ms) < lw_cd_ms
+                };
 
                 if lw_quota_ok && to_end > 0.0 && !lw_in_cd {
                     let burst_active = lw_burst_usdc > 0.0
@@ -202,6 +214,7 @@ impl BonereaperEngine {
                             };
                             if let Some(o) = make_buy(ctx, winner, w_ask, size, reason) {
                                 st.last_buy_ms = ctx.now_ms;
+                                st.last_lw_buy_ms = ctx.now_ms;
                                 st.lw_injections = st.lw_injections.saturating_add(1);
                                 st.last_up_bid = ctx.up_best_bid;
                                 st.last_dn_bid = ctx.down_best_bid;
@@ -270,7 +283,8 @@ impl BonereaperEngine {
                     let m = ctx.metrics;
                     let imb = m.up_filled - m.down_filled;
                     // Dinamik imbalance eşiği: N(to_end) × est_trade_size
-                    // N: T>120s=3, T<120s linear 3→10. est_size = mid_usdc / dominant_bid.
+                    // N: T>=120s→3, T>=60s→6, T>=30s→9, T<30s→12
+                    // est_size = ceil(size_mid_usdc / dominant_bid)
                     let dominant_bid = ctx.up_best_bid.max(ctx.down_best_bid);
                     let est_trade_size = if dominant_bid > 0.0 {
                         (p.bonereaper_size_mid_usdc(ctx.order_usdc) / dominant_bid).ceil().max(1.0)
@@ -279,10 +293,14 @@ impl BonereaperEngine {
                     };
                     let n_trades = if to_end >= 120.0 || to_end >= f64::MAX / 2.0 {
                         3.0_f64
+                    } else if to_end >= 60.0 {
+                        6.0_f64
+                    } else if to_end >= 30.0 {
+                        9.0_f64
                     } else {
-                        3.0 + (120.0 - to_end.min(120.0)) / 120.0 * 7.0
+                        12.0_f64
                     };
-                    let dynamic_imb = (n_trades * est_trade_size).clamp(15.0, 400.0);
+                    let dynamic_imb = (n_trades * est_trade_size).clamp(15.0, 600.0);
                     let param_imb = p.bonereaper_imbalance_thr(ctx.order_usdc);
                     let imb_thr = if param_imb < 500.0 { param_imb } else { dynamic_imb };
                     if imb.abs() > imb_thr {
