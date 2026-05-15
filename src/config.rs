@@ -418,7 +418,7 @@ impl StrategyParams {
         // Default 1.00: eşit hacim senaryosunda kırılgan avg_sum bandını keser;
         // scalp/LW cap dışında. Daha gevşek: strategy_params'ta 1.05+ ver.
         self.bonereaper_max_avg_sum
-            .unwrap_or(1.05)
+            .unwrap_or(1.20)
             .clamp(0.50, 2.00)
     }
     /// İlk emir spread eşiği; 0.00–0.20 sınırlı; default 0.02.
