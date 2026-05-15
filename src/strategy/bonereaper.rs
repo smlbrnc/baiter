@@ -283,25 +283,19 @@ impl BonereaperEngine {
                     let m = ctx.metrics;
                     let imb = m.up_filled - m.down_filled;
                     // Dinamik imbalance eşiği: N(to_end) × est_trade_size
-                    // N: T>=120s→8, T>=60s→12, T>=30s→16, T<30s→20
-                    // Gerçek bot analizi (36 session, 3231 trade):
-                    //   T>=120s imb p75=318sh → N=8×45=360sh (%25 fire rate)
-                    //   T>=60s  imb p75=503sh → N=12×45=540sh
-                    //   T>=30s  imb p75=1054sh → N=16×45=720sh
-                    //   T<30s   imb p75=1107sh → N=20×45=900sh
-                    // Önceki N=3/6/9/12 + 600sh clamp → %58 fire rate (çok agresif).
+                    // N: T>=120s→3, T>=60s→6, T>=30s→9, T<30s→12
                     // Sabit share: Mid 4×, High 5×, ort ≈ 4.5× (imbalance hesabı)
                     let est_trade_size = (ctx.order_usdc * 4.5).round().max(1.0);
                     let n_trades = if to_end >= 120.0 || to_end >= f64::MAX / 2.0 {
-                        8.0_f64
+                        3.0_f64
                     } else if to_end >= 60.0 {
-                        12.0_f64
+                        6.0_f64
                     } else if to_end >= 30.0 {
-                        16.0_f64
+                        9.0_f64
                     } else {
-                        20.0_f64
+                        12.0_f64
                     };
-                    let dynamic_imb = (n_trades * est_trade_size).clamp(15.0, 1000.0);
+                    let dynamic_imb = (n_trades * est_trade_size).clamp(15.0, 600.0);
                     let param_imb = p.bonereaper_imbalance_thr(ctx.order_usdc);
                     let imb_thr = if param_imb < 500.0 { param_imb } else { dynamic_imb };
                     if imb.abs() > imb_thr {
@@ -335,17 +329,6 @@ impl BonereaperEngine {
                 let metrics = ctx.metrics;
                 let loser_opt = loser_side(ctx.up_best_bid, ctx.down_best_bid);
                 let is_loser_dir = loser_opt.map_or(false, |l| dir == l);
-
-                // LW GUARD: winner bid >= lw_thr bölgesinde normal High/Mid buylar bloke.
-                // Bu bölgede sadece LW shots + loser scalp çalışmalı.
-                // Gerçek bot analizi: winner >= 0.88 olduğunda normal alım DURUR,
-                // yalnızca LW (10s cooldown) ve loser cheap scalp devam eder.
-                // Aksi halde buy_cooldown=2s her 2s'de 50sh High buy tetikliyor →
-                // 10s LW window'da 1 LW + 4 normal buy = 5x aşırı maliyet.
-                let winner_bid_now = ctx.up_best_bid.max(ctx.down_best_bid);
-                if winner_bid_now >= lw_thr && !is_loser_dir {
-                    return (BonereaperState::Active(st), Decision::NoOp);
-                }
 
                 let effective_min = if is_loser_dir {
                     p.bonereaper_loser_min_price().min(ctx.min_price)
