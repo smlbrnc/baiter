@@ -332,6 +332,17 @@ impl BonereaperEngine {
                 let loser_opt = loser_side(ctx.up_best_bid, ctx.down_best_bid);
                 let is_loser_dir = loser_opt.map_or(false, |l| dir == l);
 
+                // LW GUARD: winner bid >= lw_thr bölgesinde normal High/Mid buylar bloke.
+                // Bu bölgede sadece LW shots + loser scalp çalışmalı.
+                // Gerçek bot analizi: winner >= 0.88 olduğunda normal alım DURUR,
+                // yalnızca LW (10s cooldown) ve loser cheap scalp devam eder.
+                // Aksi halde buy_cooldown=2s her 2s'de 50sh High buy tetikliyor →
+                // 10s LW window'da 1 LW + 4 normal buy = 5x aşırı maliyet.
+                let winner_bid_now = ctx.up_best_bid.max(ctx.down_best_bid);
+                if winner_bid_now >= lw_thr && !is_loser_dir {
+                    return (BonereaperState::Active(st), Decision::NoOp);
+                }
+
                 let effective_min = if is_loser_dir {
                     p.bonereaper_loser_min_price().min(ctx.min_price)
                 } else {
