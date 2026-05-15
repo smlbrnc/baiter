@@ -283,21 +283,25 @@ impl BonereaperEngine {
                     let m = ctx.metrics;
                     let imb = m.up_filled - m.down_filled;
                     // Dinamik imbalance eşiği: N(to_end) × est_trade_size
-                    // N: T>=120s→3, T>=60s→6, T>=30s→9, T<30s→12
-                    // est_size = ceil(size_mid_usdc / dominant_bid)
-                    let dominant_bid = ctx.up_best_bid.max(ctx.down_best_bid);
+                    // N: T>=120s→8, T>=60s→12, T>=30s→16, T<30s→20
+                    // Gerçek bot analizi (36 session, 3231 trade):
+                    //   T>=120s imb p75=318sh → N=8×45=360sh (%25 fire rate)
+                    //   T>=60s  imb p75=503sh → N=12×45=540sh
+                    //   T>=30s  imb p75=1054sh → N=16×45=720sh
+                    //   T<30s   imb p75=1107sh → N=20×45=900sh
+                    // Önceki N=3/6/9/12 + 600sh clamp → %58 fire rate (çok agresif).
                     // Sabit share: Mid 4×, High 5×, ort ≈ 4.5× (imbalance hesabı)
                     let est_trade_size = (ctx.order_usdc * 4.5).round().max(1.0);
                     let n_trades = if to_end >= 120.0 || to_end >= f64::MAX / 2.0 {
-                        3.0_f64
+                        8.0_f64
                     } else if to_end >= 60.0 {
-                        6.0_f64
-                    } else if to_end >= 30.0 {
-                        9.0_f64
-                    } else {
                         12.0_f64
+                    } else if to_end >= 30.0 {
+                        16.0_f64
+                    } else {
+                        20.0_f64
                     };
-                    let dynamic_imb = (n_trades * est_trade_size).clamp(15.0, 600.0);
+                    let dynamic_imb = (n_trades * est_trade_size).clamp(15.0, 1000.0);
                     let param_imb = p.bonereaper_imbalance_thr(ctx.order_usdc);
                     let imb_thr = if param_imb < 500.0 { param_imb } else { dynamic_imb };
                     if imb.abs() > imb_thr {
