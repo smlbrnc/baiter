@@ -192,18 +192,6 @@ impl BonereaperEngine {
                             (Outcome::Down, ctx.down_best_bid, ctx.down_best_ask)
                         };
                         if w_bid >= lw_thr && w_ask > 0.0 {
-                            // avg_sum guard: LW order_price + opp_avg > max_avg_sum → bloke.
-                            // 36 market analizi: bu check ile %99.6 LW fill bloke olur.
-                            // Gerçek bot (bonereaper8) sıfır LW shot yapmasının sebebi bu.
-                            let lw_max_avg = p.bonereaper_max_avg_sum();
-                            let (lw_opp_avg, lw_opp_filled) = if winner == Outcome::Up {
-                                (ctx.metrics.avg_down, ctx.metrics.down_filled)
-                            } else {
-                                (ctx.metrics.avg_up, ctx.metrics.up_filled)
-                            };
-                            if lw_opp_filled > 0.0 && w_ask + lw_opp_avg > lw_max_avg {
-                                // avg_sum exceed → LW skip, normal buy_cooldown'a devam et.
-                            } else {
                             // Fiyat bazlı ölçekleme (r=+0.80, zaman r=-0.10 anlamsız).
                             let arb_mult = if w_ask >= 0.99 {
                                 5.0
@@ -257,7 +245,6 @@ impl BonereaperEngine {
                                     Decision::PlaceOrders(orders),
                                 );
                             }
-                            } // else: avg_sum guard passed
                         }
                     }
                 }
