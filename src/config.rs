@@ -429,20 +429,22 @@ impl StrategyParams {
             .clamp(0.0, 10_000.0)
     }
     /// Mid bucket USDC (0.30 < bid ≤ 0.65); 0–10000 sınırlı.
-    /// Default: `4 × order_usdc` — 480-kombinasyon backtest (126 session):
-    /// mid=4× en yüksek net PnL sağladı (+14,518 avg vs mid=3×'te 12,179).
+    /// Default: `1.5 × order_usdc` — 66-market gerçek bot analizi:
+    /// normal per-shot medyan=$9.8, ort=$13.1. order=10 → $15 ideal eşleşme.
+    /// Eski 4× ($40) gerçek botun 3× üstündeydi → trade sıklığı ve bakiye oranı bozuktu.
     /// DB'de override varsa kullanılır.
     pub fn bonereaper_size_mid_usdc(&self, order_usdc: f64) -> f64 {
         self.bonereaper_size_mid_usdc
-            .unwrap_or(4.0 * order_usdc)
+            .unwrap_or(1.5 * order_usdc)
             .clamp(0.0, 10_000.0)
     }
     /// High bucket USDC (bid > 0.65); 0–10000 sınırlı.
-    /// Default: `6 × order_usdc` — backtest optimumu: high=6× en iyi sonucu verdi
-    /// (high=6× avg +14,171 vs high=5×'te +12,853). DB'de override varsa kullanılır.
+    /// Default: `2 × order_usdc` — 66-market gerçek bot analizi:
+    /// high band ort. ~$20/shot (order=10). Eski 6× ($60) gerçek botun 3× üstündeydi.
+    /// DB'de override varsa kullanılır.
     pub fn bonereaper_size_high_usdc(&self, order_usdc: f64) -> f64 {
         self.bonereaper_size_high_usdc
-            .unwrap_or(6.0 * order_usdc)
+            .unwrap_or(2.0 * order_usdc)
             .clamp(0.0, 10_000.0)
     }
     /// Loser side min bid eşiği; 0.001–0.10 sınırlı; default 0.01 (1¢ scalp).
@@ -453,14 +455,13 @@ impl StrategyParams {
             .clamp(0.001, 0.10)
     }
     /// Loser side scalp USDC; 0–50 sınırlı.
-    /// Default: `order_usdc / 15` — backtest optimumu (126 session, 480 kombo):
-    /// order/15 ($0.67) en yüksek net PnL sağladı (+13,006 avg).
-    /// Büyük scalp (order/5) net PnL'i düşürüyor çünkü %71 win oranında
-    /// loser scalp her alımda yakılıyor. Küçük tutarak sunk cost azaltılır.
+    /// Default: `order_usdc / 4` — 66-market gerçek bot analizi:
+    /// loser per-shot ort=$2.88, medyan=$0.85. order=10 → order/4=$2.50 ort'a en yakın.
+    /// Eski order/15 ($0.67) gerçek botun 4× altındaydı → sürpriz kazanç potansiyeli kaçıyordu.
     /// 0 = scalp KAPALI. DB'de override varsa onu kullan.
     pub fn bonereaper_loser_scalp_usdc(&self, order_usdc: f64) -> f64 {
         self.bonereaper_loser_scalp_usdc
-            .unwrap_or(order_usdc / 15.0)
+            .unwrap_or(order_usdc / 4.0)
             .clamp(0.0, 50.0)
     }
     /// Loser scalp üst bid eşiği; 0.05–0.50 sınırlı; default 0.30. Loser side
