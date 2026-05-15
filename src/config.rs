@@ -344,13 +344,16 @@ impl StrategyParams {
     // === Bonereaper accessors (G_lw_only — backtest optimum: ROI +%2.86) ===
     // Felsefe: minimal scalp (normal trade'ler küçük) + tek büyük late winner
     // inject. 3-bot cross-validation (468 session): tüm botlarda pozitif ROI.
-    /// Ardışık BUY arası min bekleme (ms); 500–60000 sınırlı; default 10000.
-    /// 36 market log analizi (bonereaper/2/3/4/6): karar aralığı min=6s, median=10s.
-    /// 2s ile her 2s'de alım → 150 karar/market. 10s ile 30 karar/market, avg_sum=1.00
-    /// ile cap sonrası gerçek bot ile aynı 5-15 trade/market profili çıkıyor.
+    /// Ardışık BUY arası min bekleme (ms); 500–60000 sınırlı; default 2000.
+    /// 47-market log analizi (bonereaper6/7/8): yön-değişimi gap dağılımı:
+    ///   min=2s (en küçük bağımsız karar aralığı), %12 = 2s, median=5s.
+    ///   0s/1s = aynı Polygon bloğunda birden fazla fill (partial, bot kararı değil).
+    /// Trading frekansını sınırlayan ASIL mekanizma avg_sum=1.00 kentidir:
+    ///   Piyasa 50/50'den uzaklaşınca avg_sum > 1.00 → uzun doğal bekleme (30-100s).
+    ///   Cooldown=2s + avg_sum=1.00 → gerçek bot ile aynı 10-18 trade/market profili.
     pub fn bonereaper_buy_cooldown_ms(&self) -> u64 {
         self.bonereaper_buy_cooldown_ms
-            .unwrap_or(10_000)
+            .unwrap_or(2_000)
             .clamp(500, 60_000)
     }
     /// Late winner penceresi (sn); 0–300 sınırlı; default 180.
