@@ -376,7 +376,7 @@ impl StrategyParams {
     /// `order_usdc` verilirse formül: `3 × order_usdc`. DB'de override varsa onu kullan.
     pub fn bonereaper_late_winner_usdc(&self, order_usdc: f64) -> f64 {
         self.bonereaper_late_winner_usdc
-            .unwrap_or(3.0 * order_usdc)
+            .unwrap_or(4.0 * order_usdc)
             .clamp(0.0, 10_000.0)
     }
     /// Session başına max LW injection; 0–50 sınırlı; default 20.
@@ -429,21 +429,20 @@ impl StrategyParams {
             .clamp(0.0, 10_000.0)
     }
     /// Mid bucket USDC (0.30 < bid ≤ 0.65); 0–10000 sınırlı.
-    /// Default: `3 × order_usdc` — 25-market analizi: real bot order≈$8'de
-    /// $23.12-$23.31/shot → 23/8 ≈ 2.9× ≈ 3× ile uyumlu.
+    /// Default: `4 × order_usdc` — 480-kombinasyon backtest (126 session):
+    /// mid=4× en yüksek net PnL sağladı (+14,518 avg vs mid=3×'te 12,179).
     /// DB'de override varsa kullanılır.
     pub fn bonereaper_size_mid_usdc(&self, order_usdc: f64) -> f64 {
         self.bonereaper_size_mid_usdc
-            .unwrap_or(3.0 * order_usdc)
+            .unwrap_or(4.0 * order_usdc)
             .clamp(0.0, 10_000.0)
     }
     /// High bucket USDC (bid > 0.65); 0–10000 sınırlı.
-    /// Default: `5 × order_usdc` — real bot order≈$8'de $37-$43/shot
-    /// → 37/8≈4.6×, backtest optimizasyonu 5× olarak seçildi.
-    /// DB'de override varsa kullanılır.
+    /// Default: `6 × order_usdc` — backtest optimumu: high=6× en iyi sonucu verdi
+    /// (high=6× avg +14,171 vs high=5×'te +12,853). DB'de override varsa kullanılır.
     pub fn bonereaper_size_high_usdc(&self, order_usdc: f64) -> f64 {
         self.bonereaper_size_high_usdc
-            .unwrap_or(5.0 * order_usdc)
+            .unwrap_or(6.0 * order_usdc)
             .clamp(0.0, 10_000.0)
     }
     /// Loser side min bid eşiği; 0.001–0.10 sınırlı; default 0.01 (1¢ scalp).
@@ -454,14 +453,14 @@ impl StrategyParams {
             .clamp(0.001, 0.10)
     }
     /// Loser side scalp USDC; 0–50 sınırlı.
-    /// Default: `order_usdc / 5` — loser taraf $0.01-0.10 fiyatından alım,
-    /// kazanırsa 900-4900% ROI (en yüksek asimetrik getiri bandı).
-    /// order/10 → order/5 değişikliği: 2× daha fazla hedge, 2× daha fazla
-    /// sürpriz kâr potansiyeli. Maliyet ise toplam bütçenin sadece %2'si.
+    /// Default: `order_usdc / 15` — backtest optimumu (126 session, 480 kombo):
+    /// order/15 ($0.67) en yüksek net PnL sağladı (+13,006 avg).
+    /// Büyük scalp (order/5) net PnL'i düşürüyor çünkü %71 win oranında
+    /// loser scalp her alımda yakılıyor. Küçük tutarak sunk cost azaltılır.
     /// 0 = scalp KAPALI. DB'de override varsa onu kullan.
     pub fn bonereaper_loser_scalp_usdc(&self, order_usdc: f64) -> f64 {
         self.bonereaper_loser_scalp_usdc
-            .unwrap_or(order_usdc / 5.0)
+            .unwrap_or(order_usdc / 15.0)
             .clamp(0.0, 50.0)
     }
     /// Loser scalp üst bid eşiği; 0.05–0.50 sınırlı; default 0.30. Loser side
