@@ -150,7 +150,7 @@ pub struct StrategyParams {
     #[serde(default)]
     pub bonereaper_imbalance_thr: Option<f64>,
     /// avg_sum yumuşak cap. `new_avg + opp_avg > X` ise yeni alım yok (scalp/LW muaf).
-    /// JSON'da null ise `bonereaper_max_avg_sum()` default **1.00**. Daha gevşek için örn. 1.05.
+    /// JSON'da null ise default **1.10** (gerçek bot peak avg_sum medyanı 1.10).
     #[serde(default)]
     pub bonereaper_max_avg_sum: Option<f64>,
     /// İlk emir için minimum |up_bid - down_bid| spread eşiği. Bu eşik
@@ -412,13 +412,12 @@ impl StrategyParams {
     /// avg_sum'a (1.16-1.42) sahip olsa da winner/loser share oranı 5-40:1
     /// olduğu için zarar etmiyor. Bizim botumuz imbalance'dan dolayı eşit
     /// share biriktirir → default 1.00: ikinci bacak normal alımda
-    /// `new_avg + opp_avg > 1.0` ise bloke; loser scalp (muaf) ve LW ile ucuza
-    /// toplanır.
+    /// `new_avg + opp_avg > max` ise bloke; loser scalp (muaf) ve LW muaf.
+    /// Gerçek bot analizi: peak avg_sum medyanı 1.10 → default 1.10.
+    /// %75 market 1.05 üstüne çıkıyor; 1.10 gerçek botun doğal durma noktası.
     pub fn bonereaper_max_avg_sum(&self) -> f64 {
-        // Default 1.00: eşit hacim senaryosunda kırılgan avg_sum bandını keser;
-        // scalp/LW cap dışında. Daha gevşek: strategy_params'ta 1.05+ ver.
         self.bonereaper_max_avg_sum
-            .unwrap_or(1.20)
+            .unwrap_or(1.10)
             .clamp(0.50, 2.00)
     }
     /// İlk emir spread eşiği; 0.00–0.20 sınırlı; default 0.02.
