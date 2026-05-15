@@ -358,7 +358,7 @@ impl StrategyParams {
     /// 300sn defaultu erken LW'ye izin veriyordu; 180 gerçek bot davranışıyla
     /// birebir uyumlu. 0 = kural KAPALI.
     pub fn bonereaper_late_winner_secs(&self) -> u32 {
-        self.bonereaper_late_winner_secs.unwrap_or(180).min(300)
+        self.bonereaper_late_winner_secs.unwrap_or(300).min(300)
     }
     /// Late winner bid eşiği; 0.50–0.99 sınırlı; default 0.88
     /// (Canlı Bonereaper analizi [1:50-1:55 ET]: gerçek bot UP $0.92 bid'de
@@ -381,7 +381,7 @@ impl StrategyParams {
     /// `order_usdc` verilirse formül: `3 × order_usdc`. DB'de override varsa onu kullan.
     pub fn bonereaper_late_winner_usdc(&self, order_usdc: f64) -> f64 {
         self.bonereaper_late_winner_usdc
-            .unwrap_or(4.0 * order_usdc)
+            .unwrap_or(2.0 * order_usdc)
             .clamp(0.0, 10_000.0)
     }
     /// Session başına max LW injection; 0–50 sınırlı; default 0 (sınırsız).
@@ -392,7 +392,7 @@ impl StrategyParams {
     /// LW shot'ları arasındaki minimum bekleme (ms); 0–60000 sınırlı.
     /// Default: 10_000 (10s). 0 = devre dışı (normal buy_cooldown_ms kullanılır).
     pub fn bonereaper_lw_cooldown_ms(&self) -> u64 {
-        self.bonereaper_lw_cooldown_ms.unwrap_or(6_000).min(60_000)
+        self.bonereaper_lw_cooldown_ms.unwrap_or(10_000).min(60_000)
     }
     /// Imbalance threshold (share); 0–10000 sınırlı.
     /// Default: `10 × order_usdc` — bu eşik aşılınca weaker side rebalance.
