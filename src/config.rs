@@ -463,15 +463,16 @@ impl StrategyParams {
             .unwrap_or(0.01)
             .clamp(0.001, 0.10)
     }
-    /// Loser side scalp USDC; 0–50 sınırlı.
-    /// Default: `order_usdc / 3.33` — 50-market gerçek bot analizi:
-    /// loser per-shot (bid≤0.10) avg=$2.89. order=10 → order/3.33=$3.00 avg'ye %4 yakın.
-    /// Eski order/4 ($2.50) da uyumluydu (-13%), /3.33 daha isabetli.
+    /// Loser side scalp USDC; 0–500 sınırlı.
+    /// Default: `order_usdc × 1.0` — 687-emir gerçek bot analizi (parçalı fill birleştirme):
+    /// sabit USDC tezi CoV=0.647 ile en düzenli formül (sabit share CoV=2.06 vs).
+    /// 0.01'de ~654sh, 0.10'da ~76sh (8.6× fark, beklenti 10×) → ceil(usdc/price) doğrulandı.
+    /// cost her fiyat bandında $7-11 sabit → loser_usdc≈$10 ≈ order_usdc.
     /// 0 = scalp KAPALI. DB'de override varsa onu kullan.
     pub fn bonereaper_loser_scalp_usdc(&self, order_usdc: f64) -> f64 {
         self.bonereaper_loser_scalp_usdc
-            .unwrap_or(order_usdc / 3.33)
-            .clamp(0.0, 50.0)
+            .unwrap_or(order_usdc)
+            .clamp(0.0, 500.0)
     }
     /// Loser scalp üst bid eşiği; 0.05–0.50 sınırlı; default 0.30. Loser side
     /// bid bu eşiğin altındaysa scalp boyutu uygulanır (longshot bucket yerine).
