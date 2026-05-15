@@ -349,8 +349,8 @@ impl StrategyParams {
     /// 14× daha az trade üretiyordu (bot 101: 30 trade vs gerçek ~600).
     pub fn bonereaper_buy_cooldown_ms(&self) -> u64 {
         self.bonereaper_buy_cooldown_ms
-            .unwrap_or(3_000)
-            .clamp(1_000, 60_000)
+            .unwrap_or(2_000)
+            .clamp(500, 60_000)
     }
     /// Late winner penceresi (sn); 0–300 sınırlı; default 180.
     /// 25-market doğrulaması (12 + 13 yeni log): T-180 sonrası LW oranı %98.6
@@ -367,7 +367,7 @@ impl StrategyParams {
     /// "$0.07-$0.13 arası DOWN loser" gözlemlenince UP'a büyük LW yapıyor).
     pub fn bonereaper_late_winner_bid_thr(&self) -> f64 {
         self.bonereaper_late_winner_bid_thr
-            .unwrap_or(0.90)
+            .unwrap_or(0.88)
             .clamp(0.50, 0.99)
     }
     /// Late winner USDC notional; 0–10000 sınırlı; default 100.
