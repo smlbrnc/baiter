@@ -438,12 +438,12 @@ impl StrategyParams {
             .clamp(0.0, 10_000.0)
     }
     /// High bucket USDC (bid > 0.65); 0–10000 sınırlı.
-    /// Default: `4 × order_usdc` — real bot order≈$8'de $37.19-$43.12/shot
-    /// → 37/8 ≈ 4.6× ≈ 4× ile uyumlu.
+    /// Default: `5 × order_usdc` — real bot order≈$8'de $37-$43/shot
+    /// → 37/8≈4.6×, backtest optimizasyonu 5× olarak seçildi.
     /// DB'de override varsa kullanılır.
     pub fn bonereaper_size_high_usdc(&self, order_usdc: f64) -> f64 {
         self.bonereaper_size_high_usdc
-            .unwrap_or(4.0 * order_usdc)
+            .unwrap_or(5.0 * order_usdc)
             .clamp(0.0, 10_000.0)
     }
     /// Loser side min bid eşiği; 0.001–0.10 sınırlı; default 0.01 (1¢ scalp).
