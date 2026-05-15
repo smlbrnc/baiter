@@ -1,103 +1,103 @@
-//! Gravie V3 (ASYM) — Sinyal-yönlü asimetrik dual-side accumulator.
+//! Gravie — Dual-Balance Accumulator stratejisi.
 //!
-//! ## Mantık (basit, tek bir cümlede özetlenebilir)
+//! ## Felsefe
 //!
-//! Her tick'te EMA-smoothed `effective_score`'un yönünü çıkar. O yöne (**winner**)
-//! büyük emir gönder; karşı tarafa (**hedge**) küçük emir gönder — yalnız
-//! `avg_up + avg_down < avg_sum_max` (default `0.80`) koşulu sağlanırsa.
+//! Yön tahmini YAPMAZ. Her markette iki koşulu güvence altına almayı amaçlar:
 //!
-//! 1. **Asimetrik sermaye dağılımı.** Winner $15 / Hedge $5 = 3× daha çok share
-//!    kazanan tarafa. Bu, "kazanan tarafta daha çok share, kaybeden tarafta az
-//!    share" risk profilini sağlar. Yön doğruysa winner artıyor; yön yanlışsa
-//!    hedge azken kayıp sınırlı.
-//! 2. **avg_sum guard = mat. arbitraj garantisi.** Her dual pair için
-//!    `avg_up + avg_down < 0.80` ⇒ pair her durumda min %20 brut marj
-//!    (1.0 − avg_sum_max). Hedge yalnız bu koşul yeni alımdan sonra hâlâ
-//!    sağlanırsa açılır → hedge yalnız "iyi fiyatlardan" alınır.
-//! 3. **Stability filter.** Son `stability_window=3` tick'in smoothed signal
-//!    std'si `> 0.5` ise trade atlanır → kararsız (gürültülü) marketlerde
-//!    pasif kalınır.
-//! 4. **EMA smoothing.** `ema_alpha=0.3` ile signal_score yumuşatılır →
-//!    spike-driven yanlış yön kararları azalır.
-//! 5. **Ayrı cooldown.** Winner ve hedge için bağımsız cooldown
-//!    (`buy_cooldown_ms`, `hedge_cooldown_ms`) → biri diğerini bloklamaz.
-//! 6. **T-cutoff.** Kapanışa `t_cutoff_secs=30` kala yeni emir verilmez.
-//! 7. **Late-window winner pasif.** Kapanışa `late_winner_pasif_secs=90`
-//!    kala WINNER BUY açılmaz; hedge BUY serbest kalır. Bot 91 backtest:
-//!    late-flip kayıplarının %63'ü son %20 pencerede gerçekleşiyor — bu
-//!    pencerede winner emirleri kapatınca worst loss -$281 → -$238 (%15
-//!    düşüş), ROI +9.70% → +11.10%. Hedge serbest çünkü mevcut pair'leri
-//!    profit-lock'a daha yakına çekiyor (avg_sum<X arb koşulu altında).
+//! 1. `up_filled == down_filled` (eşit share)
+//! 2. `avg_up + avg_down < avg_sum_max` (default `0.95`)
+//!
+//! Bu iki koşul birlikte sağlandığında, hangi sonuç gelirse gelsin:
+//!
+//! ```text
+//! profit = N × (1 − (avg_up + avg_down))   > 0
+//! ```
+//!
+//! Yani: ucuz fiyattan iki tarafı da doldur, dengeyi koru, kapat — garantili
+//! marj.
+//!
+//! ## Karar zinciri
+//!
+//! 1. **OB guard** — iki tarafın da bid/ask > 0.
+//! 2. **T-cutoff** — `to_end <= t_cutoff_secs` → `Stopped`.
+//! 3. **Cooldown** — `now − last_buy_ms < buy_cooldown_ms` → NoOp.
+//! 4. **Price ceiling** — `up_ask > max_ask` veya `dn_ask > max_ask` → NoOp.
+//! 5. **Yön seçimi**:
+//!    - `imb = up_filled − down_filled`
+//!    - `|imb| > imb_thr` → az olan tarafa BUY (rebalance, fiyat fark etmez).
+//!    - aksi → daha ucuz ask'a sahip tarafa BUY.
+//! 6. **Size çarpanı** — `size_multiplier(ask)` ile `order_usdc × mult`
+//!    notional. 0.5 merkezli simetrik, her 0.1 mesafede +1x:
+//!    ```text
+//!    mult(p) = clamp(2 + (|p − 0.5| − 0.05) × 10,  2.0, 7.0)
+//!    ```
+//!    Örnek: 0.55→2x, 0.65→3x, 0.68→3.3x, 0.75→4x, 0.85→5x, 0.95→6x.
+//!    Simetri: 0.45→2x, 0.35→3x, …, 0.05→6x.
+//! 7. **avg_sum gate** — yeni alım sonrası `new_avg_self + avg_opp >= avg_sum_max`
+//!    olacaksa NoOp. (İlk alımda `opp_filled == 0` → gate pas geçilir.)
+//! 8. **FAK BUY** — `size = ceil(order_usdc × mult / ask)`, `max_fak_size` cap.
 //!
 //! ## Reason etiketleri
 //!
-//! `gravie:winner:{up,down}` — sinyal yönüne BUY (büyük asimetrik emir)
-//! `gravie:hedge:{up,down}`  — sinyal karşıtı tarafa BUY (küçük, avg<X gated)
-//!
-//! ## Bot 91 backtest sonuçları (4 gün, 135 market)
-//!
-//! | Profil          | PnL      | ROI    | WR  | Worst   | Dual % |
-//! |-----------------|----------|--------|-----|---------|--------|
-//! | V3 ASYM default | +$2468   | +9.70% | %61 | -$281   | %49    |
-//! | Eski (Bot 91)   | -$1300   | -6.34% | %32 | -$~700  | %80    |
+//! - `gravie:rebalance:{up,down}` — zayıf tarafa zorunlu denge alımı.
+//! - `gravie:buy:{up,down}` — normal "ucuz taraf" alımı.
 
 use serde::{Deserialize, Serialize};
 
-use super::common::{Decision, OpenOrder, PlannedOrder, StrategyContext};
+use super::common::{Decision, PlannedOrder, StrategyContext};
 use crate::config::GravieParams;
 use crate::types::{OrderType, Outcome, Side};
 
 #[inline]
-const fn reason_winner(dir: Outcome) -> &'static str {
+const fn reason_buy(dir: Outcome) -> &'static str {
     match dir {
-        Outcome::Up => "gravie:winner:up",
-        Outcome::Down => "gravie:winner:down",
-    }
-}
-#[inline]
-const fn reason_hedge(dir: Outcome) -> &'static str {
-    match dir {
-        Outcome::Up => "gravie:hedge:up",
-        Outcome::Down => "gravie:hedge:down",
+        Outcome::Up => "gravie:buy:up",
+        Outcome::Down => "gravie:buy:down",
     }
 }
 
-// ─────────────────────────────────────────────
-// FSM State
-// ─────────────────────────────────────────────
+#[inline]
+const fn reason_rebalance(dir: Outcome) -> &'static str {
+    match dir {
+        Outcome::Up => "gravie:rebalance:up",
+        Outcome::Down => "gravie:rebalance:down",
+    }
+}
+
+/// Fiyat-bazlı size çarpanı. 0.5 simetri merkezi; her 0.1 mesafe +1x.
+///
+/// Bant ortalarında tam çarpan, içinde lineer interpolation:
+/// - 0.55 / 0.45 → 2.0
+/// - 0.65 / 0.35 → 3.0
+/// - 0.68 / 0.32 → 3.3 (band içinde lineer)
+/// - 0.75 / 0.25 → 4.0
+/// - 0.85 / 0.15 → 5.0
+/// - 0.95 / 0.05 → 6.0
+///
+/// Cap [2.0, 7.0]; uç fiyatlar (0.0 / 1.0) → 6.5.
+#[inline]
+fn size_multiplier(price: f64) -> f64 {
+    let mult = 2.0 + ((price - 0.5).abs() - 0.05) * 10.0;
+    mult.clamp(2.0, 7.0)
+}
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub enum GravieState {
-    /// OB henüz hazır değil; ilk tick bekleniyor.
+    /// OB henüz hazır değil.
     #[default]
     Idle,
-    /// Market aktif — emir döngüsü çalışıyor.
+    /// Aktif emir döngüsü.
     Active(Box<GravieActive>),
-    /// T-cutoff geçildi veya kapanışa çok yakın; pasif kalır.
+    /// T-cutoff geçildi; pasif.
     Stopped,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct GravieActive {
-    /// 1-tick gate için son işlem yapılan saniye.
-    pub last_acted_secs: u64,
-    /// Son winner BUY emrinin verildiği zaman (ms).
+    /// Son BUY emrinin verildiği zaman (ms). 0 = henüz emir yok.
     #[serde(default)]
-    pub last_winner_buy_ms: u64,
-    /// Son hedge BUY emrinin verildiği zaman (ms).
-    #[serde(default)]
-    pub last_hedge_buy_ms: u64,
-    /// EMA smoothed signal (centered: smoothed = state + 5).
-    #[serde(default)]
-    pub ema_state: Option<f64>,
-    /// Son N tick'in smoothed signal'leri (stability filter için).
-    #[serde(default)]
-    pub signal_history: Vec<f64>,
+    pub last_buy_ms: u64,
 }
-
-// ─────────────────────────────────────────────
-// Karar motoru
-// ─────────────────────────────────────────────
 
 pub struct GravieEngine;
 
@@ -105,13 +105,10 @@ impl GravieEngine {
     pub fn decide(state: GravieState, ctx: &StrategyContext<'_>) -> (GravieState, Decision) {
         let p = GravieParams::from_strategy_params(ctx.strategy_params);
         let to_end = ctx.market_remaining_secs.unwrap_or(f64::MAX);
-        let rel_secs = (ctx.now_ms / 1000).saturating_sub(ctx.start_ts);
 
         match state {
-            // ── Pencere kapandı / cutoff geçti ──────────────────────────────
             GravieState::Stopped => (GravieState::Stopped, Decision::NoOp),
 
-            // ── OB hazırlığı ────────────────────────────────────────────────
             GravieState::Idle => {
                 let book_ready = ctx.up_best_bid > 0.0
                     && ctx.up_best_ask > 0.0
@@ -120,220 +117,95 @@ impl GravieEngine {
                 if !book_ready {
                     return (GravieState::Idle, Decision::NoOp);
                 }
-                let active = GravieActive {
-                    last_acted_secs: u64::MAX,
-                    last_winner_buy_ms: 0,
-                    last_hedge_buy_ms: 0,
-                    ema_state: None,
-                    signal_history: Vec::with_capacity(p.stability_window as usize),
-                };
-                (GravieState::Active(Box::new(active)), Decision::NoOp)
+                (
+                    GravieState::Active(Box::new(GravieActive::default())),
+                    Decision::NoOp,
+                )
             }
 
-            // ── Aktif emir döngüsü ──────────────────────────────────────────
             GravieState::Active(mut st) => {
-                // T-cutoff: kapanışa yakın → pasif.
                 if to_end <= p.t_cutoff_secs {
-                    return (GravieState::Stopped, cancel_all_open_gravie(ctx.open_orders));
+                    return (GravieState::Stopped, Decision::NoOp);
                 }
 
-                // tick_interval gate.
-                if !rel_secs.is_multiple_of(p.tick_interval_secs) {
-                    return (GravieState::Active(st), Decision::NoOp);
-                }
-                if rel_secs == st.last_acted_secs {
-                    return (GravieState::Active(st), Decision::NoOp);
-                }
-                st.last_acted_secs = rel_secs;
-
-                // OB güvenliği.
                 if ctx.up_best_ask <= 0.0 || ctx.down_best_ask <= 0.0 {
                     return (GravieState::Active(st), Decision::NoOp);
                 }
-                if ctx.effective_score <= 0.0 || !ctx.signal_ready {
+
+                if st.last_buy_ms > 0
+                    && ctx.now_ms.saturating_sub(st.last_buy_ms) < p.buy_cooldown_ms
+                {
                     return (GravieState::Active(st), Decision::NoOp);
                 }
 
-                // ── Signal smoothing (EMA) ──────────────────────────────────
-                // signal_score 0..10 → centered (-5..+5) → smooth → +5 geri.
-                let centered = ctx.effective_score - 5.0;
-                let smoothed_centered = match st.ema_state {
-                    None => centered,
-                    Some(prev) => p.ema_alpha * centered + (1.0 - p.ema_alpha) * prev,
-                };
-                st.ema_state = Some(smoothed_centered);
-                let smoothed = smoothed_centered + 5.0;
-
-                // ── Stability filter ────────────────────────────────────────
-                // Son N tick'in std'si > eşik ise pasif kal (kararsız market).
-                if p.stability_window > 0 {
-                    if st.signal_history.len() >= p.stability_window as usize {
-                        st.signal_history.remove(0);
-                    }
-                    st.signal_history.push(smoothed);
-                    if st.signal_history.len() < p.stability_window as usize {
-                        return (GravieState::Active(st), Decision::NoOp);
-                    }
-                    let n = st.signal_history.len() as f64;
-                    let mean = st.signal_history.iter().sum::<f64>() / n;
-                    let var = st.signal_history.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / n;
-                    if var.sqrt() > p.stability_max_std {
-                        return (GravieState::Active(st), Decision::NoOp);
-                    }
+                if ctx.up_best_ask > p.max_ask || ctx.down_best_ask > p.max_ask {
+                    return (GravieState::Active(st), Decision::NoOp);
                 }
 
-                // ── Sinyal yönü → winner side ──────────────────────────────
-                let winner = if smoothed > p.signal_up_threshold {
+                let m = ctx.metrics;
+                let imb = m.up_filled - m.down_filled;
+                let is_rebalance = imb.abs() > p.imb_thr;
+                let dir = if is_rebalance {
+                    if imb > 0.0 {
+                        Outcome::Down
+                    } else {
+                        Outcome::Up
+                    }
+                } else if ctx.up_best_ask <= ctx.down_best_ask {
                     Outcome::Up
-                } else if smoothed < p.signal_down_threshold {
+                } else {
                     Outcome::Down
-                } else {
+                };
+
+                let ask = ctx.best_ask(dir);
+                if ask <= 0.0 || ask > p.max_ask {
                     return (GravieState::Active(st), Decision::NoOp);
-                };
-                let hedge = winner.opposite();
-
-                let mut orders: Vec<PlannedOrder> = Vec::with_capacity(2);
-
-                // Late-window: kapanışa yakın → winner BUY engellenir, hedge serbest.
-                let winner_allowed =
-                    p.late_winner_pasif_secs <= 0.0 || to_end > p.late_winner_pasif_secs;
-
-                // ── Winner BUY (büyük emir, asimetrik) ──────────────────────
-                let winner_ask = ctx.best_ask(winner);
-                if winner_allowed
-                    && winner_ask > 0.0
-                    && winner_ask <= p.winner_max_price
-                    && ctx.now_ms.saturating_sub(st.last_winner_buy_ms) >= p.buy_cooldown_ms
-                {
-                    if let Some(order) = try_buy(
-                        ctx,
-                        winner,
-                        winner_ask,
-                        p.winner_order_usdc,
-                        &p,
-                        reason_winner(winner),
-                    ) {
-                        orders.push(order);
-                        st.last_winner_buy_ms = ctx.now_ms;
-                    }
                 }
 
-                // ── Hedge BUY (küçük emir, sıkı avg_sum gated) ──────────────
-                let winner_filled = match winner {
-                    Outcome::Up => ctx.metrics.up_filled,
-                    Outcome::Down => ctx.metrics.down_filled,
-                };
-                let hedge_ask = ctx.best_ask(hedge);
-                if hedge_ask > 0.0
-                    && hedge_ask <= p.hedge_max_price
-                    && winner_filled > 0.0
-                    && ctx.now_ms.saturating_sub(st.last_hedge_buy_ms) >= p.hedge_cooldown_ms
-                {
-                    if let Some(order) = try_buy(
-                        ctx,
-                        hedge,
-                        hedge_ask,
-                        p.hedge_order_usdc,
-                        &p,
-                        reason_hedge(hedge),
-                    ) {
-                        orders.push(order);
-                        st.last_hedge_buy_ms = ctx.now_ms;
-                    }
-                }
-
-                let decision = if orders.is_empty() {
-                    Decision::NoOp
+                let mult = size_multiplier(ask);
+                let raw_size = (ctx.order_usdc * mult / ask).ceil();
+                let size = if p.max_fak_size > 0.0 {
+                    raw_size.min(p.max_fak_size)
                 } else {
-                    Decision::PlaceOrders(orders)
+                    raw_size
                 };
-                (GravieState::Active(st), decision)
+                if size <= 0.0 || size * ask < ctx.api_min_order_size {
+                    return (GravieState::Active(st), Decision::NoOp);
+                }
+
+                let (own_filled, own_avg, opp_filled, opp_avg) = match dir {
+                    Outcome::Up => (m.up_filled, m.avg_up, m.down_filled, m.avg_down),
+                    Outcome::Down => (m.down_filled, m.avg_down, m.up_filled, m.avg_up),
+                };
+
+                if opp_filled > 0.0 {
+                    let new_own_avg = (own_avg * own_filled + ask * size) / (own_filled + size);
+                    if new_own_avg + opp_avg >= p.avg_sum_max {
+                        return (GravieState::Active(st), Decision::NoOp);
+                    }
+                }
+
+                let reason = if is_rebalance {
+                    reason_rebalance(dir)
+                } else {
+                    reason_buy(dir)
+                };
+
+                let order = PlannedOrder {
+                    outcome: dir,
+                    token_id: ctx.token_id(dir).to_string(),
+                    side: Side::Buy,
+                    price: ask,
+                    size,
+                    order_type: OrderType::Fak,
+                    reason: reason.to_string(),
+                };
+                st.last_buy_ms = ctx.now_ms;
+                (
+                    GravieState::Active(st),
+                    Decision::PlaceOrders(vec![order]),
+                )
             }
         }
-    }
-}
-
-// ─────────────────────────────────────────────
-// Yardımcılar
-// ─────────────────────────────────────────────
-
-/// FAK BUY emri planla. avg_sum kontrolü (yeni alımdan sonra `avg_up +
-/// avg_down < avg_sum_max` olmalı) burada yapılır — winner ve hedge için
-/// aynı koşul: pair açıkken her zaman matematiksel arbitraj garantisi.
-///
-/// Pozisyon yokken (henüz dual değilken) avg_sum kontrolü pas geçilir;
-/// yalnız fiyat tavanı / size kuralları geçerlidir.
-fn try_buy(
-    ctx: &StrategyContext<'_>,
-    side: Outcome,
-    ask: f64,
-    order_usdc: f64,
-    p: &GravieParams,
-    reason: &'static str,
-) -> Option<PlannedOrder> {
-    if ask <= 0.0 || ask > 1.0 {
-        return None;
-    }
-    let raw_size = (order_usdc / ask).ceil();
-    let mut size = if p.max_fak_size > 0.0 {
-        raw_size.min(p.max_fak_size)
-    } else {
-        raw_size
-    };
-
-    let m = ctx.metrics;
-    let (own_filled, own_spent, opp_filled, opp_spent) = match side {
-        Outcome::Up => (
-            m.up_filled,
-            m.avg_up * m.up_filled,
-            m.down_filled,
-            m.avg_down * m.down_filled,
-        ),
-        Outcome::Down => (
-            m.down_filled,
-            m.avg_down * m.down_filled,
-            m.up_filled,
-            m.avg_up * m.up_filled,
-        ),
-    };
-
-    if p.max_size_per_side > 0.0 {
-        size = size.min((p.max_size_per_side - own_filled).max(0.0));
-    }
-    if size <= 0.0 || size * ask < ctx.api_min_order_size {
-        return None;
-    }
-
-    // avg_sum gating — yalnız karşı tarafta pozisyon varken anlamlı.
-    if opp_filled > 0.0 {
-        let new_own_avg = (own_spent + size * ask) / (own_filled + size);
-        let opp_avg = opp_spent / opp_filled;
-        if new_own_avg + opp_avg >= p.avg_sum_max {
-            return None;
-        }
-    }
-
-    Some(PlannedOrder {
-        outcome: side,
-        token_id: ctx.token_id(side).to_string(),
-        side: Side::Buy,
-        price: ask,
-        size,
-        order_type: OrderType::Fak,
-        reason: reason.to_string(),
-    })
-}
-
-/// T-cutoff anında açık `gravie:` emirlerini iptal et (FAK olmayan kalmışsa).
-fn cancel_all_open_gravie(open_orders: &[OpenOrder]) -> Decision {
-    let ids: Vec<String> = open_orders
-        .iter()
-        .filter(|o| o.reason.starts_with("gravie:"))
-        .map(|o| o.id.clone())
-        .collect();
-    if ids.is_empty() {
-        Decision::NoOp
-    } else {
-        Decision::CancelOrders(ids)
     }
 }

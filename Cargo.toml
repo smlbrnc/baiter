@@ -18,6 +18,10 @@ path = "src/bin/bot.rs"
 name = "reset-db"
 path = "src/bin/reset-db.rs"
 
+[[bin]]
+name = "backtest-gravie"
+path = "src/bin/backtest-gravie.rs"
+
 [lib]
 path = "src/lib.rs"
 

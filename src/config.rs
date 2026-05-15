@@ -102,7 +102,7 @@ pub struct BotConfig {
 }
 
 /// Strateji-spesifik parametreler; `bots.strategy_params` JSON sütunundan
-/// parse edilir, tüm stratejiler (Bonereaper / Gravie) buradan okur.
+/// parse edilir.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct StrategyParams {
     #[serde(default)]
@@ -219,120 +219,32 @@ pub struct StrategyParams {
     #[serde(default)]
     pub bonereaper_avg_loser_max: Option<f64>,
 
-    // === Gravie (Bot 66 davranış kopyası) ===
-    /// Karar tick aralığı (sn). Bot 66 ortalama inter-arrival 4-5 sn.
-    /// Default: 5.
-    #[serde(default)]
-    pub gravie_tick_interval_secs: Option<u64>,
-    /// Ardışık BUY emirleri arası minimum bekleme (ms). Default: 4000.
+    // === Gravie (Dual-Balance Accumulator) ===
+    // Amaç: her markette UP shares == DOWN shares ve avg_up + avg_down < X.
+    // Bu iki koşul sağlandığında hangi sonuç gelirse gelsin garantili kâr:
+    //   profit = N × (1 − avg_sum). Yön sinyali GEREKMEZ.
+    /// Ardışık BUY emirleri arası minimum bekleme (ms). Default: 3000.
     #[serde(default)]
     pub gravie_buy_cooldown_ms: Option<u64>,
-    /// Yeni leg açma için ask fiyat tavanı. Bot 66 first entry medyan 0.50,
-    /// p75 0.575 — sıkı kalibrasyon. Default: 0.65.
-    #[serde(default)]
-    pub gravie_entry_ask_ceiling: Option<f64>,
-    /// Second-leg guard süresi (ms). İlk leg sonrası karşı tarafa
-    /// otomatik geçiş için minimum bekleme. Bot 66 5m median 38 sn.
-    /// Default: 38000.
-    #[serde(default)]
-    pub gravie_second_leg_guard_ms: Option<u64>,
-    /// Second-leg karşı taraf fiyat tetikleyicisi — opp_ask bu eşiğin
-    /// altına inerse guard beklenmeden flip. Bot 66 opp_first_px ~0.50.
-    /// Default: 0.55.
-    #[serde(default)]
-    pub gravie_second_leg_opp_trigger: Option<f64>,
-    /// Kapanışa bu kadar sn kala yeni emir verme. Bot 66 5m median T-78,
-    /// %58 ≤ T-90. Default: 90.
-    #[serde(default)]
-    pub gravie_t_cutoff_secs: Option<f64>,
-    /// Balance eşiği — `min/max` bunun altındaysa az tarafa zorunlu rebalance.
-    /// Default: 0.30 (sim'de %42 rebalance trade idi; daralt).
-    #[serde(default)]
-    pub gravie_balance_rebalance: Option<f64>,
-    /// Rebalance modunda entry ceiling multiplier (esneme). Default: 1.20.
-    #[serde(default)]
-    pub gravie_rebalance_ceiling_multiplier: Option<f64>,
-    /// Sum-avg guard — `avg_up + avg_dn ≥ X` ise yeni emir verme.
-    /// Default: 1.05 (sim'de 1.20 çok geç, sum_avg sürekli >1.0 oluyor).
-    #[serde(default)]
-    pub gravie_sum_avg_ceiling: Option<f64>,
-    /// PATCH A — Lose-side ASK cap (asymmetric trend reversal guard).
-    /// `max(up_ask, dn_ask) >= X` ise tüm yeni emirler durur. Bir tarafın
-    /// fiyatı bu eşiğin üstüne çıktığında market o tarafın olasılığını
-    /// `>= X` görüyor demektir; "ucuz" görünen karşı tarafa daha fazla
-    /// pozisyon açmak collapse riskini büyütür. Default: 0.85.
-    /// 1.0 = devre dışı.
-    #[serde(default)]
-    pub gravie_opp_ask_stop_threshold: Option<f64>,
-    /// PATCH C — FAK emir başına maksimum share. Düşen fiyatlarda
-    /// `ceil(usdc/price)` patlamasını önler (örn. price=0.05 → 200 share).
-    /// 0 = sınırsız (devre dışı). Default: 50.
-    #[serde(default)]
-    pub gravie_max_fak_size: Option<f64>,
-    /// PATCH D — SIGNAL GATE. `effective_score` ile yön filtresi. Açıkken
-    /// `score > up_threshold` ise UP'a, `< down_threshold` ise DOWN'a izin
-    /// verilir; karşı yöndeki open/accum BLOKLANIR. Bot 91 analizi: gate
-    /// kapalıyken WR %32, accum trade'lerinin %68'i kaybeden tarafa yığılıyor.
-    /// Bonereaper aynı sinyalle WR %76+. Default: true.
-    #[serde(default)]
-    pub gravie_signal_gate_enabled: Option<bool>,
-    /// PATCH D — Signal UP eşiği. `effective_score > X` ise UP yönü zorunlu.
-    /// Bonereaper Triple Gate ile aynı eşik. Default: 5.5.
-    #[serde(default)]
-    pub gravie_signal_up_threshold: Option<f64>,
-    /// PATCH D — Signal DOWN eşiği. `effective_score < X` ise DOWN yönü zorunlu.
-    /// Bonereaper Triple Gate ile aynı eşik. Default: 4.5.
-    #[serde(default)]
-    pub gravie_signal_down_threshold: Option<f64>,
-
-    // === Gravie V3 (ASYM) — yeni mantık alanları ============================
-    /// V3: Winner side (signal yönü) BUY emir başına USDC. Default: 15.
-    /// Hedge'den 3× büyük (asimetrik size: kazanan tarafta daha çok share).
-    #[serde(default)]
-    pub gravie_winner_order_usdc: Option<f64>,
-    /// V3: Hedge side (signal karşıtı) BUY emir başına USDC. Default: 5.
-    /// Winner'ın 1/3'ü; sadece avg_sum<X arbitraj koşulu sağlanırsa açılır.
-    #[serde(default)]
-    pub gravie_hedge_order_usdc: Option<f64>,
-    /// V3: Hedge BUY ile winner BUY arası ayrı cooldown. Default: 10000.
-    /// Winner cd = `gravie_buy_cooldown_ms`.
-    #[serde(default)]
-    pub gravie_hedge_cooldown_ms: Option<u64>,
-    /// V3: Winner side için maksimum ask fiyatı. Default: 0.99 (rahat tavan,
-    /// avg_sum kontrolü zaten sınırlıyor). Daha sıkı tavan istenirse 0.55-0.65.
-    #[serde(default)]
-    pub gravie_winner_max_price: Option<f64>,
-    /// V3: Hedge side için maksimum ask fiyatı. Default: 0.99. Daha sıkı arb
-    /// için 0.40-0.45.
-    #[serde(default)]
-    pub gravie_hedge_max_price: Option<f64>,
-    /// V3: Pair açıkken `avg_up + avg_down < X` koşulu. Default: 0.80.
-    /// Her dual pair'de min %20 brut kar marjı garantisi (1.0 - X).
+    /// `avg_up + avg_down` üst sınırı. Yeni BUY bu eşiği geçerse atlanır.
+    /// 1.0 altında her durumda pozitif kâr; default 0.95 (%5 brut marj).
     #[serde(default)]
     pub gravie_avg_sum_max: Option<f64>,
-    /// V3: Stability filter penceresi (son N tick'in smoothed signal'i).
-    /// 0 = filtre kapalı. Default: 3.
+    /// Her iki taraf için max alım fiyatı (ask). Üstünde BUY açılmaz.
+    /// Default: 0.99 (size_multiplier kademeli alımı için tüm bantlar açık).
     #[serde(default)]
-    pub gravie_stability_window: Option<u32>,
-    /// V3: Stability filter — son N tick'in std'si bu eşikten büyükse trade
-    /// atlanır (kararsız market). Default: 0.5.
+    pub gravie_max_ask: Option<f64>,
+    /// Kapanışa bu kadar sn kala yeni emir verilmez. Default: 30.
     #[serde(default)]
-    pub gravie_stability_max_std: Option<f64>,
-    /// V3: Signal smoothing EMA alpha. Default: 0.3 (yumuşak smooth).
-    /// 1.0 = smoothing yok (raw signal).
+    pub gravie_t_cutoff_secs: Option<f64>,
+    /// FAK başına maksimum share (düşük fiyatta size patlamasını sınırlar).
+    /// 0 = sınırsız. Default: 50.
     #[serde(default)]
-    pub gravie_ema_alpha: Option<f64>,
-    /// V3: Tek tarafta maksimum kümülatif share (sermaye koruma cap).
-    /// 0 = sınırsız (default).
+    pub gravie_max_fak_size: Option<f64>,
+    /// Rebalance tetik eşiği. `|up_filled − down_filled| > X` ise zayıf
+    /// tarafa zorunlu BUY (yön seçimi bypass). Default: 5 share.
     #[serde(default)]
-    pub gravie_max_size_per_side: Option<f64>,
-    /// V3 — LATE-WINDOW: Kapanışa `to_end ≤ X sn` kala WINNER BUY engellenir
-    /// (hedge BUY serbest kalır). Bot 91 backtest: late-flip kayıplarının
-    /// %63'ü son %20 pencerede gerçekleşiyor; winner emir kapatılınca worst
-    /// loss -$281 → -$238 (%15 düşüş), ROI +9.70% → +11.10%.
-    /// Default: 90 (5dk market'te son 60sn winner pasif). 0 = devre dışı.
-    #[serde(default)]
-    pub gravie_late_winner_pasif_secs: Option<f64>,
+    pub gravie_imb_thr: Option<f64>,
 }
 
 impl StrategyParams {
@@ -521,69 +433,35 @@ impl StrategyParams {
 
 }
 
-/// Gravie V3 (ASYM) strateji parametreleri — `StrategyParams`'tan resolve edilir.
+/// Gravie (Dual-Balance Accumulator) parametreleri — `StrategyParams`'tan resolve edilir.
 ///
-/// Default'lar Bot 91 4-günlük backtest şampiyonu (`ASYM W$15/H$5 avg<0.80`):
-/// PnL +$2468, ROI +9.70%, WR %61, Worst loss -$281, Dual market %49.
+/// Mantık: her iki tarafta eşit share + `avg_up + avg_down < avg_sum_max`
+/// ⇒ herhangi bir sonuçta garantili kâr (`N × (1 − avg_sum)`).
 #[derive(Debug, Clone, Copy)]
 pub struct GravieParams {
-    /// Karar tick aralığı (sn). Default: 5.
-    pub tick_interval_secs: u64,
-    /// Winner side BUY arası min bekleme (ms). Default: 10000.
+    /// Ardışık BUY arası minimum bekleme (ms). Default: 3000.
     pub buy_cooldown_ms: u64,
-    /// Hedge side BUY arası min bekleme (ms). Default: 10000.
-    pub hedge_cooldown_ms: u64,
+    /// `avg_up + avg_down` üst sınırı. Default: 0.95.
+    pub avg_sum_max: f64,
+    /// Her iki taraf için max alım fiyatı (ask). Default: 0.99.
+    pub max_ask: f64,
     /// Kapanışa bu kadar sn kala yeni emir verme. Default: 30.
     pub t_cutoff_secs: f64,
-    /// FAK emir başına maksimum share. 0 = sınırsız. Default: 50.
+    /// FAK başına max share. 0 = sınırsız. Default: 50.
     pub max_fak_size: f64,
-    /// Winner side BUY emir başına USDC. Default: 15 (3× hedge).
-    pub winner_order_usdc: f64,
-    /// Hedge side BUY emir başına USDC. Default: 5.
-    pub hedge_order_usdc: f64,
-    /// Winner side için maksimum ask fiyatı. Default: 0.99 (rahat).
-    pub winner_max_price: f64,
-    /// Hedge side için maksimum ask fiyatı. Default: 0.99.
-    pub hedge_max_price: f64,
-    /// `avg_up + avg_down < X` koşulu. Default: 0.80 (min %20 brut marj).
-    pub avg_sum_max: f64,
-    /// Smoothed signal > X → UP winner. Default: 5.0 (no neutral).
-    pub signal_up_threshold: f64,
-    /// Smoothed signal < X → DOWN winner. Default: 5.0.
-    pub signal_down_threshold: f64,
-    /// Stability filter penceresi. 0 = kapalı. Default: 3.
-    pub stability_window: u32,
-    /// Stability filter — std bu eşikten büyükse trade atla. Default: 0.5.
-    pub stability_max_std: f64,
-    /// Signal smoothing EMA alpha. Default: 0.3.
-    pub ema_alpha: f64,
-    /// Tek tarafta maksimum kümülatif share. 0 = sınırsız. Default: 0.
-    pub max_size_per_side: f64,
-    /// LATE-WINDOW: `to_end ≤ X sn` kala winner BUY engellenir (hedge serbest).
-    /// Default: 90 (late-flip kayıp koruması). 0 = devre dışı.
-    pub late_winner_pasif_secs: f64,
+    /// Rebalance tetik eşiği (share farkı). Default: 5.
+    pub imb_thr: f64,
 }
 
 impl Default for GravieParams {
     fn default() -> Self {
         Self {
-            tick_interval_secs: 5,
-            buy_cooldown_ms: 10_000,
-            hedge_cooldown_ms: 10_000,
+            buy_cooldown_ms: 3_000,
+            avg_sum_max: 0.95,
+            max_ask: 0.99,
             t_cutoff_secs: 30.0,
             max_fak_size: 50.0,
-            winner_order_usdc: 15.0,
-            hedge_order_usdc: 5.0,
-            winner_max_price: 0.99,
-            hedge_max_price: 0.99,
-            avg_sum_max: 0.80,
-            signal_up_threshold: 5.0,
-            signal_down_threshold: 5.0,
-            stability_window: 3,
-            stability_max_std: 0.5,
-            ema_alpha: 0.3,
-            max_size_per_side: 0.0,
-            late_winner_pasif_secs: 90.0,
+            imb_thr: 5.0,
         }
     }
 }
@@ -594,18 +472,18 @@ impl GravieParams {
     pub fn from_strategy_params(p: &StrategyParams) -> Self {
         let d = Self::default();
         Self {
-            tick_interval_secs: p
-                .gravie_tick_interval_secs
-                .unwrap_or(d.tick_interval_secs)
-                .clamp(1, 60),
             buy_cooldown_ms: p
                 .gravie_buy_cooldown_ms
                 .unwrap_or(d.buy_cooldown_ms)
-                .min(600_000),
-            hedge_cooldown_ms: p
-                .gravie_hedge_cooldown_ms
-                .unwrap_or(d.hedge_cooldown_ms)
-                .min(600_000),
+                .clamp(100, 600_000),
+            avg_sum_max: p
+                .gravie_avg_sum_max
+                .unwrap_or(d.avg_sum_max)
+                .clamp(0.10, 1.50),
+            max_ask: p
+                .gravie_max_ask
+                .unwrap_or(d.max_ask)
+                .clamp(0.05, 0.99),
             t_cutoff_secs: p
                 .gravie_t_cutoff_secs
                 .unwrap_or(d.t_cutoff_secs)
@@ -614,54 +492,11 @@ impl GravieParams {
                 .gravie_max_fak_size
                 .unwrap_or(d.max_fak_size)
                 .clamp(0.0, 10_000.0),
-            winner_order_usdc: p
-                .gravie_winner_order_usdc
-                .unwrap_or(d.winner_order_usdc)
-                .clamp(1.0, 10_000.0),
-            hedge_order_usdc: p
-                .gravie_hedge_order_usdc
-                .unwrap_or(d.hedge_order_usdc)
-                .clamp(1.0, 10_000.0),
-            winner_max_price: p
-                .gravie_winner_max_price
-                .unwrap_or(d.winner_max_price)
-                .clamp(0.10, 0.99),
-            hedge_max_price: p
-                .gravie_hedge_max_price
-                .unwrap_or(d.hedge_max_price)
-                .clamp(0.10, 0.99),
-            avg_sum_max: p
-                .gravie_avg_sum_max
-                .unwrap_or(d.avg_sum_max)
-                .clamp(0.50, 1.50),
-            signal_up_threshold: p
-                .gravie_signal_up_threshold
-                .unwrap_or(d.signal_up_threshold)
-                .clamp(0.0, 10.0),
-            signal_down_threshold: p
-                .gravie_signal_down_threshold
-                .unwrap_or(d.signal_down_threshold)
-                .clamp(0.0, 10.0),
-            stability_window: p
-                .gravie_stability_window
-                .unwrap_or(d.stability_window)
-                .min(50),
-            stability_max_std: p
-                .gravie_stability_max_std
-                .unwrap_or(d.stability_max_std)
-                .clamp(0.0, 5.0),
-            ema_alpha: p
-                .gravie_ema_alpha
-                .unwrap_or(d.ema_alpha)
-                .clamp(0.01, 1.0),
-            max_size_per_side: p
-                .gravie_max_size_per_side
-                .unwrap_or(d.max_size_per_side)
-                .clamp(0.0, 1_000_000.0),
-            late_winner_pasif_secs: p
-                .gravie_late_winner_pasif_secs
-                .unwrap_or(d.late_winner_pasif_secs)
-                .clamp(0.0, 600.0),
+            imb_thr: p
+                .gravie_imb_thr
+                .unwrap_or(d.imb_thr)
+                .clamp(0.0, 10_000.0),
         }
     }
 }
+
