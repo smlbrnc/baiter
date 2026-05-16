@@ -12,10 +12,10 @@
 //! 4. **YÖN SEÇİMİ** — first_done=false → spread gate + BSI/OB fallback;
 //!    sonrasında `|imb| > N×est_size` ise zayıf yöne rebalance, aksi halde
 //!    `|Δbid|` büyük olan tarafa.
-//! 5. **LOSER SCALP / LOSER NORMAL** — loser yön seçildiğinde:
-//!    - `bid ≤ loser_scalp_max_price` → `scalp_usdc` ile küçük alım.
-//!    - `bid > loser_scalp_max_price` → normal sizing (interp/shares_const).
-//!    - `avg_loser_max` guard: loser avg bu eşiği aşarsa yalnızca scalp.
+//! 5. **LOSER NORMAL + GUARD** — loser yön seçildiğinde:
+//!    - Normal: winner ile aynı sizing (spread_shares / interp) uygulanır.
+//!    - `avg_loser_max` guard: loser avg bu eşiği aşarsa `scalp_usdc` ile küçük alım.
+//!    - Analiz: gerçek bot 0.01-0.25 bandında da spread_shares lot kullanıyor.
 //! 6. **NORMAL BUY** taker @ ask. Sizing iki moddan biri:
 //!    - `shares_const > 0`: `size = shares_const` sabit (15m bot için optimal).
 //!    - aksi: piecewise lineer interp (anchor 0.30/0.65/lw_thr).
@@ -328,20 +328,18 @@ impl BonereaperEngine {
                 let scalp_only = is_loser_dir && cur_filled > 0.0 && cur_avg > avg_loser_max;
 
                 let scalp_usdc = p.bonereaper_loser_scalp_usdc(ctx.order_usdc);
-                // Loser scalp bandı: bid ≤ loser_scalp_max_price ise küçük sabit alım.
-                // Üstündeki bant (0.30+): loser yöne normal sizing uygulanır —
-                // gerçek bot analizi: %87-95 markette 0.30+ loser alımı, P50=%50 oranı.
-                // avg_loser_max guard martingale-down'ı zaten önler.
-                let scalp_max_price = p.bonereaper_loser_scalp_max_price();
-                let is_scalp_band = is_loser_dir && bid <= scalp_max_price && scalp_usdc > 0.0;
-                let usdc = if (scalp_only && scalp_usdc > 0.0) || is_scalp_band {
+                // Scalp bandı SADECE avg_loser_max guard tetiklendiğinde aktif.
+                // Gerçek bot analizi (12k emir): loser yöne 0.01-0.25 bandında da
+                // normal sizing (spread_shares) kullanılıyor — scalp_usdc küçük lot
+                // değil, yalnızca martingale guard (scalp_only) devreye girince kullanılır.
+                let is_scalp_band = false; // scalp band kaldırıldı — loser her fiyatta normal sizing
+                let usdc = if scalp_only && scalp_usdc > 0.0 {
+                    // avg_loser_max aşıldı: sadece bu durumda küçük sabit scalp
                     scalp_usdc
                 } else {
-                    // shares_const > 0 → sabit share modu (spread-aware olabilir):
-                    //   bonereaper_spread_lo_thr > 0 ise ob_spread'e göre lot size seçilir
-                    //   (dar spread → shares_lo; orta → shares_mid; geniş → shares_const)
-                    //   Analiz: spread<0.15 P75=32sh, spread 0.15-0.50 P75=40sh
-                    // 0 → piecewise lineer interp (5m bot): anchor 0.30/0.65/lw_thr
+                    // Tüm normal emirler (winner + loser): spread-aware lot sizing
+                    // shares_const > 0 → bonereaper_spread_shares(ob_spread) ile dinamik lot
+                    // 0 → piecewise lineer interp: anchor 0.30/0.65/lw_thr
                     let base = {
                         let shares = p.bonereaper_spread_shares(ob_spread);
                         if shares > 0.0 {
@@ -361,7 +359,7 @@ impl BonereaperEngine {
                     return (BonereaperState::Active(st), Decision::NoOp);
                 }
 
-                let is_any_scalp = scalp_only || is_scalp_band;
+                let is_any_scalp = scalp_only; // is_scalp_band artık false
 
                 let order_price = ask; // taker
                 let size = (usdc / order_price).ceil().max(1.0);
