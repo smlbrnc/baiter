@@ -174,6 +174,23 @@ pub struct StrategyParams {
     /// Gerçek bot 15m markette her trade'de 10 share atıyor.
     #[serde(default)]
     pub bonereaper_size_shares_const: Option<f64>,
+    /// Spread-aware sizing — dar spread eşiği. `|up_bid − dn_bid| < X` iken
+    /// `shares_lo` lot size kullanılır. 0 = devre dışı (sabit shares_const).
+    /// Analiz (12k emir): spread<0.15 → gerçek bot P75=32sh.
+    #[serde(default)]
+    pub bonereaper_spread_lo_thr: Option<f64>,
+    /// Spread-aware sizing — orta spread üst eşiği. `spread_lo ≤ spread < X`
+    /// iken `shares_mid` kullanılır. Default 0.50.
+    #[serde(default)]
+    pub bonereaper_spread_hi_thr: Option<f64>,
+    /// Dar spread (<spread_lo) için lot size. Default 40. 0 = devre dışı.
+    /// Analiz: spread<0.15 markette P75=32sh, en yakın 40sh.
+    #[serde(default)]
+    pub bonereaper_size_shares_lo: Option<f64>,
+    /// Orta spread (spread_lo–spread_hi) için lot size. Default 25.
+    /// Analiz: spread 0.15-0.50 → P75=40sh; 25sh P50'ye yakın.
+    #[serde(default)]
+    pub bonereaper_size_shares_mid: Option<f64>,
 
     // ── Loser scalp ──────────────────────────────────────────────────────
     /// Loser tarafı için minimum bid eşiği (cheap scalp). Default 0.01.
@@ -371,6 +388,48 @@ impl StrategyParams {
         self.bonereaper_size_shares_const
             .unwrap_or(0.0)
             .clamp(0.0, 10_000.0)
+    }
+    /// Spread-aware sizing: dar spread eşiği; 0.0–0.50; default 0.0 (devre dışı).
+    pub fn bonereaper_spread_lo_thr(&self) -> f64 {
+        self.bonereaper_spread_lo_thr
+            .unwrap_or(0.0)
+            .clamp(0.0, 0.50)
+    }
+    /// Spread-aware sizing: orta spread üst eşiği; 0.0–1.0; default 0.50.
+    pub fn bonereaper_spread_hi_thr(&self) -> f64 {
+        self.bonereaper_spread_hi_thr
+            .unwrap_or(0.50)
+            .clamp(0.0, 1.0)
+    }
+    /// Dar spread (<spread_lo_thr) lot size; 0–10_000; default 40. 0 = devre dışı.
+    pub fn bonereaper_size_shares_lo(&self) -> f64 {
+        self.bonereaper_size_shares_lo
+            .unwrap_or(40.0)
+            .clamp(0.0, 10_000.0)
+    }
+    /// Orta spread (spread_lo..spread_hi) lot size; 0–10_000; default 25.
+    pub fn bonereaper_size_shares_mid(&self) -> f64 {
+        self.bonereaper_size_shares_mid
+            .unwrap_or(25.0)
+            .clamp(0.0, 10_000.0)
+    }
+    /// Spread-aware resolve: shares_const > 0 iken mevcut spread'e göre lot size döner.
+    /// spread_lo_thr = 0 ise spread-aware devre dışı → shares_const sabit.
+    pub fn bonereaper_spread_shares(&self, spread: f64) -> f64 {
+        let const_sh = self.bonereaper_size_shares_const();
+        if const_sh <= 0.0 { return 0.0; }
+        let lo_thr = self.bonereaper_spread_lo_thr();
+        if lo_thr <= 0.0 { return const_sh; }
+        let hi_thr = self.bonereaper_spread_hi_thr();
+        let sh_lo  = self.bonereaper_size_shares_lo();
+        let sh_mid = self.bonereaper_size_shares_mid();
+        if spread < lo_thr {
+            if sh_lo > 0.0 { sh_lo } else { const_sh }
+        } else if spread < hi_thr {
+            if sh_mid > 0.0 { sh_mid } else { const_sh }
+        } else {
+            const_sh
+        }
     }
 
     /// Loser tarafı min bid eşiği; 0.001–0.10 sınırlı; default 0.01.

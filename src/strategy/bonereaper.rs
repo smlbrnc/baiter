@@ -293,6 +293,9 @@ impl BonereaperEngine {
                     return (BonereaperState::Active(st), Decision::NoOp);
                 }
 
+                // Mevcut OB spread: |up_bid − dn_bid|. Spread-aware sizing için.
+                let ob_spread = (ctx.up_best_bid - ctx.down_best_bid).abs();
+
                 let metrics = ctx.metrics;
                 let loser_opt = loser_side(ctx.up_best_bid, ctx.down_best_bid);
                 let is_loser_dir = loser_opt.map_or(false, |l| dir == l);
@@ -334,13 +337,18 @@ impl BonereaperEngine {
                 let usdc = if (scalp_only && scalp_usdc > 0.0) || is_scalp_band {
                     scalp_usdc
                 } else {
-                    // shares_const > 0 → sabit share modu (15m bot): usdc = shares × ask
-                    // aksi → piecewise lineer interp (5m bot): anchor 0.30/0.65/lw_thr
-                    let shares_const = p.bonereaper_size_shares_const();
-                    let base = if shares_const > 0.0 {
-                        shares_const * ask
-                    } else {
-                        p.bonereaper_interp_usdc(bid, ctx.order_usdc)
+                    // shares_const > 0 → sabit share modu (spread-aware olabilir):
+                    //   bonereaper_spread_lo_thr > 0 ise ob_spread'e göre lot size seçilir
+                    //   (dar spread → shares_lo; orta → shares_mid; geniş → shares_const)
+                    //   Analiz: spread<0.15 P75=32sh, spread 0.15-0.50 P75=40sh
+                    // 0 → piecewise lineer interp (5m bot): anchor 0.30/0.65/lw_thr
+                    let base = {
+                        let shares = p.bonereaper_spread_shares(ob_spread);
+                        if shares > 0.0 {
+                            shares * ask
+                        } else {
+                            p.bonereaper_interp_usdc(bid, ctx.order_usdc)
+                        }
                     };
                     let lp_secs = p.bonereaper_late_pyramid_secs() as f64;
                     if !is_loser_dir && lp_secs > 0.0 && to_end > 0.0 && to_end <= lp_secs {
