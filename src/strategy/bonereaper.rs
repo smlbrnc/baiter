@@ -4,27 +4,25 @@
 //! ## Karar zinciri
 //!
 //! 1. **Window**: `now ∈ [start, end]`; OB ready.
-//! 2. **LATE WINNER** (`max(bid) ≥ bid_thr [0.85]`, cooldown'a tabi):
-//!    - winner tarafa taker BUY @ ask. Quota (`lw_max_per_session`) ile cap.
-//!    - Boyut: `lw_usdc × arb_mult(fiyat)` — saf fiyat bazlı.
-//!    - `arb_mult`: lineer 5×@lw_thr(0.85) → 10×@0.99
-//!    - LW ile birlikte loser cheap scalp (GTC at bid, maker).
-//! 3. **COOLDOWN** (`now − last_buy < buy_cooldown_ms`): NoOp.
-//! 4. **YÖN SEÇİMİ** (first_done=false → spread gate + BSI/OB fallback):
-//!    - `|imb| > N×est_size` (dinamik eşik) → weaker side rebalance
-//!    - aksi: `|Δup_bid|` vs `|Δdn_bid|` → büyük delta tarafı
-//! 5. **LOSER SCALP** (direction=loser seçildiğinde, is_scalp_band):
-//!    - `bid ≤ 0.30` koşulunda `scalp_usdc` ile alım (tüm longshot+scalp bandı).
-//!    - Gerçek bot 0.12-0.30 arasında da %35 loser alımı yapıyor → bant genişletildi.
-//! 6. **NORMAL BUY** taker @ ask: piecewise lineer interp size
-//!    (anchor 0.30 longshot, 0.65 mid, `lw_thr` high; bant sınırlarında sıçrama yok).
-//! 7. **avg_sum cap** (default=1.00; loser scalp muaf).
+//! 2. **LATE WINNER** — `max(bid) ≥ lw_thr` ve cooldown OK ise winner tarafa
+//!    taker BUY (`size = lw_usdc × arb_mult / ask`). `arb_mult` lineer
+//!    5×@lw_thr → 10×@0.99. Quota: `lw_max_per_session`. LW ile birlikte
+//!    loser cheap scalp (GTC at bid).
+//! 3. **COOLDOWN** — `now − last_buy < buy_cooldown_ms` → NoOp.
+//! 4. **YÖN SEÇİMİ** — first_done=false → spread gate + BSI/OB fallback;
+//!    sonrasında `|imb| > N×est_size` ise zayıf yöne rebalance, aksi halde
+//!    `|Δbid|` büyük olan tarafa.
+//! 5. **LOSER SCALP** — loser yön & `bid ≤ 0.30` → `scalp_usdc` ile küçük alım.
+//! 6. **NORMAL BUY** taker @ ask. Sizing iki moddan biri:
+//!    - `shares_const > 0`: `size = shares_const` sabit (15m bot için optimal).
+//!    - aksi: piecewise lineer interp (anchor 0.30/0.65/lw_thr).
+//! 7. **avg_sum cap** (default 1.00; loser scalp muaf).
 //!
 //! ## Reason etiketleri
 //!
-//! `bonereaper:buy:{up,down}` — normal BUY.
-//! `bonereaper:scalp:{up,down}` — loser scalp.
-//! `bonereaper:lw:{up,down}` — late winner.
+//! - `bonereaper:buy:{up,down}` — normal BUY
+//! - `bonereaper:scalp:{up,down}` — loser scalp
+//! - `bonereaper:lw:{up,down}` — late winner
 
 use serde::{Deserialize, Serialize};
 
@@ -44,14 +42,6 @@ const fn reason_lw(dir: Outcome) -> &'static str {
     match dir {
         Outcome::Up => "bonereaper:lw:up",
         Outcome::Down => "bonereaper:lw:down",
-    }
-}
-
-#[inline]
-const fn reason_lw_burst(dir: Outcome) -> &'static str {
-    match dir {
-        Outcome::Up => "bonereaper:lwb:up",
-        Outcome::Down => "bonereaper:lwb:down",
     }
 }
 
@@ -154,11 +144,9 @@ impl BonereaperEngine {
                 let lw_usdc = p.bonereaper_late_winner_usdc(ctx.order_usdc);
                 let lw_thr = p.bonereaper_late_winner_bid_thr();
                 let lw_max = p.bonereaper_lw_max_per_session();
-                let lw_burst_secs = p.bonereaper_lw_burst_secs() as f64;
-                let lw_burst_usdc = p.bonereaper_lw_burst_usdc();
                 let lw_quota_ok = lw_max == 0 || st.lw_injections < lw_max;
-                // LW'ye özgü cooldown: lw_cooldown_ms > 0 ise kendi zamanlayıcısı,
-                // aksi halde normal buy_cooldown_ms kullanılır.
+                // LW cooldown: lw_cooldown_ms > 0 ise kendi zamanlayıcısı;
+                // aksi halde normal buy_cooldown_ms.
                 let lw_cd_ms_specific = p.bonereaper_lw_cooldown_ms();
                 let lw_in_cd = if lw_cd_ms_specific > 0 {
                     st.last_lw_buy_ms > 0
@@ -169,73 +157,48 @@ impl BonereaperEngine {
                         && ctx.now_ms.saturating_sub(st.last_buy_ms) < lw_cd_ms
                 };
 
-                if lw_quota_ok && to_end > 0.0 && !lw_in_cd {
-                    let burst_active = lw_burst_usdc > 0.0
-                        && lw_burst_secs > 0.0
-                        && to_end <= lw_burst_secs;
-                    let main_active = lw_usdc > 0.0
-                        && lw_secs > 0.0
-                        && to_end <= lw_secs
-                        && !burst_active;
-
-                    let lw_kind = if burst_active {
-                        Some((lw_burst_usdc, true))
-                    } else if main_active {
-                        Some((lw_usdc, false))
+                let lw_active = lw_usdc > 0.0 && lw_secs > 0.0 && to_end <= lw_secs;
+                if lw_quota_ok && lw_active && !lw_in_cd && to_end > 0.0 {
+                    let (winner, w_bid, w_ask) = if ctx.up_best_bid >= ctx.down_best_bid {
+                        (Outcome::Up, ctx.up_best_bid, ctx.up_best_ask)
                     } else {
-                        None
+                        (Outcome::Down, ctx.down_best_bid, ctx.down_best_ask)
                     };
-
-                    if let Some((usdc, is_burst)) = lw_kind {
-                        let (winner, w_bid, w_ask) = if ctx.up_best_bid >= ctx.down_best_bid {
-                            (Outcome::Up, ctx.up_best_bid, ctx.up_best_ask)
-                        } else {
-                            (Outcome::Down, ctx.down_best_bid, ctx.down_best_ask)
-                        };
-                        if w_bid >= lw_thr && w_ask > 0.0 {
-                            // Lineer ölçekleme: lw_thr'de 5×, 0.99'da 10×.
-                            // size = ceil(lw_usdc × arb_mult / ask)
-                            let arb_mult = (5.0 + 5.0 * (w_ask - lw_thr) / (0.99 - lw_thr))
-                                .clamp(5.0, 10.0);
-                            let size = (usdc * arb_mult / w_ask).ceil();
-                            let reason = if is_burst {
-                                reason_lw_burst(winner)
-                            } else {
-                                reason_lw(winner)
-                            };
-                            if let Some(o) = make_buy(ctx, winner, w_ask, size, reason) {
-                                st.last_buy_ms = ctx.now_ms;
-                                st.last_lw_buy_ms = ctx.now_ms;
-                                st.lw_injections = st.lw_injections.saturating_add(1);
-                                st.last_up_bid = ctx.up_best_bid;
-                                st.last_dn_bid = ctx.down_best_bid;
-                                st.first_done = true;
-                                // LW sweep: loser ucuzsa (winner≥0.90 → loser≈0.07-0.10)
-                                // taker (ask) → DryRun cross garantili, anlık fill.
-                                // api_min_order_size kontrolü yok: scalp küçük, bonereaper'a özgü.
-                                let loser = if winner == Outcome::Up { Outcome::Down } else { Outcome::Up };
-                                let loser_ask  = ctx.best_ask(loser);
-                                let scalp_usdc = p.bonereaper_loser_scalp_usdc(ctx.order_usdc);
-                                let mut orders = vec![o];
-                                if loser_ask > 0.0 && scalp_usdc > 0.0 {
-                                    let loser_size = (scalp_usdc / loser_ask).ceil();
-                                    if loser_size > 0.0 {
-                                        orders.push(PlannedOrder {
-                                            outcome: loser,
-                                            token_id: ctx.token_id(loser).to_string(),
-                                            side: Side::Buy,
-                                            price: loser_ask,
-                                            size: loser_size,
-                                            order_type: OrderType::Gtc,
-                                            reason: reason_scalp(loser).to_string(),
-                                        });
-                                    }
+                    if w_bid >= lw_thr && w_ask > 0.0 {
+                        // arb_mult lineer: lw_thr'de 5×, 0.99'da 10×.
+                        let arb_mult = (5.0 + 5.0 * (w_ask - lw_thr) / (0.99 - lw_thr))
+                            .clamp(5.0, 10.0);
+                        let size = (lw_usdc * arb_mult / w_ask).ceil();
+                        if let Some(o) = make_buy(ctx, winner, w_ask, size, reason_lw(winner)) {
+                            st.last_buy_ms = ctx.now_ms;
+                            st.last_lw_buy_ms = ctx.now_ms;
+                            st.lw_injections = st.lw_injections.saturating_add(1);
+                            st.last_up_bid = ctx.up_best_bid;
+                            st.last_dn_bid = ctx.down_best_bid;
+                            st.first_done = true;
+                            // LW sweep: loser tarafa cheap scalp (GTC at ask).
+                            let loser = if winner == Outcome::Up { Outcome::Down } else { Outcome::Up };
+                            let loser_ask = ctx.best_ask(loser);
+                            let scalp_usdc = p.bonereaper_loser_scalp_usdc(ctx.order_usdc);
+                            let mut orders = vec![o];
+                            if loser_ask > 0.0 && scalp_usdc > 0.0 {
+                                let loser_size = (scalp_usdc / loser_ask).ceil();
+                                if loser_size > 0.0 {
+                                    orders.push(PlannedOrder {
+                                        outcome: loser,
+                                        token_id: ctx.token_id(loser).to_string(),
+                                        side: Side::Buy,
+                                        price: loser_ask,
+                                        size: loser_size,
+                                        order_type: OrderType::Gtc,
+                                        reason: reason_scalp(loser).to_string(),
+                                    });
                                 }
-                                return (
-                                    BonereaperState::Active(st),
-                                    Decision::PlaceOrders(orders),
-                                );
                             }
+                            return (
+                                BonereaperState::Active(st),
+                                Decision::PlaceOrders(orders),
+                            );
                         }
                     }
                 }
@@ -273,11 +236,21 @@ impl BonereaperEngine {
                 } else {
                     let m = ctx.metrics;
                     let imb = m.up_filled - m.down_filled;
-                    // Dinamik imbalance eşiği: N(to_end) × est_trade_size
-                    // N: T>=120s→3, T>=60s→6, T>=30s→9, T<30s→12
-                    // Sabit share: Mid 4×, High 5×, ort ≈ 4.5× (imbalance hesabı)
-                    let est_trade_size = (ctx.order_usdc * 4.5).round().max(1.0);
-                    let n_trades = if to_end >= 120.0 || to_end >= f64::MAX / 2.0 {
+                    // Dinamik imbalance eşiği: N(to_end) × est_trade_size (share).
+                    // shares_const>0 ise direkt o; aksi halde interp anchor
+                    // medyanı (longshot+mid)/2 share = ((lo+mid)/2) / 0.5 ≈ ortalama.
+                    // Sabit "share" beklentisi sayısal olarak share cinsinden olmalı.
+                    let est_trade_size = {
+                        let sc = p.bonereaper_size_shares_const();
+                        if sc > 0.0 {
+                            sc
+                        } else {
+                            // 0.30-0.65 arası bir referans bid (~0.475) ile usdc ÷ ask
+                            let avg_usdc = p.bonereaper_interp_usdc(0.475, ctx.order_usdc);
+                            (avg_usdc / 0.475).round().max(1.0)
+                        }
+                    };
+                    let n_trades = if to_end >= 120.0 {
                         3.0_f64
                     } else if to_end >= 60.0 {
                         6.0_f64
@@ -287,7 +260,7 @@ impl BonereaperEngine {
                         12.0_f64
                     };
                     let dynamic_imb = (n_trades * est_trade_size).clamp(15.0, 600.0);
-                    let param_imb = p.bonereaper_imbalance_thr(ctx.order_usdc);
+                    let param_imb = p.bonereaper_imbalance_thr();
                     let imb_thr = if param_imb < 500.0 { param_imb } else { dynamic_imb };
                     if imb.abs() > imb_thr {
                         if imb > 0.0 { Outcome::Down } else { Outcome::Up }
@@ -350,20 +323,13 @@ impl BonereaperEngine {
 
                 let scalp_usdc = p.bonereaper_loser_scalp_usdc(ctx.order_usdc);
                 // Loser scalp üst sınırı: sabit 0.30 (longshot bandı alt sınırı).
-                // Gerçek bot analizi: 51 markette loser 0.12-0.30 arasında da
-                // aktif alım yapıyor (870 trade, %35 toplam loser). Sabit USDC
-                // (~$10) kullanıyor → ceil(usdc/price) ile doğal kademeleme.
                 let scalp_max_price = 0.30_f64;
                 let is_scalp_band = is_loser_dir && bid <= scalp_max_price && scalp_usdc > 0.0;
-                let usdc = if scalp_only && scalp_usdc > 0.0 {
-                    scalp_usdc
-                } else if is_scalp_band {
+                let usdc = if (scalp_only && scalp_usdc > 0.0) || is_scalp_band {
                     scalp_usdc
                 } else {
-                    // SABİT SHARE modu (15m bot için): shares_const > 0 ise
-                    // interp BYPASS edilir; usdc = shares × ask. Gerçek bot
-                    // 15m'de tam 10 share/trade kullanıyor (analiz: bant
-                    // median 10sh, sapma <$1; R²=0.866 lineer fit).
+                    // shares_const > 0 → sabit share modu (15m bot): usdc = shares × ask
+                    // aksi → piecewise lineer interp (5m bot): anchor 0.30/0.65/lw_thr
                     let shares_const = p.bonereaper_size_shares_const();
                     let base = if shares_const > 0.0 {
                         shares_const * ask
@@ -383,16 +349,12 @@ impl BonereaperEngine {
 
                 let is_any_scalp = scalp_only || is_scalp_band;
 
-                // Loser guard: scalp band dışında loser yönüne mid alım yapma.
+                // Loser guard: scalp bandı dışında loser yönüne mid alım yapma.
                 if is_loser_dir && !is_any_scalp && bid > scalp_max_price {
                     return (BonereaperState::Active(st), Decision::NoOp);
                 }
 
                 let order_price = ask; // taker
-                // Tüm bantlarda USDC tabanlı size: (usdc / ask).ceil()
-                // usdc = scalp_usdc | shares_const×ask | interp(bid) × winner_size_factor
-                // shares_const>0 ise interp BYPASS (15m bot için optimal).
-                // interp_usdc piecewise lineer (anchor 0.30/0.65/lw_thr).
                 let size = (usdc / order_price).ceil().max(1.0);
 
                 // avg_sum soft cap — scalp muaf.

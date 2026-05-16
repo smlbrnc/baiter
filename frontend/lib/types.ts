@@ -110,16 +110,9 @@ export interface StrategyParams {
    */
   bonereaper_winner_size_factor?: number | null
 
-  // ── Bonereaper - Aşama 5 (multi-LW burst) ────────────────────────────────
-  /** LW burst pencere (sn). T-X kala 2. dalga LW. Default 12. 0 = burst KAPALI. */
-  bonereaper_lw_burst_secs?: number | null
-  /** LW burst USDC. Default $200 (ana $500 LW'nin yarısı). */
-  bonereaper_lw_burst_usdc?: number | null
-
-  // ── Bonereaper - Aşama 6 (martingale-down guard) ─────────────────────────
   /**
-   * Loser side avg fiyatı bu eşiği aşarsa o yöne sadece minimal scalp ($1).
-   * Pahalı down-pyramid birikimini engeller. Default 0.50.
+   * Loser side avg fiyatı bu eşiği aşarsa o yöne sadece minimal scalp.
+   * Pahalı martingale-down birikimini engeller. Default 0.50.
    */
   bonereaper_avg_loser_max?: number | null
 
@@ -515,12 +508,9 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   bonereaper_loser_min_price: 0.01,
   bonereaper_loser_scalp_usdc: 5,     // 0.5 × order_usdc
   bonereaper_loser_scalp_max_price: 0.30,
-  // Winner pyramid — KAPALI (yanlış yön amplifikasyonu önler)
+  // Late pyramid (winner size factor) — KAPALI default
   bonereaper_late_pyramid_secs: 0,
   bonereaper_winner_size_factor: 1.0,
-  // LW burst — KAPALI
-  bonereaper_lw_burst_secs: 0,
-  bonereaper_lw_burst_usdc: 0,
   // Martingale-down guard
   bonereaper_avg_loser_max: 0.5,
   // Gravie (Dual-Balance Accumulator + Bonereaper-harmonized)
@@ -587,10 +577,6 @@ export function mergeBonereaperStrategyDefaults(
       p.bonereaper_late_pyramid_secs ?? d.bonereaper_late_pyramid_secs,
     bonereaper_winner_size_factor:
       p.bonereaper_winner_size_factor ?? d.bonereaper_winner_size_factor,
-    bonereaper_lw_burst_secs:
-      p.bonereaper_lw_burst_secs ?? d.bonereaper_lw_burst_secs,
-    bonereaper_lw_burst_usdc:
-      p.bonereaper_lw_burst_usdc ?? d.bonereaper_lw_burst_usdc,
     bonereaper_avg_loser_max:
       p.bonereaper_avg_loser_max ?? d.bonereaper_avg_loser_max,
   }

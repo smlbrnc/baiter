@@ -109,12 +109,6 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const bonereaperWinnerSizeFactor =
     params.bonereaper_winner_size_factor ??
     STRATEGY_PARAMS_DEFAULTS.bonereaper_winner_size_factor
-  const bonereaperLwBurstSecs =
-    params.bonereaper_lw_burst_secs ??
-    STRATEGY_PARAMS_DEFAULTS.bonereaper_lw_burst_secs
-  const bonereaperLwBurstUsdc =
-    params.bonereaper_lw_burst_usdc ??
-    STRATEGY_PARAMS_DEFAULTS.bonereaper_lw_burst_usdc
   const bonereaperAvgLoserMax =
     params.bonereaper_avg_loser_max ??
     STRATEGY_PARAMS_DEFAULTS.bonereaper_avg_loser_max

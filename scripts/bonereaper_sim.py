@@ -68,8 +68,6 @@ class BonereaperParams:
     loser_scalp_max_price: float = 0.30
     late_pyramid_secs: int = 150
     winner_size_factor: float = 1.0
-    lw_burst_secs: int = 0
-    lw_burst_usdc: float = 0.0
     avg_loser_max: float = 0.50
 
     # market session
@@ -103,8 +101,6 @@ class BonereaperParams:
         loser_scalp_max = get("bonereaper_loser_scalp_max_price", 0.30, 0.05, 0.50)
         lp_secs = min(get("bonereaper_late_pyramid_secs", 150), 300)
         wsf = get("bonereaper_winner_size_factor", 1.0, 1.0, 10.0)
-        burst_secs = min(get("bonereaper_lw_burst_secs", 0), 60)
-        burst_usdc = get("bonereaper_lw_burst_usdc", 0.0, 0.0, 10_000.0)
         avg_loser_max = get("bonereaper_avg_loser_max", 0.50, 0.10, 0.95)
 
         return BonereaperParams(
@@ -128,8 +124,6 @@ class BonereaperParams:
             loser_scalp_max_price=loser_scalp_max,
             late_pyramid_secs=int(lp_secs),
             winner_size_factor=wsf,
-            lw_burst_secs=int(burst_secs),
-            lw_burst_usdc=burst_usdc,
             avg_loser_max=avg_loser_max,
         )
 
@@ -291,73 +285,59 @@ def bonereaper_decide(
     lw_usdc = p.late_winner_usdc
     lw_thr = p.late_winner_bid_thr
     lw_max = p.lw_max_per_session
-    burst_secs = float(p.lw_burst_secs)
-    burst_usdc = p.lw_burst_usdc
-
     lw_quota_ok = (lw_max == 0) or (st.lw_injections < lw_max)
+    lw_active = lw_usdc > 0 and lw_secs > 0 and to_end <= lw_secs
 
-    if lw_quota_ok and to_end > 0:
-        burst_active = burst_usdc > 0 and burst_secs > 0 and to_end <= burst_secs
-        main_active = lw_usdc > 0 and lw_secs > 0 and to_end <= lw_secs and not burst_active
+    if lw_quota_ok and lw_active and to_end > 0:
+        if up_bid >= dn_bid:
+            winner, w_bid, w_ask = "UP", up_bid, up_ask
+            opp_filled, opp_avg = m.down_filled, m.avg_down
+        else:
+            winner, w_bid, w_ask = "DOWN", dn_bid, dn_ask
+            opp_filled, opp_avg = m.up_filled, m.avg_up
 
-        lw_kind = None
-        if burst_active:
-            lw_kind = (burst_usdc, "burst")
-        elif main_active:
-            lw_kind = (lw_usdc, "main")
-
-        if lw_kind:
-            usdc, kind = lw_kind
-            if up_bid >= dn_bid:
-                winner, w_bid, w_ask = "UP", up_bid, up_ask
-                opp_filled, opp_avg = m.down_filled, m.avg_down
+        if w_bid >= lw_thr and w_ask > 0:
+            # arb_mult — bonereaper.rs 2D tablo (price × time)
+            if w_ask >= 0.99:
+                if to_end <= 10:   arb_mult = 1.7
+                elif to_end <= 30: arb_mult = 5.7
+                elif to_end <= 60: arb_mult = 5.5
+                elif to_end <= 120:arb_mult = 11.5
+                else:              arb_mult = 20.0
+            elif w_ask >= 0.97:
+                if to_end <= 10:   arb_mult = 1.0
+                elif to_end <= 30: arb_mult = 3.7
+                elif to_end <= 60: arb_mult = 6.1
+                elif to_end <= 120:arb_mult = 4.4
+                else:              arb_mult = 9.0
+            elif w_ask >= 0.95:
+                arb_mult = 4.0 if to_end <= 60 else 2.0
             else:
-                winner, w_bid, w_ask = "DOWN", dn_bid, dn_ask
-                opp_filled, opp_avg = m.up_filled, m.avg_up
+                arb_mult = 1.0
 
-            if w_bid >= lw_thr and w_ask > 0:
-                # arb_mult — bonereaper.rs 2D tablo
-                if w_ask >= 0.99:
-                    if to_end <= 10:   arb_mult = 1.7
-                    elif to_end <= 30: arb_mult = 5.7
-                    elif to_end <= 60: arb_mult = 5.5
-                    elif to_end <= 120:arb_mult = 11.5
-                    else:              arb_mult = 20.0
-                elif w_ask >= 0.97:
-                    if to_end <= 10:   arb_mult = 1.0
-                    elif to_end <= 30: arb_mult = 3.7
-                    elif to_end <= 60: arb_mult = 6.1
-                    elif to_end <= 120:arb_mult = 4.4
-                    else:              arb_mult = 9.0
-                elif w_ask >= 0.95:
-                    arb_mult = 4.0 if to_end <= 60 else 2.0
-                else:
-                    arb_mult = 1.0
+            size = math.ceil(lw_usdc * arb_mult / w_ask)
 
-                size = math.ceil(usdc * arb_mult / w_ask)
+            # LW opp_avg guard
+            lw_blocked = (
+                opp_filled > 0 and
+                (opp_avg > LW_OPP_AVG_MAX or
+                 (opp_avg > LW_OPP_HIGH_PRICE and w_ask > LW_WINNER_MAX_PRICE))
+            )
 
-                # LW opp_avg guard
-                lw_blocked = (
-                    opp_filled > 0 and
-                    (opp_avg > LW_OPP_AVG_MAX or
-                     (opp_avg > LW_OPP_HIGH_PRICE and w_ask > LW_WINNER_MAX_PRICE))
-                )
-
-                if not lw_blocked:
-                    notional = size * w_ask
-                    if notional >= p.api_min_order_size:
-                        reason = f"bonereaper:{'lwb' if kind=='burst' else 'lw'}:{winner.lower()}"
-                        trade = SimTrade(
-                            ts_ms=now_ms, outcome=winner, price=w_ask,
-                            size=size, reason=reason, to_end=to_end,
-                            up_bid=up_bid, down_bid=dn_bid,
-                        )
-                        st.last_buy_ms = now_ms
-                        st.lw_injections += 1
-                        st.last_up_bid = up_bid
-                        st.last_dn_bid = dn_bid
-                        st.first_done = True
-                        return st, trade
+            if not lw_blocked:
+                notional = size * w_ask
+                if notional >= p.api_min_order_size:
+                    trade = SimTrade(
+                        ts_ms=now_ms, outcome=winner, price=w_ask,
+                        size=size, reason=f"bonereaper:lw:{winner.lower()}",
+                        to_end=to_end, up_bid=up_bid, down_bid=dn_bid,
+                    )
+                    st.last_buy_ms = now_ms
+                    st.lw_injections += 1
+                    st.last_up_bid = up_bid
+                    st.last_dn_bid = dn_bid
+                    st.first_done = True
+                    return st, trade
 
     # ── COOLDOWN ─────────────────────────────────────────────────────────────
     if st.last_buy_ms > 0 and (now_ms - st.last_buy_ms) < p.buy_cooldown_ms:
