@@ -360,7 +360,16 @@ impl BonereaperEngine {
                 } else if is_scalp_band {
                     scalp_usdc
                 } else {
-                    let base = p.bonereaper_interp_usdc(bid, ctx.order_usdc);
+                    // SABİT SHARE modu (15m bot için): shares_const > 0 ise
+                    // interp BYPASS edilir; usdc = shares × ask. Gerçek bot
+                    // 15m'de tam 10 share/trade kullanıyor (analiz: bant
+                    // median 10sh, sapma <$1; R²=0.866 lineer fit).
+                    let shares_const = p.bonereaper_size_shares_const();
+                    let base = if shares_const > 0.0 {
+                        shares_const * ask
+                    } else {
+                        p.bonereaper_interp_usdc(bid, ctx.order_usdc)
+                    };
                     let lp_secs = p.bonereaper_late_pyramid_secs() as f64;
                     if !is_loser_dir && lp_secs > 0.0 && to_end > 0.0 && to_end <= lp_secs {
                         base * p.bonereaper_winner_size_factor()
@@ -381,7 +390,8 @@ impl BonereaperEngine {
 
                 let order_price = ask; // taker
                 // Tüm bantlarda USDC tabanlı size: (usdc / ask).ceil()
-                // usdc = scalp_usdc | interp(bid) × winner_size_factor (late pyramid)
+                // usdc = scalp_usdc | shares_const×ask | interp(bid) × winner_size_factor
+                // shares_const>0 ise interp BYPASS (15m bot için optimal).
                 // interp_usdc piecewise lineer (anchor 0.30/0.65/lw_thr).
                 let size = (usdc / order_price).ceil().max(1.0);
 
@@ -535,5 +545,32 @@ mod tests {
         // bid >= lw_thr (0.65) → high (high band girişi 0.65 < lw_thr 0.65 değil)
         let v = p.bonereaper_interp_usdc(0.65, 10.0);
         assert!((v - 25.0).abs() < 1e-9 || (v - 80.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn shares_const_default_is_disabled() {
+        let p = StrategyParams::default();
+        assert!((p.bonereaper_size_shares_const() - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn shares_const_clamps_negative_to_zero() {
+        let mut p = StrategyParams::default();
+        p.bonereaper_size_shares_const = Some(-5.0);
+        assert!((p.bonereaper_size_shares_const() - 0.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn shares_const_passes_through_value() {
+        let mut p = StrategyParams::default();
+        p.bonereaper_size_shares_const = Some(10.0);
+        assert!((p.bonereaper_size_shares_const() - 10.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn shares_const_clamps_huge_value() {
+        let mut p = StrategyParams::default();
+        p.bonereaper_size_shares_const = Some(1_000_000.0);
+        assert!((p.bonereaper_size_shares_const() - 10_000.0).abs() < 1e-9);
     }
 }

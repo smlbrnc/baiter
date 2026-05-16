@@ -94,6 +94,9 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
   const bonereaperSizeHighUsdc =
     params.bonereaper_size_high_usdc ??
     STRATEGY_PARAMS_DEFAULTS.bonereaper_size_high_usdc
+  const bonereaperSizeSharesConst =
+    params.bonereaper_size_shares_const ??
+    STRATEGY_PARAMS_DEFAULTS.bonereaper_size_shares_const
   const bonereaperLoserMinPrice =
     params.bonereaper_loser_min_price ??
     STRATEGY_PARAMS_DEFAULTS.bonereaper_loser_min_price
@@ -298,6 +301,22 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                     value={bonereaperSizeHighUsdc}
                     onChange={(e) =>
                       patch({ bonereaper_size_high_usdc: Number(e.target.value) })
+                    }
+                  />
+                </Field>
+                <Field
+                  label="Sabit Share modu"
+                  tooltip="0'dan büyükse interp_usdc BYPASS edilir; her trade tam bu kadar share alır (USDC = shares × ask). 15m bot için optimal değer 10. 5m bot için 0 (interp aktif)."
+                  hint={`0 = devre dışı (interp). 15m bot: 10 (gerçek bot R²=0.866). default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_size_shares_const}.`}
+                >
+                  <Input
+                    type="number"
+                    step="1"
+                    min="0"
+                    max="10000"
+                    value={bonereaperSizeSharesConst}
+                    onChange={(e) =>
+                      patch({ bonereaper_size_shares_const: Number(e.target.value) })
                     }
                   />
                 </Field>

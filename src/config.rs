@@ -219,6 +219,17 @@ pub struct StrategyParams {
     #[serde(default)]
     pub bonereaper_avg_loser_max: Option<f64>,
 
+    // === Bonereaper - SABİT SHARE Modu (15m bot için optimal) ===
+    /// `bonereaper_size_shares_const` > 0 ise normal alım sizing'i interp
+    /// fonksiyonunu BYPASS eder ve her trade'de tam bu kadar share alır.
+    /// USDC otomatik = `shares × ask` (lineer fiyatla).
+    ///
+    /// Gerçek bot 15m markette: tam 10 share/trade kullanıyor (3331 emir
+    /// analizi: bant median 10sh, sapma <$1). 5m markette ise daha karışık
+    /// (USDC sabit ~$10). 0 = devre dışı (mevcut interp mantığı).
+    #[serde(default)]
+    pub bonereaper_size_shares_const: Option<f64>,
+
     // === Gravie (Dual-Balance Accumulator) ===
     // Amaç: her markette UP shares == DOWN shares ve avg_up + avg_down < X.
     // Bu iki koşul sağlandığında hangi sonuç gelirse gelsin garantili kâr:
@@ -477,7 +488,14 @@ impl StrategyParams {
             .unwrap_or(0.50)
             .clamp(0.10, 0.95)
     }
-
+    /// Sabit share modu: > 0 dönerse interp_usdc bypass edilir ve her normal
+    /// alım `shares × ask` USDC harcar. 0 = devre dışı (interp aktif).
+    /// 15m bot için optimal değer: 10. 5m bot için kullanılmaz (0).
+    pub fn bonereaper_size_shares_const(&self) -> f64 {
+        self.bonereaper_size_shares_const
+            .unwrap_or(0.0)
+            .clamp(0.0, 10_000.0)
+    }
 }
 
 /// Gravie (Dual-Balance Accumulator) parametreleri — `StrategyParams`'tan resolve edilir.

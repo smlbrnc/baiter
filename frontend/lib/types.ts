@@ -75,6 +75,13 @@ export interface StrategyParams {
   bonereaper_size_mid_usdc?: number | null
   /** High anchor @ bid=lw_thr — lineer interp (0.65→lw_thr). Default 80. */
   bonereaper_size_high_usdc?: number | null
+  /**
+   * SABİT SHARE modu. > 0 ise interp_usdc bypass edilir; her trade
+   * `shares × ask` USDC harcar. 15m bot için optimal değer 10
+   * (gerçek bot analizi: bant median 10sh, sapma <$1, R²=0.866).
+   * 5m bot için 0 (devre dışı, interp aktif). Default 0.
+   */
+  bonereaper_size_shares_const?: number | null
 
   // ── Bonereaper - Aşama 3 (loser long-shot scalp) ─────────────────────────
   /**
@@ -503,6 +510,7 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   bonereaper_size_longshot_usdc: 10,  // anchor @ 0.30 (sabit)
   bonereaper_size_mid_usdc: 25,       // anchor @ 0.65 (lineer interp)
   bonereaper_size_high_usdc: 80,      // anchor @ lw_thr (lineer interp)
+  bonereaper_size_shares_const: 0,    // 15m bot için 10 (sabit share); 5m=0 (interp)
   // Loser long-shot scalp
   bonereaper_loser_min_price: 0.01,
   bonereaper_loser_scalp_usdc: 5,     // 0.5 × order_usdc
@@ -567,6 +575,8 @@ export function mergeBonereaperStrategyDefaults(
       p.bonereaper_size_mid_usdc ?? d.bonereaper_size_mid_usdc,
     bonereaper_size_high_usdc:
       p.bonereaper_size_high_usdc ?? d.bonereaper_size_high_usdc,
+    bonereaper_size_shares_const:
+      p.bonereaper_size_shares_const ?? d.bonereaper_size_shares_const,
     bonereaper_loser_min_price:
       p.bonereaper_loser_min_price ?? d.bonereaper_loser_min_price,
     bonereaper_loser_scalp_usdc:
