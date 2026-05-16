@@ -191,6 +191,20 @@ pub struct StrategyParams {
     /// Analiz: spread 0.15-0.50 → P75=40sh; 25sh P50'ye yakın.
     #[serde(default)]
     pub bonereaper_size_shares_mid: Option<f64>,
+    /// Yön seçim winner-bias eşiği. spread > X iken Δbid yerine her zaman
+    /// winner yönüne taker (yüksek bidli taraf). 0 = devre dışı (Δbid mantığı).
+    /// 6 market simülasyonu: 0.30 eşiği PnL korurken bant uyumunu artırıyor.
+    #[serde(default)]
+    pub bonereaper_winner_bias_spread_thr: Option<f64>,
+    /// Loser fırsat alımı (çift emir) tetik eşiği. spread ≥ X iken her karar
+    /// döngüsünde winner emrinin yanında loser yönüne ek küçük lot eklenir.
+    /// 0 = devre dışı (tek emir). Gerçek bot 0.20-0.30 loser fırsatlarını
+    /// kaçırmamak için.
+    #[serde(default)]
+    pub bonereaper_force_both_spread_thr: Option<f64>,
+    /// Loser fırsat alımı için sabit lot size. Default 8sh. 0 = devre dışı.
+    #[serde(default)]
+    pub bonereaper_force_both_loser_shares: Option<f64>,
 
     // ── Loser scalp ──────────────────────────────────────────────────────
     /// Loser tarafı için minimum bid eşiği (cheap scalp). Default 0.01.
@@ -411,6 +425,24 @@ impl StrategyParams {
     pub fn bonereaper_size_shares_mid(&self) -> f64 {
         self.bonereaper_size_shares_mid
             .unwrap_or(25.0)
+            .clamp(0.0, 10_000.0)
+    }
+    /// Yön seçim winner-bias eşiği; 0.0–0.99; default 0 (devre dışı).
+    pub fn bonereaper_winner_bias_spread_thr(&self) -> f64 {
+        self.bonereaper_winner_bias_spread_thr
+            .unwrap_or(0.0)
+            .clamp(0.0, 0.99)
+    }
+    /// Loser fırsat (çift emir) tetik eşiği; 0.0–0.99; default 0 (devre dışı).
+    pub fn bonereaper_force_both_spread_thr(&self) -> f64 {
+        self.bonereaper_force_both_spread_thr
+            .unwrap_or(0.0)
+            .clamp(0.0, 0.99)
+    }
+    /// Loser fırsat lot size; 0–10_000; default 0 (devre dışı). Önerilen: 8sh.
+    pub fn bonereaper_force_both_loser_shares(&self) -> f64 {
+        self.bonereaper_force_both_loser_shares
+            .unwrap_or(0.0)
             .clamp(0.0, 10_000.0)
     }
     /// Spread-aware resolve: shares_const > 0 iken mevcut spread'e göre lot size döner.

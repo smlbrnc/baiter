@@ -215,7 +215,22 @@ impl BonereaperEngine {
                 }
 
                 // ── YÖN SEÇİMİ ──────────────────────────────────────────────
-                let dir = if !st.first_done {
+                // Winner-bias erken çıkış: spread > thr iken yüksek bidli taraf
+                // her zaman seçilir (Δbid mantığı atlanır). 6 market simülasyonu:
+                // bant uyum hatasını korurken PnL +$265 (gerçek +$277'ye yakın).
+                let winner_bias_thr = p.bonereaper_winner_bias_spread_thr();
+                let cur_ob_spread = (ctx.up_best_bid - ctx.down_best_bid).abs();
+                let winner_bias_active = winner_bias_thr > 0.0
+                    && cur_ob_spread > winner_bias_thr
+                    && st.first_done;
+
+                let dir = if winner_bias_active {
+                    if ctx.up_best_bid >= ctx.down_best_bid {
+                        Outcome::Up
+                    } else {
+                        Outcome::Down
+                    }
+                } else if !st.first_done {
                     // İlk emir: spread gate. BSI primer, OB fallback.
                     let spread_min = p.bonereaper_first_spread_min();
                     let spread = ctx.up_best_bid - ctx.down_best_bid;
@@ -385,9 +400,37 @@ impl BonereaperEngine {
                 if let Some(o) = make_buy(ctx, dir, order_price, size, reason) {
                     st.last_buy_ms = ctx.now_ms;
                     st.first_done = true;
+
+                    // Loser fırsat alımı (çift emir): spread ≥ force_thr iken
+                    // ana emrin yanında loser yönüne sabit küçük lot ek emir.
+                    // Gerçek bot 0.20-0.30 fiyatlarında loser tarafta birikim
+                    // yapıyor; tek-yön taker mantığı bu fırsatı kaçırıyordu.
+                    let force_thr = p.bonereaper_force_both_spread_thr();
+                    let force_lot = p.bonereaper_force_both_loser_shares();
+                    let mut orders = vec![o];
+                    if force_thr > 0.0 && force_lot > 0.0 && cur_ob_spread >= force_thr {
+                        let loser_oc = if dir == Outcome::Up {
+                            Outcome::Down
+                        } else {
+                            Outcome::Up
+                        };
+                        let loser_ask = ctx.best_ask(loser_oc);
+                        if loser_ask > 0.0 && loser_ask < ctx.max_price {
+                            if let Some(lo) = make_buy(
+                                ctx,
+                                loser_oc,
+                                loser_ask,
+                                force_lot,
+                                reason_buy(loser_oc),
+                            ) {
+                                orders.push(lo);
+                            }
+                        }
+                    }
+
                     return (
                         BonereaperState::Active(st),
-                        Decision::PlaceOrders(vec![o]),
+                        Decision::PlaceOrders(orders),
                     );
                 }
                 (BonereaperState::Active(st), Decision::NoOp)
