@@ -4,10 +4,10 @@
 //! ## Karar zinciri
 //!
 //! 1. **Window**: `now ∈ [start, end]`; OB ready.
-//! 2. **LATE WINNER** (`max(bid) ≥ bid_thr [0.90]`, cooldown'a tabi):
+//! 2. **LATE WINNER** (`max(bid) ≥ bid_thr [0.85]`, cooldown'a tabi):
 //!    - winner tarafa taker BUY @ ask. Quota (`lw_max_per_session`) ile cap.
 //!    - Boyut: `lw_usdc × arb_mult(fiyat)` — saf fiyat bazlı.
-//!    - `arb_mult`: lineer 5×@lw_thr(0.90) → 10×@0.99
+//!    - `arb_mult`: lineer 5×@lw_thr(0.85) → 10×@0.99
 //!    - LW ile birlikte loser cheap scalp (GTC at bid, maker).
 //! 3. **COOLDOWN** (`now − last_buy < buy_cooldown_ms`): NoOp.
 //! 4. **YÖN SEÇİMİ** (first_done=false → spread gate + BSI/OB fallback):

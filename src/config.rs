@@ -310,17 +310,18 @@ impl StrategyParams {
     pub fn bonereaper_late_winner_secs(&self) -> u32 {
         self.bonereaper_late_winner_secs.unwrap_or(300).min(300)
     }
-    /// Late winner bid eşiği; 0.50–0.99 sınırlı; default 0.90
-    /// High band (0.65–0.90): sabit 50sh accumulation.
-    /// LW bölgesi (≥0.90): lineer 5×→15× arb_mult ile agresif shot.
+    /// Late winner bid eşiği; 0.50–0.99 sınırlı; default 0.85.
+    /// Gerçek bot analizi: LW shotlar 0.87–0.95 bandında görüldü.
+    /// arb_mult lineer: lw_thr'de 5×, 0.99'da 10× (formül lw_thr bazlı).
+    /// 0.85'te 5.0× → 0.90'da 6.79× → 0.95'te 8.57× → 0.99'da 10×.
     pub fn bonereaper_late_winner_bid_thr(&self) -> f64 {
         self.bonereaper_late_winner_bid_thr
-            .unwrap_or(0.90)
+            .unwrap_or(0.85)
             .clamp(0.50, 0.99)
     }
     /// Late winner USDC notional (base, arb_mult öncesi); 0–10000 sınırlı.
-    /// Default: `1 × order_usdc`. arb_mult lineer 5×@lw_thr → 15×@0.99 ile
-    /// order_usdc=10 → ask=0.90'da $50/shot, ask=0.99'da $150/shot.
+    /// Default: `1 × order_usdc`. arb_mult lineer 5×@lw_thr → 10×@0.99 ile
+    /// order_usdc=10 → ask=0.85'de $46/shot, ask=0.99'da $93/shot.
     /// 0 = KAPALI. DB'de override varsa onu kullan.
     pub fn bonereaper_late_winner_usdc(&self, order_usdc: f64) -> f64 {
         self.bonereaper_late_winner_usdc
@@ -426,11 +427,11 @@ impl StrategyParams {
         self.bonereaper_late_pyramid_secs.unwrap_or(150).min(300)
     }
     /// Winner pyramid size çarpanı; 1.0–10.0 sınırlı; default 2.0.
-    /// size_high_usdc=$40 ile: $40×2=$80 → bid $0.90'da ~89sh ≈ real bot 87sh ✓.
-    /// 941-trade analizi: $0.85-0.95 avg 85sh. ceil(80/0.90)=89 ← tam uyum.
+    /// 4-log analizi (7122 trade): son 60s'de avg $33 (1.73×), base ~$19.
+    /// factor=2 → $20×2=$40 @ 0.75 = 53sh; gerçek bot son 60s avg 45sh ✓.
     pub fn bonereaper_winner_size_factor(&self) -> f64 {
         self.bonereaper_winner_size_factor
-            .unwrap_or(1.0)
+            .unwrap_or(2.0)
             .clamp(1.0, 10.0)
     }
     /// LW burst pencere (sn); 0–60 sınırlı; default 0 (KAPALI).
