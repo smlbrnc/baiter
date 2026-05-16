@@ -13,6 +13,8 @@
 //!    sonrasında `|imb| > N×est_size` ise zayıf yöne rebalance, aksi halde
 //!    `|Δbid|` büyük olan tarafa.
 //! 5. **LOSER SCALP** — loser yön & `bid ≤ 0.30` → `scalp_usdc` ile küçük alım.
+//!    0.30 üstünde loser yöne de normal sizing uygulanır (gerçek bot davranışı).
+//!    Tek üst koruma `avg_loser_max`: loser side avg fiyatı eşiği aşarsa sadece scalp.
 //! 6. **NORMAL BUY** taker @ ask. Sizing iki moddan biri:
 //!    - `shares_const > 0`: `size = shares_const` sabit (15m bot için optimal).
 //!    - aksi: piecewise lineer interp (anchor 0.30/0.65/lw_thr).
@@ -348,11 +350,6 @@ impl BonereaperEngine {
                 }
 
                 let is_any_scalp = scalp_only || is_scalp_band;
-
-                // Loser guard: scalp bandı dışında loser yönüne mid alım yapma.
-                if is_loser_dir && !is_any_scalp && bid > scalp_max_price {
-                    return (BonereaperState::Active(st), Decision::NoOp);
-                }
 
                 let order_price = ask; // taker
                 let size = (usdc / order_price).ceil().max(1.0);
