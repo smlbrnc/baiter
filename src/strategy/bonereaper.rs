@@ -385,18 +385,10 @@ impl BonereaperEngine {
                 }
 
                 let order_price = ask; // taker
-                // Mid/High normal alımlar: sabit share (order_usdc × 4, gerçek bot ~40 sh).
-                // Scalp ve longshot: USDC bazlı (değişmedi).
-                // Mid/High sabit share (gerçek bot 836-fill parçalı fill analizi):
-                // Mid med=40sh → order_usdc × 4.0 | High med=50sh → order_usdc × 5.0
-                // H/M oranı 1.25× (5/4), raw fill birleştirme sonrası kesin tanı.
-                let size = if is_any_scalp || bid <= 0.30 {
-                    (usdc / order_price).ceil()
-                } else if bid <= 0.65 {
-                    (ctx.order_usdc * 4.0).round().max(1.0)
-                } else {
-                    (ctx.order_usdc * 5.0).round().max(1.0)
-                };
+                // Tüm bantlarda USDC tabanlı size: (usdc / ask).ceil()
+                // usdc = scalp_usdc | longshot_usdc | size_mid_usdc×factor | size_high_usdc×factor
+                // winner_size_factor ve late_pyramid_secs böylece mid/high bandına etki eder.
+                let size = (usdc / order_price).ceil().max(1.0);
 
                 // avg_sum soft cap — scalp muaf.
                 if !is_any_scalp && opp_filled > 0.0 {
