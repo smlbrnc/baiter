@@ -7,7 +7,7 @@
 //! 2. **LATE WINNER** — `max(bid) ≥ lw_thr` ve cooldown OK ise winner tarafa
 //!    taker BUY (`size = lw_usdc × arb_mult / ask`). `arb_mult` lineer
 //!    5×@lw_thr → 10×@0.99. Quota: `lw_max_per_session`. LW ile birlikte
-//!    loser cheap scalp (GTC at bid).
+//!    loser cheap scalp (FAK at ask).
 //! 3. **COOLDOWN** — `now − last_buy < buy_cooldown_ms` → NoOp.
 //! 4. **YÖN SEÇİMİ** — first_done=false → spread gate + BSI/OB fallback;
 //!    sonrasında `|imb| > N×est_size` ise zayıf yöne rebalance, aksi halde
@@ -179,7 +179,7 @@ impl BonereaperEngine {
                             st.last_up_bid = ctx.up_best_bid;
                             st.last_dn_bid = ctx.down_best_bid;
                             st.first_done = true;
-                            // LW sweep: loser tarafa cheap scalp (GTC at ask).
+                            // LW sweep: loser tarafa cheap scalp (FAK at ask).
                             let loser = if winner == Outcome::Up { Outcome::Down } else { Outcome::Up };
                             let loser_ask = ctx.best_ask(loser);
                             let scalp_usdc = p.bonereaper_loser_scalp_usdc(ctx.order_usdc);
@@ -193,7 +193,7 @@ impl BonereaperEngine {
                                         side: Side::Buy,
                                         price: loser_ask,
                                         size: loser_size,
-                                        order_type: OrderType::Gtc,
+                                        order_type: OrderType::Fak,
                                         reason: reason_scalp(loser).to_string(),
                                     });
                                 }
@@ -390,7 +390,7 @@ impl BonereaperEngine {
     }
 }
 
-/// BUY GTC limit emir. `price ≤ 0`, `size ≤ 0` veya notional < min → `None`.
+/// BUY FAK emir. `price ≤ 0`, `size ≤ 0` veya notional < min → `None`.
 fn make_buy(
     ctx: &StrategyContext<'_>,
     outcome: Outcome,
@@ -410,7 +410,7 @@ fn make_buy(
         side: Side::Buy,
         price,
         size,
-        order_type: OrderType::Gtc,
+        order_type: OrderType::Fak,
         reason: reason.to_string(),
     })
 }
