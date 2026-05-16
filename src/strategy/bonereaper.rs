@@ -16,7 +16,8 @@
 //! 5. **LOSER SCALP** (direction=loser seçildiğinde, is_scalp_band):
 //!    - `bid ≤ 0.30` koşulunda `scalp_usdc` ile alım (tüm longshot+scalp bandı).
 //!    - Gerçek bot 0.12-0.30 arasında da %35 loser alımı yapıyor → bant genişletildi.
-//! 6. **NORMAL BUY** taker @ ask: longshot/mid/high bucket bazlı size.
+//! 6. **NORMAL BUY** taker @ ask: piecewise lineer interp size
+//!    (anchor 0.30 longshot, 0.65 mid, `lw_thr` high; bant sınırlarında sıçrama yok).
 //! 7. **avg_sum cap** (default=1.00; loser scalp muaf).
 //!
 //! ## Reason etiketleri
@@ -359,13 +360,7 @@ impl BonereaperEngine {
                 } else if is_scalp_band {
                     scalp_usdc
                 } else {
-                    let base = if bid <= 0.30 {
-                        p.bonereaper_size_longshot_usdc()
-                    } else if bid <= 0.65 {
-                        p.bonereaper_size_mid_usdc(ctx.order_usdc)
-                    } else {
-                        p.bonereaper_size_high_usdc(ctx.order_usdc)
-                    };
+                    let base = p.bonereaper_interp_usdc(bid, ctx.order_usdc);
                     let lp_secs = p.bonereaper_late_pyramid_secs() as f64;
                     if !is_loser_dir && lp_secs > 0.0 && to_end > 0.0 && to_end <= lp_secs {
                         base * p.bonereaper_winner_size_factor()
@@ -386,8 +381,8 @@ impl BonereaperEngine {
 
                 let order_price = ask; // taker
                 // Tüm bantlarda USDC tabanlı size: (usdc / ask).ceil()
-                // usdc = scalp_usdc | longshot_usdc | size_mid_usdc×factor | size_high_usdc×factor
-                // winner_size_factor ve late_pyramid_secs böylece mid/high bandına etki eder.
+                // usdc = scalp_usdc | interp(bid) × winner_size_factor (late pyramid)
+                // interp_usdc piecewise lineer (anchor 0.30/0.65/lw_thr).
                 let size = (usdc / order_price).ceil().max(1.0);
 
                 // avg_sum soft cap — scalp muaf.
@@ -445,4 +440,100 @@ fn make_buy(
         order_type: OrderType::Gtc,
         reason: reason.to_string(),
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::config::StrategyParams;
+
+    fn params_5m() -> StrategyParams {
+        let mut p = StrategyParams::default();
+        p.bonereaper_size_longshot_usdc = Some(10.0);
+        p.bonereaper_size_mid_usdc = Some(25.0);
+        p.bonereaper_size_high_usdc = Some(80.0);
+        p.bonereaper_late_winner_bid_thr = Some(0.95);
+        p
+    }
+
+    #[test]
+    fn interp_anchors_match_exactly() {
+        let p = params_5m();
+        assert!((p.bonereaper_interp_usdc(0.30, 10.0) - 10.0).abs() < 1e-9);
+        assert!((p.bonereaper_interp_usdc(0.65, 10.0) - 25.0).abs() < 1e-9);
+        assert!((p.bonereaper_interp_usdc(0.95, 10.0) - 80.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn interp_below_longshot_is_constant() {
+        let p = params_5m();
+        assert!((p.bonereaper_interp_usdc(0.00, 10.0) - 10.0).abs() < 1e-9);
+        assert!((p.bonereaper_interp_usdc(0.10, 10.0) - 10.0).abs() < 1e-9);
+        assert!((p.bonereaper_interp_usdc(0.29, 10.0) - 10.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn interp_above_lw_thr_is_high_constant() {
+        let p = params_5m();
+        assert!((p.bonereaper_interp_usdc(0.95, 10.0) - 80.0).abs() < 1e-9);
+        assert!((p.bonereaper_interp_usdc(0.99, 10.0) - 80.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn interp_low_band_midpoint() {
+        // 0.475 = (0.30 + 0.65) / 2 → t = 0.5 → (10 + 25) / 2 = 17.5
+        let p = params_5m();
+        assert!((p.bonereaper_interp_usdc(0.475, 10.0) - 17.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn interp_high_band_midpoint() {
+        // lw_thr=0.95, mid_band = (0.65 + 0.95) / 2 = 0.80
+        // t = 0.5 → (25 + 80) / 2 = 52.5
+        let p = params_5m();
+        assert!((p.bonereaper_interp_usdc(0.80, 10.0) - 52.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn interp_monotone_non_decreasing() {
+        let p = params_5m();
+        let mut prev = 0.0;
+        let mut bid = 0.0;
+        while bid <= 1.0 {
+            let v = p.bonereaper_interp_usdc(bid, 10.0);
+            assert!(
+                v >= prev - 1e-9,
+                "monoton bozuldu @ bid={} ({} < {})",
+                bid,
+                v,
+                prev
+            );
+            prev = v;
+            bid += 0.005;
+        }
+    }
+
+    #[test]
+    fn interp_15m_bot_anchors() {
+        let mut p = StrategyParams::default();
+        p.bonereaper_size_longshot_usdc = Some(3.0);
+        p.bonereaper_size_mid_usdc = Some(7.0);
+        p.bonereaper_size_high_usdc = Some(20.0);
+        p.bonereaper_late_winner_bid_thr = Some(0.95);
+        assert!((p.bonereaper_interp_usdc(0.30, 10.0) - 3.0).abs() < 1e-9);
+        assert!((p.bonereaper_interp_usdc(0.65, 10.0) - 7.0).abs() < 1e-9);
+        assert!((p.bonereaper_interp_usdc(0.95, 10.0) - 20.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn interp_lw_thr_eq_065_safe() {
+        // Edge: lw_thr = 0.65 → span clamped to 0.01
+        let mut p = StrategyParams::default();
+        p.bonereaper_size_longshot_usdc = Some(10.0);
+        p.bonereaper_size_mid_usdc = Some(25.0);
+        p.bonereaper_size_high_usdc = Some(80.0);
+        p.bonereaper_late_winner_bid_thr = Some(0.65);
+        // bid >= lw_thr (0.65) → high (high band girişi 0.65 < lw_thr 0.65 değil)
+        let v = p.bonereaper_interp_usdc(0.65, 10.0);
+        assert!((v - 25.0).abs() < 1e-9 || (v - 80.0).abs() < 1e-9);
+    }
 }

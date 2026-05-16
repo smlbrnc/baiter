@@ -83,9 +83,9 @@ def get_bot_config(bot_id):
         "bonereaper_imbalance_thr": 1000.0,
         "bonereaper_max_avg_sum": 1.05,
         "bonereaper_first_spread_min": 0.02,
-        "bonereaper_size_longshot_usdc": 15.0,
-        "bonereaper_size_mid_usdc": 23.0,
-        "bonereaper_size_high_usdc": 37.0,
+        "bonereaper_size_longshot_usdc": 10.0,
+        "bonereaper_size_mid_usdc": 25.0,
+        "bonereaper_size_high_usdc": 80.0,
         "bonereaper_loser_scalp_usdc": 10.0,
         "bonereaper_loser_scalp_max_price": 0.30,
     }
@@ -282,9 +282,9 @@ def detailed_market_analysis(slug, real_trades, bot_trades_dict, bot_configs):
                        f"lw_max={params['bonereaper_lw_max_per_session']} "
                        f"imb_thr={params['bonereaper_imbalance_thr']:.0f} "
                        f"first_spread={params['bonereaper_first_spread_min']:.2f}")
-        findings.append(f"   Sizes: ls=${params['bonereaper_size_longshot_usdc']:.0f} "
-                       f"mid=${params['bonereaper_size_mid_usdc']:.0f} "
-                       f"hi=${params['bonereaper_size_high_usdc']:.0f} "
+        findings.append(f"   Anchors: ls@0.30=${params['bonereaper_size_longshot_usdc']:.0f} "
+                       f"mid@0.65=${params['bonereaper_size_mid_usdc']:.0f} "
+                       f"hi@lw_thr=${params['bonereaper_size_high_usdc']:.0f} (interp lineer) "
                        f"scoop=${params['bonereaper_loser_scalp_usdc']:.0f}@{params['bonereaper_loser_scalp_max_price']:.2f} "
                        f"cd={params['bonereaper_buy_cooldown_ms']}ms")
         findings.append(f"   DISTINCT SHOTS: {len(bt)}, ${total:.0f}, "

@@ -91,17 +91,26 @@ Taban: `lw_usdc = 100`. `to_end` = kapanışa kalan saniye.
 
 ## 6. Boyutlandırma (normal alım)
 
-USDC notional, **tarafın bid’ine** göre bucket:
+USDC notional, **piecewise lineer interpolasyon** ile hesaplanır (3 anchor noktası):
 
-| Bid koşulu | Parametre | Default |
-|------------|-----------|--------:|
-| `bid ≤ 0.30` | `size_longshot_usdc` | 15 |
-| `0.30 < bid ≤ 0.65` | `size_mid_usdc` | 23 |
-| `bid > 0.65` | `size_high_usdc` | 37 |
+| Anchor | Bid | Parametre | Default |
+|--------|-----|-----------|--------:|
+| longshot | `0.30` | `size_longshot_usdc` | 10 |
+| mid | `0.65` | `size_mid_usdc` | 25 |
+| high | `lw_thr` | `size_high_usdc` | 80 |
 
-Winner tarafında ve `to_end ≤ late_pyramid_secs` (default 150) iken: `base × winner_size_factor` (default **1.0**, clamp 1–10).
+**Formül (`bonereaper_interp_usdc`):**
 
-**Loser scalp:** `bid ≤ loser_scalp_max_price` (default 0.30) ve `loser_scalp_usdc > 0` (default **10**) → scalp notional. `avg_loser_max` (default 0.50) aşıldıysa loser’da sadece minimal scalp yolu.
+- `bid ≤ 0.30` → `longshot` (sabit)
+- `0.30 < bid ≤ 0.65` → `longshot + (mid − longshot) × (bid − 0.30) / 0.35`
+- `0.65 < bid < lw_thr` → `mid + (high − mid) × (bid − 0.65) / (lw_thr − 0.65)`
+- `bid ≥ lw_thr` → `high` (LW akışı kontrol eder; bu fallback)
+
+Bant sınırlarında sıçrama yok; gerçek bot 5m/15m markette superlineer artış gösteriyor (3995 trade analizi: 5m hata %28 azalır, 15m korelasyon 30× artar).
+
+Winner tarafında ve `to_end ≤ late_pyramid_secs` (default 150) iken: `base × winner_size_factor` (default **2.0**, clamp 1–10).
+
+**Loser scalp:** `bid ≤ loser_scalp_max_price` (default 0.30) ve `loser_scalp_usdc > 0` (default **10**) → scalp notional (interp devre dışı). `avg_loser_max` (default 0.50) aşıldıysa loser’da sadece minimal scalp yolu.
 
 ---
 
@@ -117,9 +126,9 @@ Winner tarafında ve `to_end ≤ late_pyramid_secs` (default 150) iken: `base ×
 | `bonereaper_imbalance_thr` | 1000 | Aşırı salınımı bastırmak için yüksek |
 | `bonereaper_max_avg_sum` | 1.05 | Dengeli pozisyonda zararı sınırlar |
 | `bonereaper_first_spread_min` | 0.02 | 0–0.20 |
-| `bonereaper_size_longshot_usdc` | 15 | |
-| `bonereaper_size_mid_usdc` | 23 | |
-| `bonereaper_size_high_usdc` | 37 | |
+| `bonereaper_size_longshot_usdc` | 10 | Lineer interp anchor @ 0.30 |
+| `bonereaper_size_mid_usdc` | 25 | Lineer interp anchor @ 0.65 |
+| `bonereaper_size_high_usdc` | 80 | Lineer interp anchor @ lw_thr |
 | `bonereaper_loser_min_price` | 0.01 | |
 | `bonereaper_loser_scalp_usdc` | 10 | |
 | `bonereaper_loser_scalp_max_price` | 0.30 | |

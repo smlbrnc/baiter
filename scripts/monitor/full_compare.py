@@ -89,9 +89,9 @@ def get_bot_config(bot_id):
         "bonereaper_imbalance_thr": 1000.0,
         "bonereaper_max_avg_sum": 1.05,
         "bonereaper_first_spread_min": 0.02,
-        "bonereaper_size_longshot_usdc": 15.0,
-        "bonereaper_size_mid_usdc": 23.0,
-        "bonereaper_size_high_usdc": 37.0,
+        "bonereaper_size_longshot_usdc": 10.0,
+        "bonereaper_size_mid_usdc": 25.0,
+        "bonereaper_size_high_usdc": 80.0,
         "bonereaper_loser_scalp_usdc": 10.0,
         "bonereaper_loser_scalp_max_price": 0.30,
     }

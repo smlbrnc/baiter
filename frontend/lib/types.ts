@@ -69,11 +69,11 @@ export interface StrategyParams {
    * (bot 101 backtest: ROI %1.41 → %2.56). 0.0 = devre dışı.
    */
   bonereaper_first_spread_min?: number | null
-  /** Long-shot bid bucket (bid ≤ 0.30) trade büyüklüğü (USDC). Default 5. */
+  /** Longshot anchor (bid ≤ 0.30, sabit) — lineer interp. Default 10. */
   bonereaper_size_longshot_usdc?: number | null
-  /** Mid bid bucket (0.30 < bid ≤ 0.85) trade büyüklüğü (USDC). Default 10. */
+  /** Mid anchor @ bid=0.65 — lineer interp (0.30→0.65). Default 25. */
   bonereaper_size_mid_usdc?: number | null
-  /** High-confidence bid bucket (bid > 0.85) trade büyüklüğü (USDC). Default 15. */
+  /** High anchor @ bid=lw_thr — lineer interp (0.65→lw_thr). Default 80. */
   bonereaper_size_high_usdc?: number | null
 
   // ── Bonereaper - Aşama 3 (loser long-shot scalp) ─────────────────────────
@@ -500,9 +500,9 @@ export const STRATEGY_PARAMS_DEFAULTS = {
   bonereaper_imbalance_thr: 100,      // otomatik: 10 × order_usdc (frontend hidden)
   bonereaper_max_avg_sum: 1.0,
   bonereaper_first_spread_min: 0,     // devre dışı
-  bonereaper_size_longshot_usdc: 6,   // bid ≤ 0.30
-  bonereaper_size_mid_usdc: 10,       // 0.30 < bid ≤ 0.65
-  bonereaper_size_high_usdc: 15,      // 0.65 < bid < 0.90
+  bonereaper_size_longshot_usdc: 10,  // anchor @ 0.30 (sabit)
+  bonereaper_size_mid_usdc: 25,       // anchor @ 0.65 (lineer interp)
+  bonereaper_size_high_usdc: 80,      // anchor @ lw_thr (lineer interp)
   // Loser long-shot scalp
   bonereaper_loser_min_price: 0.01,
   bonereaper_loser_scalp_usdc: 5,     // 0.5 × order_usdc

@@ -60,9 +60,9 @@ class BonereaperParams:
     imbalance_thr: float = 1000.0
     max_avg_sum: float = 1.0
     first_spread_min: float = 0.02
-    size_longshot_usdc: float = 15.0
-    size_mid_usdc: float = 23.0
-    size_high_usdc: float = 37.0
+    size_longshot_usdc: float = 10.0
+    size_mid_usdc: float = 25.0
+    size_high_usdc: float = 80.0
     loser_min_price: float = 0.01
     loser_scalp_usdc: float = 10.0
     loser_scalp_max_price: float = 0.30
@@ -95,9 +95,9 @@ class BonereaperParams:
         imb_thr = get("bonereaper_imbalance_thr", 1000.0, 0.0, 10_000.0)
         max_avg_sum = get("bonereaper_max_avg_sum", 1.0, 0.50, 2.00)
         fsm = get("bonereaper_first_spread_min", 0.02, 0.00, 0.20)
-        sz_ls = get("bonereaper_size_longshot_usdc", 15.0, 0.0, 10_000.0)
-        sz_mid = get("bonereaper_size_mid_usdc", 23.0, 0.0, 10_000.0)
-        sz_hi = get("bonereaper_size_high_usdc", 37.0, 0.0, 10_000.0)
+        sz_ls = get("bonereaper_size_longshot_usdc", 10.0, 0.0, 10_000.0)
+        sz_mid = get("bonereaper_size_mid_usdc", 25.0, 0.0, 10_000.0)
+        sz_hi = get("bonereaper_size_high_usdc", 80.0, 0.0, 10_000.0)
         loser_min = get("bonereaper_loser_min_price", 0.01, 0.001, 0.10)
         loser_scalp = get("bonereaper_loser_scalp_usdc", 10.0, 0.0, 50.0)
         loser_scalp_max = get("bonereaper_loser_scalp_max_price", 0.30, 0.05, 0.50)
@@ -206,6 +206,34 @@ def loser_side(up_bid: float, dn_bid: float) -> Optional[str]:
     if spread < LOSER_SPREAD_MIN:
         return None
     return "DOWN" if up_bid >= dn_bid else "UP"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PIECEWISE LİNEER SIZING (bonereaper_interp_usdc Rust portu)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _interp_usdc(bid: float, p: "BonereaperParams") -> float:
+    """3 anchor: longshot@0.30, mid@0.65, high@lw_thr.
+
+    bid <= 0.30 → longshot (sabit)
+    0.30 < bid <= 0.65 → longshot → mid lineer
+    0.65 < bid < lw_thr → mid → high lineer
+    bid >= lw_thr → high (sabit fallback; LW akışı kontrol eder)
+    """
+    longshot = p.size_longshot_usdc
+    mid = p.size_mid_usdc
+    high = p.size_high_usdc
+    lw_thr = p.late_winner_bid_thr
+    if bid <= 0.30:
+        return longshot
+    if bid <= 0.65:
+        t = max(0.0, min(1.0, (bid - 0.30) / 0.35))
+        return longshot + (mid - longshot) * t
+    if bid < lw_thr:
+        span = max(lw_thr - 0.65, 0.01)
+        t = max(0.0, min(1.0, (bid - 0.65) / span))
+        return mid + (high - mid) * t
+    return high
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -402,12 +430,7 @@ def bonereaper_decide(
     elif is_scalp_band:
         usdc = p.loser_scalp_usdc
     else:
-        if bid <= 0.30:
-            base = p.size_longshot_usdc
-        elif bid <= 0.65:
-            base = p.size_mid_usdc
-        else:
-            base = p.size_high_usdc
+        base = _interp_usdc(bid, p)
         lp_secs = float(p.late_pyramid_secs)
         if not is_loser_dir and lp_secs > 0 and to_end > 0 and to_end <= lp_secs:
             base = base * p.winner_size_factor
@@ -903,9 +926,9 @@ def print_summary(results: List[dict], p: BonereaperParams):
     print(f"    lw_max_per_session= {p.lw_max_per_session}")
     print(f"    max_avg_sum       = {p.max_avg_sum}")
     print(f"    imbalance_thr     = {p.imbalance_thr}")
-    print(f"    size_longshot     = {p.size_longshot_usdc}")
-    print(f"    size_mid          = {p.size_mid_usdc}")
-    print(f"    size_high         = {p.size_high_usdc}")
+    print(f"    size_longshot@0.30= {p.size_longshot_usdc}  (anchor)")
+    print(f"    size_mid@0.65    = {p.size_mid_usdc}  (anchor, lineer interp)")
+    print(f"    size_high@lw_thr = {p.size_high_usdc}  (anchor, lineer interp)")
     print(f"    loser_scalp_usdc  = {p.loser_scalp_usdc}")
     print(f"    loser_scalp_max_p = {p.loser_scalp_max_price}")
     print(f"    max_price         = {p.max_price}")
@@ -978,7 +1001,8 @@ def main():
             p.imbalance_thr = float(args.imbalance_thr)
         if args.lw_secs is not None:
             p.late_winner_secs = int(args.lw_secs)
-        print(f"Bot {args.bot} yüklendi: {p.size_mid_usdc}$ mid / "
+        print(f"Bot {args.bot} yüklendi: anchors {p.size_longshot_usdc}/"
+              f"{p.size_mid_usdc}/{p.size_high_usdc}$ (ls/mid/hi) / "
               f"lw={p.late_winner_usdc}$@{p.late_winner_bid_thr} / "
               f"cd={p.buy_cooldown_ms}ms / max_avg={p.max_avg_sum} / "
               f"lw_max={p.lw_max_per_session} / imb_thr={p.imbalance_thr}")

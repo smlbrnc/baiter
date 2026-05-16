@@ -254,9 +254,9 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
               </div>
               <div className="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <Field
-                  label="Long-shot USDC"
-                  tooltip="bid ≤ 0.30 trade büyüklüğü."
-                  hint={`default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_size_longshot_usdc}.`}
+                  label="Longshot anchor (@0.30)"
+                  tooltip="Lineer interp anchor: bid ≤ 0.30 sabit USDC. 5m bot ~10, 15m bot ~3."
+                  hint={`anchor @ 0.30, sabit. default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_size_longshot_usdc}.`}
                 >
                   <Input
                     type="number"
@@ -270,9 +270,9 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                   />
                 </Field>
                 <Field
-                  label="Mid USDC"
-                  tooltip="0.30 < bid ≤ 0.85 trade büyüklüğü."
-                  hint={`default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_size_mid_usdc}.`}
+                  label="Mid anchor (@0.65)"
+                  tooltip="Lineer interp anchor: 0.30→0.65 longshot→mid lineer. 5m bot ~25, 15m bot ~7."
+                  hint={`anchor @ 0.65, lineer (0.30→0.65). default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_size_mid_usdc}.`}
                 >
                   <Input
                     type="number"
@@ -286,9 +286,9 @@ export function BotFormStrategyParamsSection({ form, setForm }: Props) {
                   />
                 </Field>
                 <Field
-                  label="High-conf USDC"
-                  tooltip="bid > 0.85 trade büyüklüğü."
-                  hint={`default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_size_high_usdc}.`}
+                  label="High anchor (@lw_thr)"
+                  tooltip="Lineer interp anchor: 0.65→lw_thr mid→high lineer; bid ≥ lw_thr LW devralır. 5m bot ~80, 15m bot ~20."
+                  hint={`anchor @ lw_thr, lineer (0.65→lw_thr). default ${STRATEGY_PARAMS_DEFAULTS.bonereaper_size_high_usdc}.`}
                 >
                   <Input
                     type="number"

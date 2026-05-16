@@ -369,33 +369,55 @@ impl StrategyParams {
             .unwrap_or(0.02)
             .clamp(0.00, 0.20)
     }
-    /// Long-shot bucket USDC (bid ≤ 0.30); 0–10000 sınırlı; default 15.
-    /// 25-market doğrulaması (12 + 13 yeni log): real bot $0.20-0.40 bandında
-    /// medyan $14.70-$15.34/shot. Eski $8 default real botun %50'si kadardı,
-    /// $15 birebir uyumlu.
+    /// Longshot anchor USDC (`bid ≤ 0.30`, sabit); 0–10000 sınırlı; default 10.
+    /// Lineer interp anchor noktası @ 0.30. 5m gerçek bot analizi (3995 trade):
+    /// 0.05–0.30 bandı medyan ~$10/shot. 15m botlar için DB override önerilir ($3).
     pub fn bonereaper_size_longshot_usdc(&self) -> f64 {
         self.bonereaper_size_longshot_usdc
-            .unwrap_or(15.0)
+            .unwrap_or(10.0)
             .clamp(0.0, 10_000.0)
     }
-    /// Mid bucket USDC (0.30 < bid ≤ 0.65); 0–10000 sınırlı.
-    /// Default: `1.5 × order_usdc` — 66-market gerçek bot analizi:
-    /// normal per-shot medyan=$9.8, ort=$13.1. order=10 → $15 ideal eşleşme.
-    /// Eski 4× ($40) gerçek botun 3× üstündeydi → trade sıklığı ve bakiye oranı bozuktu.
-    /// DB'de override varsa kullanılır.
+    /// Mid anchor USDC (`bid = 0.65`); 0–10000 sınırlı.
+    /// Default: `2.5 × order_usdc` (= $25 @ order=10). 5m gerçek bot @ 0.65 ≈ $25.
+    /// Lineer interp ile 0.30 (longshot) ↔ 0.65 (mid) aralığı doldurulur.
+    /// DB'de override varsa kullanılır (15m için ~$7).
     pub fn bonereaper_size_mid_usdc(&self, order_usdc: f64) -> f64 {
         self.bonereaper_size_mid_usdc
-            .unwrap_or(1.5 * order_usdc)
+            .unwrap_or(2.5 * order_usdc)
             .clamp(0.0, 10_000.0)
     }
-    /// High bucket USDC (bid > 0.65); 0–10000 sınırlı.
-    /// Default: `2 × order_usdc` — 66-market gerçek bot analizi:
-    /// high band ort. ~$20/shot (order=10). Eski 6× ($60) gerçek botun 3× üstündeydi.
-    /// DB'de override varsa kullanılır.
+    /// High anchor USDC (`bid = lw_thr`); 0–10000 sınırlı.
+    /// Default: `8 × order_usdc` (= $80 @ order=10). 5m gerçek bot @ 0.94 ≈ $80.
+    /// Lineer interp ile 0.65 (mid) ↔ lw_thr (high) aralığı doldurulur.
+    /// `bid ≥ lw_thr` ise LW akışı devralır (bu değer fallback'tir).
+    /// DB'de override varsa kullanılır (15m için ~$20).
     pub fn bonereaper_size_high_usdc(&self, order_usdc: f64) -> f64 {
         self.bonereaper_size_high_usdc
-            .unwrap_or(2.0 * order_usdc)
+            .unwrap_or(8.0 * order_usdc)
             .clamp(0.0, 10_000.0)
+    }
+    /// Piecewise lineer USDC sizing — 3 anchor: longshot@0.30, mid@0.65, high@lw_thr.
+    /// Gerçek bot 5m/15m markette superlineer artış gösteriyor; bu fonksiyon
+    /// 3995 trade üzerinde test edildi: 5m'de hatayı %28, 15m'de korelasyonu 30× artırır.
+    /// `bid ≤ 0.30` → longshot sabit; `0.30→0.65` lineer; `0.65→lw_thr` lineer;
+    /// `bid ≥ lw_thr` → high sabit (LW akışı kontrol eder).
+    pub fn bonereaper_interp_usdc(&self, bid: f64, order_usdc: f64) -> f64 {
+        let longshot = self.bonereaper_size_longshot_usdc();
+        let mid = self.bonereaper_size_mid_usdc(order_usdc);
+        let high = self.bonereaper_size_high_usdc(order_usdc);
+        let lw_thr = self.bonereaper_late_winner_bid_thr();
+        if bid <= 0.30 {
+            longshot
+        } else if bid <= 0.65 {
+            let t = ((bid - 0.30) / 0.35).clamp(0.0, 1.0);
+            longshot + (mid - longshot) * t
+        } else if bid < lw_thr {
+            let span = (lw_thr - 0.65).max(0.01);
+            let t = ((bid - 0.65) / span).clamp(0.0, 1.0);
+            mid + (high - mid) * t
+        } else {
+            high
+        }
     }
     /// Loser side min bid eşiği; 0.001–0.10 sınırlı; default 0.01 (1¢ scalp).
     /// Real bot 0.01–0.05 fiyatlarında bilet topluyor.
