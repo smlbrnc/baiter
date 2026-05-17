@@ -194,7 +194,7 @@ pub struct BotStats {
 }
 
 pub async fn get_bot_stats(pool: &SqlitePool, bot_id: i64) -> Result<BotStats, AppError> {
-    // Her session için en son PnL snapshot'unu al
+    // Her session için en son PnL snapshot'unu al (correlated subquery ile kesin son satır)
     let agg_row = sqlx::query(
         r#"
         SELECT
@@ -207,13 +207,13 @@ pub async fn get_bot_stats(pool: &SqlitePool, bot_id: i64) -> Result<BotStats, A
             COALESCE(AVG(p.mtm_pnl), 0.0) AS avg_session_pnl,
             COALESCE(MAX(p.mtm_pnl), 0.0) AS best_session_pnl,
             COALESCE(MIN(p.mtm_pnl), 0.0) AS worst_session_pnl
-        FROM (
-            SELECT market_session_id, mtm_pnl, cost_basis, fee_total
-            FROM pnl_snapshots
-            WHERE bot_id = ?
-            GROUP BY market_session_id
-            HAVING MAX(ts_ms) AND cost_basis > 0
-        ) p
+        FROM pnl_snapshots p
+        WHERE p.bot_id = ?
+          AND p.ts_ms = (
+              SELECT MAX(ts_ms) FROM pnl_snapshots
+              WHERE market_session_id = p.market_session_id AND bot_id = p.bot_id
+          )
+          AND p.cost_basis > 0
         "#,
     )
     .bind(bot_id)
@@ -248,7 +248,7 @@ pub async fn get_bot_stats(pool: &SqlitePool, bot_id: i64) -> Result<BotStats, A
         .await?;
     let total_trades: i64 = trade_row.try_get("cnt").unwrap_or(0);
 
-    // Pozisyon tipi bazında istatistik
+    // Pozisyon tipi bazında istatistik (correlated subquery ile kesin son snapshot)
     let type_rows = sqlx::query(
         r#"
         SELECT
@@ -263,13 +263,13 @@ pub async fn get_bot_stats(pool: &SqlitePool, bot_id: i64) -> Result<BotStats, A
             COALESCE(AVG(p.mtm_pnl), 0.0) AS avg_pnl,
             COALESCE(SUM(p.mtm_pnl), 0.0) AS total_pnl,
             COALESCE(SUM(p.cost_basis), 0.0) AS total_cost
-        FROM (
-            SELECT market_session_id, mtm_pnl, cost_basis, up_filled, down_filled
-            FROM pnl_snapshots
-            WHERE bot_id = ?
-            GROUP BY market_session_id
-            HAVING MAX(ts_ms) AND cost_basis > 0
-        ) p
+        FROM pnl_snapshots p
+        WHERE p.bot_id = ?
+          AND p.ts_ms = (
+              SELECT MAX(ts_ms) FROM pnl_snapshots
+              WHERE market_session_id = p.market_session_id AND bot_id = p.bot_id
+          )
+          AND p.cost_basis > 0
         GROUP BY position_type
         ORDER BY position_type
         "#,
@@ -307,7 +307,7 @@ pub async fn get_bot_stats(pool: &SqlitePool, bot_id: i64) -> Result<BotStats, A
         })
         .collect();
 
-    // Session zaman çizelgesi (max 500 session, en eskiden yeniye)
+    // Session zaman çizelgesi (en yeni 500 session, sonradan eskiden yeniye sıralanır)
     let timeline_rows = sqlx::query(
         r#"
         SELECT
@@ -327,7 +327,7 @@ pub async fn get_bot_stats(pool: &SqlitePool, bot_id: i64) -> Result<BotStats, A
             HAVING cost_basis > 0
         ) p ON p.market_session_id = ms.id
         WHERE ms.bot_id = ?
-        ORDER BY p.ts_ms ASC
+        ORDER BY p.ts_ms DESC
         LIMIT 500
         "#,
     )
@@ -336,7 +336,7 @@ pub async fn get_bot_stats(pool: &SqlitePool, bot_id: i64) -> Result<BotStats, A
     .fetch_all(pool)
     .await?;
 
-    let sessions_timeline: Vec<SessionTimelineItem> = timeline_rows
+    let mut sessions_timeline: Vec<SessionTimelineItem> = timeline_rows
         .iter()
         .map(|r| {
             let mtm_pnl: f64 = r.try_get("mtm_pnl").unwrap_or(0.0);
@@ -366,6 +366,8 @@ pub async fn get_bot_stats(pool: &SqlitePool, bot_id: i64) -> Result<BotStats, A
             }
         })
         .collect();
+    // DESC ile çekilen verileri kronolojik (ASC) sıraya döndür
+    sessions_timeline.reverse();
 
     Ok(BotStats {
         total_sessions,
