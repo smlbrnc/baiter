@@ -307,7 +307,7 @@ pub async fn get_bot_stats(pool: &SqlitePool, bot_id: i64) -> Result<BotStats, A
         })
         .collect();
 
-    // Session zaman çizelgesi (en yeni 500 session, sonradan eskiden yeniye sıralanır)
+    // Session zaman çizelgesi (en yeni 500 session, correlated subquery ile kesin son snapshot)
     let timeline_rows = sqlx::query(
         r#"
         SELECT
@@ -319,14 +319,14 @@ pub async fn get_bot_stats(pool: &SqlitePool, bot_id: i64) -> Result<BotStats, A
             p.down_filled,
             p.ts_ms
         FROM market_sessions ms
-        JOIN (
-            SELECT market_session_id, mtm_pnl, cost_basis, up_filled, down_filled, MAX(ts_ms) AS ts_ms
-            FROM pnl_snapshots
-            WHERE bot_id = ?
-            GROUP BY market_session_id
-            HAVING cost_basis > 0
-        ) p ON p.market_session_id = ms.id
+        JOIN pnl_snapshots p ON p.market_session_id = ms.id
         WHERE ms.bot_id = ?
+          AND p.bot_id = ?
+          AND p.ts_ms = (
+              SELECT MAX(ts_ms) FROM pnl_snapshots
+              WHERE market_session_id = p.market_session_id AND bot_id = p.bot_id
+          )
+          AND p.cost_basis > 0
         ORDER BY p.ts_ms DESC
         LIMIT 500
         "#,
